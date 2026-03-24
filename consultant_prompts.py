@@ -40,12 +40,12 @@ Identify the primary analysis objective from a single-cell perspective and summa
 <SUGGESTION>
 Provide a single, specific, end-to-end implementation plan for a prior-guided deep learning model across the following four parts to accomplish the TASK. Do not propose alternatives, commit to one concrete strategy with clear justification.
 
-Part 1 — Data Preprocessing: specify how to load and preprocess the raw data, including normalization, feature selection, filtering, and any transformations needed before modeling. Justify each decision based on dataset characteristics such as sparsity, modality, and batch structure. The plan must support a reproducible 70/15/15 train/validation/test split using random seed 42.
+Part 1 — Data Preprocessing and Prior Data Construction: 
+1. Specify how to load and preprocess the raw data, including normalization, feature selection, filtering, and any transformations needed before modeling. Justify each decision based on dataset characteristics such as sparsity, modality, and batch structure. 
+2. Specify how to extract and process the relevant prior data so it aligns with the single-cell data and used for model training.  Reason on what biological prior table is relevant to the task and how each source contributes. 
+Reproducible 70/15/15 train/validation/test split using random seed 42.
 
-Part 2 — Prior Data Extraction and Preprocessing: Reason on what biological prior table is relevant to the task and how each source contributes. 
-Specify how to extract and process the relevant prior data so it aligns with the single-cell data and model requirements.
-
-Part 3 — Prior-Guided Model Design and Representation Learning: specify the following with clear justification based on the task and dataset.
+Part 2 — Prior-Guided Model Design and Representation Learning: specify the following with clear justification based on the task and dataset.
 - Architecture: select an effective and innovative prior-guided representation-learning architecture suited to the task. Describe the layer-by-layer structure with clear dimensionality flow, bottlenecks, normalization, and activation choices.
 - Prior data integration: specify precisely how prior data from Part 2 is incorporated into the model (e.g., as graph structure, regularization signal, feature initialization, auxiliary loss, mask, or architectural constraint) and justify the choice.
 - Parameter complexity: estimate parameter scale and specify strategies to manage complexity (e.g., bottleneck sizing, weight sharing, sparse ops, low-rank projections, early stopping).
@@ -56,7 +56,9 @@ Part 3 — Prior-Guided Model Design and Representation Learning: specify the fo
 - Efficiency: specify any sparse-aware computation strategies and GPU utilization requirements for scalable training on large single-cell matrices.
 - Training pipeline: describe the full training loop design, including how train and validation loss are monitored across epochs and how the best model is selected.
 
-Part 4 — Evaluation: specify the evaluation metric(s), how best model selection should be performed across train/validation/test sets, the embedding dimensionality, and the architecture details to include in the final output JSON.
+Part 3 — Evaluation and Downstream Analysis:
+1. Evaluation metric is provided in query. Specify how to compute it from model outputs, and any additional metrics to compute for a comprehensive evaluation.
+2. Describe the downstream analyses to perform with the trained model, such as clustering, visualization, DEG or marker gene identification, and how to implement them.
 
 The fixed downstream output requirements are provided in the prompt background. Your plan must support producing those required downstream outputs.
 </SUGGESTION>

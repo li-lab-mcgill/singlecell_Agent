@@ -22,6 +22,7 @@ from evaluator import (
     build_instruction_text,
     build_open_issues,
     exploit_plan_from_feedback,
+    parse_advisory_eval_action,
     parse_eval_action,
     to_float,
     update_primary_metric_state,
@@ -290,6 +291,42 @@ def _path_constraint_line(key: str, value: str) -> str:
     return f"{label}: use exactly this fixed path -> {value}"
 
 
+def _dedupe_preserve_order(items: List[str]) -> List[str]:
+    out: List[str] = []
+    seen = set()
+    for item in items:
+        text = str(item or "").strip()
+        if not text or text in seen:
+            continue
+        seen.add(text)
+        out.append(text)
+    return out
+
+
+def _merge_feedback_instructions(*feedbacks: Dict[str, Any]) -> Dict[str, List[str]]:
+    merged_keep: List[str] = []
+    merged_change: List[str] = []
+    for feedback in feedbacks:
+        if not isinstance(feedback, dict):
+            continue
+        merged_keep.extend(str(item).strip() for item in feedback.get("keep_fixed", []) if str(item).strip())
+        merged_change.extend(str(item).strip() for item in feedback.get("change_next", []) if str(item).strip())
+    return {
+        "keep_fixed": _dedupe_preserve_order(merged_keep),
+        "change_next": _dedupe_preserve_order(merged_change),
+    }
+
+
+def _feedback_has_signal(feedback: Dict[str, Any]) -> bool:
+    if not isinstance(feedback, dict):
+        return False
+    return bool(
+        str(feedback.get("diagnosis", "")).strip()
+        or any(str(item).strip() for item in feedback.get("keep_fixed", []))
+        or any(str(item).strip() for item in feedback.get("change_next", []))
+    )
+
+
 def _build_optimizer_constraints_for_file(filename: str, path_fields: Dict[str, str], stage_schema: Dict[str, Any], config: Config) -> List[str]:
     constraints = [f"Return ONLY valid executable Python code for {filename}."]
     constraints.extend(_non_negotiable_constraints())
@@ -485,7 +522,9 @@ Use labels only for evaluation, never for training.
         ),
     )
 
-    evaluator = TextGradEvaluator(config=config, engine_name=args.engine, task_decrp=task_summary["task_description"], background=background, eval_type="joint")
+    model_evaluator = TextGradEvaluator(config=config, engine_name=args.engine, task_decrp=task_summary["task_description"], background=background, eval_type="model")
+    data_science_evaluator = TextGradEvaluator(config=config, engine_name=args.engine, task_decrp=task_summary["task_description"], background=background, eval_type="data_science")
+    biology_evaluator = TextGradEvaluator(config=config, engine_name=args.engine, task_decrp=task_summary["task_description"], background=background, eval_type="biology")
     executor = CodeExecutor(config)
     outer_state = OuterLoopState()
     global_note_records: List[HistoryNoteRecord] = []
@@ -551,6 +590,7 @@ Use labels only for evaluation, never for training.
         perf = read_perf(str(resolved_artifact_layout["generated_outputs"].get("model_performance", "")))
         pstat = perf_summary(perf)
         cluster_metrics, cluster_summary, training_logs, pipeline_summary = collect_eval_data(resolved_artifact_layout, run_result)
+        preprocess_metadata = read_json_safe(str(resolved_artifact_layout["generated_outputs"].get("preprocess_metadata", "")))
         last_cluster_metrics = cluster_metrics
 
         outer_state.best_ari, outer_state.best_sil, outer_state.stagnation_steps, primary_state = update_primary_metric_state(
@@ -565,7 +605,7 @@ Use labels only for evaluation, never for training.
         with open(history_digest_path, "w", encoding="utf-8") as f:
             f.write(notes_text + "\n")
 
-        eval_out = evaluator.loss_fn(
+        model_eval_out = model_evaluator.loss_fn(
             notes=tg.Variable(notes_text or "<empty>", requires_grad=False, role_description="multi-step notes"),
             step=step,
             data_prior_code=code_bundle["data_prior.py"],
@@ -577,21 +617,86 @@ Use labels only for evaluation, never for training.
             delta_min=tg.Variable(str(args.delta_min), requires_grad=False, role_description="minimum meaningful validation gain"),
             current_performance=tg.Variable(json.dumps({"perf_summary": pstat, "primary_state": primary_state}, ensure_ascii=False), requires_grad=False, role_description="current performance summary"),
             paths=tg.Variable(json.dumps(generator.path_prompt_fields, ensure_ascii=False), requires_grad=False, role_description="fixed artifact paths"),
+            model_schema=tg.Variable(json.dumps(config.stage_requirements("model_training.py"), ensure_ascii=False), requires_grad=False, role_description="model requirements"),
+            training_logs=tg.Variable(json.dumps(training_logs, ensure_ascii=False), requires_grad=False, role_description="training logs"),
+            pipeline_summary=tg.Variable(json.dumps(pipeline_summary, ensure_ascii=False), requires_grad=False, role_description="pipeline summary"),
+        )
+
+        print(f"model_evaluator_output_step_{step}:\n{model_eval_out.value}")
+        payload, feedback = parse_eval_action(model_eval_out.value)
+        data_science_eval_out = data_science_evaluator.loss_fn(
+            step=step,
+            metrics=tg.Variable(config.metrics, requires_grad=False, role_description="primary metric name"),
+            time_budget=tg.Variable(str(config.timeout), requires_grad=False, role_description="time budget seconds"),
+            notes=tg.Variable(notes_text or "<empty>", requires_grad=False, role_description="multi-step notes"),
+            data_prior_code=code_bundle["data_prior.py"],
+            model_training_code=code_bundle["model_training.py"],
+            downstream_analysis_code=code_bundle["downstream_analysis.py"],
+            suggestion=tg.Variable(suggestion, requires_grad=False, role_description="current consultant suggestion"),
+            training_history=tg.Variable(json.dumps(perf.get("training_history", []), ensure_ascii=False), requires_grad=False, role_description="training history"),
+            stagnation_steps=tg.Variable(str(outer_state.stagnation_steps), requires_grad=False, role_description="current stagnation steps"),
+            delta_min=tg.Variable(str(args.delta_min), requires_grad=False, role_description="minimum meaningful validation gain"),
+            current_performance=tg.Variable(json.dumps({"perf_summary": pstat, "primary_state": primary_state}, ensure_ascii=False), requires_grad=False, role_description="current performance summary"),
+            preprocessing_summary=tg.Variable(json.dumps(preprocess_metadata, ensure_ascii=False), requires_grad=False, role_description="preprocess metadata json"),
+            paths=tg.Variable(json.dumps(generator.path_prompt_fields, ensure_ascii=False), requires_grad=False, role_description="fixed artifact paths"),
             data_schema=tg.Variable(json.dumps(config.stage_requirements("data_prior.py"), ensure_ascii=False), requires_grad=False, role_description="data/prior requirements"),
             prior_schema=tg.Variable(json.dumps(config.current_prior_schema, ensure_ascii=False), requires_grad=False, role_description="prior schema"),
-            model_schema=tg.Variable(json.dumps(config.stage_requirements("model_training.py"), ensure_ascii=False), requires_grad=False, role_description="model requirements"),
-            downstream_schema=tg.Variable(json.dumps(config.stage_requirements("downstream_analysis.py"), ensure_ascii=False), requires_grad=False, role_description="downstream requirements"),
             cluster_metrics=tg.Variable(json.dumps(cluster_metrics, ensure_ascii=False), requires_grad=False, role_description="cluster metrics"),
             cluster_summary=tg.Variable(json.dumps(cluster_summary, ensure_ascii=False), requires_grad=False, role_description="cluster summary"),
             training_logs=tg.Variable(json.dumps(training_logs, ensure_ascii=False), requires_grad=False, role_description="training logs"),
             pipeline_summary=tg.Variable(json.dumps(pipeline_summary, ensure_ascii=False), requires_grad=False, role_description="pipeline summary"),
         )
+        print(f"data_science_evaluator_output_step_{step}:\n{data_science_eval_out.value}")
+        data_science_payload, data_science_feedback = parse_advisory_eval_action(data_science_eval_out.value, "data_science")
 
-        print(f"evaluator_output_step_{step}:\n{eval_out.value}")
-        payload, feedback = parse_eval_action(eval_out.value)
+        biology_eval_out = biology_evaluator.loss_fn(
+            step=step,
+            metrics=tg.Variable(config.metrics, requires_grad=False, role_description="primary metric name"),
+            time_budget=tg.Variable(str(config.timeout), requires_grad=False, role_description="time budget seconds"),
+            notes=tg.Variable(notes_text or "<empty>", requires_grad=False, role_description="multi-step notes"),
+            data_prior_code=code_bundle["data_prior.py"],
+            suggestion=tg.Variable(suggestion, requires_grad=False, role_description="current consultant suggestion"),
+            training_history=tg.Variable(json.dumps(perf.get("training_history", []), ensure_ascii=False), requires_grad=False, role_description="training history"),
+            stagnation_steps=tg.Variable(str(outer_state.stagnation_steps), requires_grad=False, role_description="current stagnation steps"),
+            delta_min=tg.Variable(str(args.delta_min), requires_grad=False, role_description="minimum meaningful validation gain"),
+            current_performance=tg.Variable(json.dumps({"perf_summary": pstat, "primary_state": primary_state}, ensure_ascii=False), requires_grad=False, role_description="current performance summary"),
+            cluster_metrics=tg.Variable(json.dumps(cluster_metrics, ensure_ascii=False), requires_grad=False, role_description="cluster metrics"),
+            cluster_summary=tg.Variable(json.dumps(cluster_summary, ensure_ascii=False), requires_grad=False, role_description="cluster summary"),
+            downstream_schema=tg.Variable(json.dumps(config.stage_requirements("downstream_analysis.py"), ensure_ascii=False), requires_grad=False, role_description="downstream requirements"),
+        )
+        print(f"biology_evaluator_output_step_{step}:\n{biology_eval_out.value}")
+        biology_payload, biology_feedback = parse_advisory_eval_action(biology_eval_out.value, "biology")
         action = "reconsult" if outer_state.stagnation_steps >= args.stagnation_steps_limit else "exploit"
         exploit_plan = exploit_plan_from_feedback(feedback)
-        optimize_targets = [target for target in payload.get("optimize_targets", []) if target in STAGE_FILENAMES] if action == "exploit" else []
+        optimize_targets: List[str] = []
+        feedback_by_target: Dict[str, Dict[str, Any]] = {}
+        if action == "exploit":
+            model_targets = [target for target in payload.get("optimize_targets", []) if target == "model_training.py"]
+            if model_targets:
+                feedback_by_target["model_training.py"] = feedback
+                optimize_targets.extend(model_targets)
+            data_prior_feedback = _merge_feedback_instructions(data_science_feedback, biology_feedback)
+            if _feedback_has_signal(data_science_feedback) or _feedback_has_signal(biology_feedback):
+                feedback_by_target["data_prior.py"] = {
+                    "diagnosis": _dedupe_preserve_order([
+                        str(data_science_feedback.get("diagnosis", "")).strip(),
+                        str(biology_feedback.get("diagnosis", "")).strip(),
+                    ])[0] if _dedupe_preserve_order([
+                        str(data_science_feedback.get("diagnosis", "")).strip(),
+                        str(biology_feedback.get("diagnosis", "")).strip(),
+                    ]) else "",
+                    "focus_areas": _dedupe_preserve_order(
+                        [str(item).strip() for item in data_science_feedback.get("focus_areas", [])]
+                        + [str(item).strip() for item in biology_feedback.get("focus_areas", [])]
+                    ),
+                    "keep_fixed": data_prior_feedback["keep_fixed"],
+                    "change_next": data_prior_feedback["change_next"],
+                }
+                optimize_targets.append("data_prior.py")
+            if _feedback_has_signal(biology_feedback):
+                feedback_by_target["downstream_analysis.py"] = biology_feedback
+                optimize_targets.append("downstream_analysis.py")
+        optimize_targets = _dedupe_preserve_order(optimize_targets)
         exploit_applied = False
         exploit_change_types: Dict[str, str] = {}
         exploit_summary: Dict[str, str] = {}
@@ -600,11 +705,16 @@ Use labels only for evaluation, never for training.
         if action == "exploit" and optimize_targets:
             for filename in optimize_targets:
                 optimizers[filename].zero_grad()
-            exploit_change_types, exploit_summary, critique_payloads = attach_exploit_signal_and_metadata(
-                code_bundle=code_bundle,
-                optimize_targets=optimize_targets,
-                feedback=feedback,
-            )
+            for filename in optimize_targets:
+                target_feedback = feedback_by_target.get(filename, {})
+                target_change_types, target_summary, target_payloads = attach_exploit_signal_and_metadata(
+                    code_bundle=code_bundle,
+                    optimize_targets=[filename],
+                    feedback=target_feedback,
+                )
+                exploit_change_types.update(target_change_types)
+                exploit_summary.update(target_summary)
+                critique_payloads.update(target_payloads)
             for filename in optimize_targets:
                 optimizers[filename].step()
                 gradient_text = critique_payloads.get(filename, {}).get("gradient_text", "")
@@ -694,6 +804,13 @@ Use labels only for evaluation, never for training.
             "action": action,
             "payload": payload,
             "feedback": feedback,
+            "model_evaluator_payload": payload,
+            "data_science_evaluator_payload": data_science_payload,
+            "biology_evaluator_payload": biology_payload,
+            "model_feedback": feedback,
+            "data_science_feedback": data_science_feedback,
+            "biology_feedback": biology_feedback,
+            "feedback_by_target": feedback_by_target,
             "run_success": run_result.get("success", False),
             "performance": perf,
             "cluster_metrics": cluster_metrics,
@@ -757,7 +874,9 @@ Use labels only for evaluation, never for training.
                     plan_fingerprint=plan_fingerprint(task_summary["task_description"], task_summary["suggestion"], task_summary["prior_schema"]),
                 ),
             )
-            evaluator = TextGradEvaluator(config=config, engine_name=args.engine, task_decrp=task_summary["task_description"], background=background, eval_type="joint")
+            model_evaluator = TextGradEvaluator(config=config, engine_name=args.engine, task_decrp=task_summary["task_description"], background=background, eval_type="model")
+            data_science_evaluator = TextGradEvaluator(config=config, engine_name=args.engine, task_decrp=task_summary["task_description"], background=background, eval_type="data_science")
+            biology_evaluator = TextGradEvaluator(config=config, engine_name=args.engine, task_decrp=task_summary["task_description"], background=background, eval_type="biology")
             code_bundle = None
             optimizers = {}
             outer_state.reset()

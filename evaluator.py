@@ -6,7 +6,14 @@ from dotenv import load_dotenv
 
 from consultant import _short
 from config import Config
-from evaluator_prompts import JOINT_EVALUATOR_SYSTEM_PROMPT, JOINT_FORMAT_STRING
+from evaluator_prompts import (
+    BIOLOGY_EVALUATOR_SYSTEM_PROMPT,
+    BIOLOGY_FORMAT_STRING,
+    DATA_SCIENCE_EVALUATOR_SYSTEM_PROMPT,
+    DATA_SCIENCE_FORMAT_STRING,
+    MODEL_EVALUATOR_SYSTEM_PROMPT,
+    MODEL_FORMAT_STRING,
+)
 from multieval_types import STAGE_FILENAMES
 
 load_dotenv()
@@ -31,31 +38,40 @@ def _validate_feedback_payload(feedback: Dict[str, Any]) -> None:
         raise ValueError(f"Evaluator feedback missing required keys: {missing_feedback}")
 
 
-def _validate_scoped_instruction_list(name: str, items: Any) -> None:
+def _validate_feedback_only_payload(feedback: Dict[str, Any]) -> None:
+    required_feedback_keys = ["diagnosis", "focus_areas", "keep_fixed", "change_next"]
+    missing_feedback = [key for key in required_feedback_keys if key not in feedback]
+    if missing_feedback:
+        raise ValueError(f"Advisory evaluator feedback missing required keys: {missing_feedback}")
+    if not isinstance(feedback.get("focus_areas"), list):
+        raise ValueError("Advisory evaluator feedback focus_areas must be a list")
+
+
+def _validate_instruction_list(name: str, items: Any) -> None:
     if not isinstance(items, list):
         raise ValueError(f"Evaluator feedback {name} must be a list")
     for item in items:
-        text = str(item or "").strip()
-        if not text:
+        if not str(item or "").strip():
             continue
-        if not any(text.startswith(f"{filename}:") for filename in STAGE_FILENAMES):
-            raise ValueError(
-                f"Evaluator feedback {name} entries must be file-scoped like '<filename>.py: ...'; got: {text}"
-            )
+
+
+def _parse_json_object(text: str, label: str) -> Dict[str, Any]:
+    stripped = (text or "").strip()
+    if not stripped.startswith("{") or not stripped.endswith("}"):
+        raise ValueError(f"{label} output must be a single JSON object with no wrapper tags or extra text")
+    payload = json.loads(stripped)
+    if not isinstance(payload, dict):
+        raise ValueError(f"{label} output must decode to a JSON object")
+    return payload
 
 
 def parse_eval_action(text: str) -> tuple[dict, dict]:
-    stripped = (text or "").strip()
-    if not stripped.startswith("{") or not stripped.endswith("}"):
-        raise ValueError("Evaluator output must be a single JSON object with no wrapper tags or extra text")
-    payload = json.loads(stripped)
+    payload = _parse_json_object(text, "Evaluator")
     required_keys = [
         "step",
         "primary_reason",
         "performance",
         "training_health",
-        "biological_assessment",
-        "architecture",
         "optimize_targets",
         "feedback",
     ]
@@ -67,16 +83,37 @@ def parse_eval_action(text: str) -> tuple[dict, dict]:
         target = str(item).strip()
         if not target:
             continue
-        if target not in STAGE_FILENAMES:
-            raise ValueError(f"Unsupported optimize target: {target}")
+        if target != "model_training.py":
+            raise ValueError(f"Model evaluator optimize_targets must only contain model_training.py; got: {target}")
         targets.append(target)
     payload["optimize_targets"] = targets
     feedback = payload.get("feedback", {})
     if not isinstance(feedback, dict):
         raise ValueError("Evaluator feedback must be a JSON object")
     _validate_feedback_payload(feedback)
-    _validate_scoped_instruction_list("keep_fixed", feedback.get("keep_fixed", []))
-    _validate_scoped_instruction_list("change_next", feedback.get("change_next", []))
+    _validate_instruction_list("keep_fixed", feedback.get("keep_fixed", []))
+    _validate_instruction_list("change_next", feedback.get("change_next", []))
+    return payload, feedback
+
+
+def parse_advisory_eval_action(text: str, eval_type: str) -> tuple[dict, dict]:
+    if eval_type not in {"data_science", "biology"}:
+        raise ValueError(f"Unsupported advisory evaluator type: {eval_type}")
+    payload = _parse_json_object(text, f"{eval_type} evaluator")
+    if "optimize_targets" in payload:
+        raise ValueError(f"{eval_type} evaluator must not emit optimize_targets")
+    required_keys = ["step", "feedback"]
+    if eval_type == "biology":
+        required_keys.append("biological_assessment")
+    missing = [key for key in required_keys if key not in payload]
+    if missing:
+        raise ValueError(f"{eval_type} evaluator payload missing required keys: {missing}")
+    feedback = payload.get("feedback", {})
+    if not isinstance(feedback, dict):
+        raise ValueError(f"{eval_type} evaluator feedback must be a JSON object")
+    _validate_feedback_only_payload(feedback)
+    _validate_instruction_list("keep_fixed", feedback.get("keep_fixed", []))
+    _validate_instruction_list("change_next", feedback.get("change_next", []))
     return payload, feedback
 
 
@@ -172,83 +209,151 @@ def update_primary_metric_state(cluster_metrics: Dict[str, Any], best_ari: float
 
 
 class TextGradEvaluator:
-    def __init__(self, config: Config, engine_name: str, task_decrp: str, background: str = "Not available", eval_type: str = "joint"):
-        if eval_type != "joint":
-            raise ValueError("Only the joint evaluator is supported")
+    def __init__(self, config: Config, engine_name: str, task_decrp: str, background: str = "Not available", eval_type: str = "model"):
         self.config = config
         self.engine_name = engine_name
         self.engine = tg.get_engine(engine_name, max_tokens=7000)
-        format_string = JOINT_FORMAT_STRING.format(
-            task=task_decrp,
-            step="{step}",
-            metrics=self.config.metrics,
-            time_budget=config.timeout,
-            notes="{notes}",
-            suggestion="{suggestion}",
-            training_history="{training_history}",
-            stagnation_steps="{stagnation_steps}",
-            delta_min="{delta_min}",
-            current_performance="{current_performance}",
-            data_prior_code="{data_prior_code}",
-            model_training_code="{model_training_code}",
-            downstream_analysis_code="{downstream_analysis_code}",
-            paths="{paths}",
-            data_schema="{data_schema}",
-            prior_schema="{prior_schema}",
-            model_schema="{model_schema}",
-            downstream_schema="{downstream_schema}",
-            cluster_metrics="{cluster_metrics}",
-            cluster_summary="{cluster_summary}",
-            training_logs="{training_logs}",
-            pipeline_summary="{pipeline_summary}",
+        self.eval_type = eval_type
+        if eval_type == "model":
+            format_string = MODEL_FORMAT_STRING.format(
+                task=task_decrp,
+                step="{step}",
+                metrics=self.config.metrics,
+                time_budget=config.timeout,
+                notes="{notes}",
+                suggestion="{suggestion}",
+                training_history="{training_history}",
+                stagnation_steps="{stagnation_steps}",
+                delta_min="{delta_min}",
+                current_performance="{current_performance}",
+                data_prior_code="{data_prior_code}",
+                model_training_code="{model_training_code}",
+                downstream_analysis_code="{downstream_analysis_code}",
+                paths="{paths}",
+                model_schema="{model_schema}",
+                training_logs="{training_logs}",
+                pipeline_summary="{pipeline_summary}",
+            )
+            self.fields = {
+                "step": None,
+                "notes": None,
+                "suggestion": None,
+                "training_history": None,
+                "stagnation_steps": None,
+                "delta_min": None,
+                "current_performance": None,
+                "data_prior_code": None,
+                "model_training_code": None,
+                "downstream_analysis_code": None,
+                "paths": None,
+                "model_schema": None,
+                "training_logs": None,
+                "pipeline_summary": None,
+            }
+            system_prompt = MODEL_EVALUATOR_SYSTEM_PROMPT
+            response_role = "model evaluation of the three-stage pipeline"
+            prompt_role = "system prompt to evaluate model training and architecture"
+        elif eval_type == "data_science":
+            format_string = DATA_SCIENCE_FORMAT_STRING.format(
+                task=task_decrp,
+                step="{step}",
+                metrics=self.config.metrics,
+                time_budget=config.timeout,
+                notes="{notes}",
+                suggestion="{suggestion}",
+                training_history="{training_history}",
+                stagnation_steps="{stagnation_steps}",
+                delta_min="{delta_min}",
+                current_performance="{current_performance}",
+                data_prior_code="{data_prior_code}",
+                model_training_code="{model_training_code}",
+                downstream_analysis_code="{downstream_analysis_code}",
+                preprocessing_summary="{preprocessing_summary}",
+                paths="{paths}",
+                data_schema="{data_schema}",
+                prior_schema="{prior_schema}",
+                cluster_metrics="{cluster_metrics}",
+                cluster_summary="{cluster_summary}",
+                training_logs="{training_logs}",
+                pipeline_summary="{pipeline_summary}",
+            )
+            self.fields = {
+                "step": None,
+                "metrics": None,
+                "time_budget": None,
+                "notes": None,
+                "suggestion": None,
+                "training_history": None,
+                "stagnation_steps": None,
+                "delta_min": None,
+                "current_performance": None,
+                "data_prior_code": None,
+                "model_training_code": None,
+                "downstream_analysis_code": None,
+                "preprocessing_summary": None,
+                "paths": None,
+                "data_schema": None,
+                "prior_schema": None,
+                "cluster_metrics": None,
+                "cluster_summary": None,
+                "training_logs": None,
+                "pipeline_summary": None,
+            }
+            system_prompt = DATA_SCIENCE_EVALUATOR_SYSTEM_PROMPT
+            response_role = "advisory data-science evaluation of data_prior.py"
+            prompt_role = "system prompt for advisory data-science evaluation"
+        elif eval_type == "biology":
+            format_string = BIOLOGY_FORMAT_STRING.format(
+                task=task_decrp,
+                step="{step}",
+                metrics=self.config.metrics,
+                time_budget=config.timeout,
+                notes="{notes}",
+                suggestion="{suggestion}",
+                training_history="{training_history}",
+                stagnation_steps="{stagnation_steps}",
+                delta_min="{delta_min}",
+                current_performance="{current_performance}",
+                data_prior_code="{data_prior_code}",
+                cluster_metrics="{cluster_metrics}",
+                cluster_summary="{cluster_summary}",
+                downstream_schema="{downstream_schema}",
+            )
+            self.fields = {
+                "step": None,
+                "metrics": None,
+                "time_budget": None,
+                "notes": None,
+                "suggestion": None,
+                "training_history": None,
+                "stagnation_steps": None,
+                "delta_min": None,
+                "current_performance": None,
+                "data_prior_code": None,
+                "cluster_metrics": None,
+                "cluster_summary": None,
+                "downstream_schema": None,
+            }
+            system_prompt = BIOLOGY_EVALUATOR_SYSTEM_PROMPT
+            response_role = "advisory biology evaluation of data_prior.py and downstream_analysis.py"
+            prompt_role = "system prompt for advisory biology evaluation"
+        else:
+            raise ValueError(f"Unsupported evaluator type: {eval_type}")
+        self.response_role_description = response_role
+        self.system_prompt = tg.Variable(system_prompt, requires_grad=False, role_description=prompt_role)
+        self.formatted_llm_call = tg.autograd.FormattedLLMCall(
+            engine=self.engine,
+            format_string=format_string,
+            fields=self.fields,
+            system_prompt=self.system_prompt,
         )
-        fields = {
-            "step": None,
-            "notes": None,
-            "suggestion": None,
-            "training_history": None,
-            "stagnation_steps": None,
-            "delta_min": None,
-            "current_performance": None,
-            "data_prior_code": None,
-            "model_training_code": None,
-            "downstream_analysis_code": None,
-            "paths": None,
-            "data_schema": None,
-            "prior_schema": None,
-            "model_schema": None,
-            "downstream_schema": None,
-            "cluster_metrics": None,
-            "cluster_summary": None,
-            "training_logs": None,
-            "pipeline_summary": None,
-        }
-        self.system_prompt = tg.Variable(JOINT_EVALUATOR_SYSTEM_PROMPT, requires_grad=False, role_description="system prompt to evaluate the three-stage pipeline")
-        self.formatted_llm_call = tg.autograd.FormattedLLMCall(engine=self.engine, format_string=format_string, fields=fields, system_prompt=self.system_prompt)
 
-    def loss_fn(self, *, notes: tg.Variable, step, data_prior_code: tg.Variable, model_training_code: tg.Variable, downstream_analysis_code: tg.Variable, suggestion: tg.Variable, training_history: tg.Variable, stagnation_steps: tg.Variable, delta_min: tg.Variable, current_performance: tg.Variable, paths: tg.Variable, data_schema: tg.Variable, prior_schema: tg.Variable, model_schema: tg.Variable, downstream_schema: tg.Variable, cluster_metrics: tg.Variable, cluster_summary: tg.Variable, training_logs: tg.Variable, pipeline_summary: tg.Variable):
-        step_var = tg.Variable(step, requires_grad=False, role_description="step counter")
-        return self.formatted_llm_call(
-            inputs={
-                "step": step_var,
-                "notes": notes,
-                "suggestion": suggestion,
-                "training_history": training_history,
-                "stagnation_steps": stagnation_steps,
-                "delta_min": delta_min,
-                "current_performance": current_performance,
-                "data_prior_code": data_prior_code,
-                "model_training_code": model_training_code,
-                "downstream_analysis_code": downstream_analysis_code,
-                "paths": paths,
-                "data_schema": data_schema,
-                "prior_schema": prior_schema,
-                "model_schema": model_schema,
-                "downstream_schema": downstream_schema,
-                "cluster_metrics": cluster_metrics,
-                "cluster_summary": cluster_summary,
-                "training_logs": training_logs,
-                "pipeline_summary": pipeline_summary,
-            },
-            response_role_description="evaluation of the three-stage pipeline",
-        )
+    def loss_fn(self, **kwargs):
+        inputs = {"step": tg.Variable(kwargs["step"], requires_grad=False, role_description="step counter")}
+        for field in self.fields:
+            if field == "step":
+                continue
+            if field not in kwargs:
+                raise ValueError(f"Missing evaluator input field '{field}' for eval_type={self.eval_type}")
+            inputs[field] = kwargs[field]
+        return self.formatted_llm_call(inputs=inputs, response_role_description=self.response_role_description)

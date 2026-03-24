@@ -58,7 +58,7 @@ Load model-ready preprocessed inputs from:
    - row_index
    - cell_type
    - batch
-7. Use CUDA automatically if available; otherwise run on CPU without changing the workflow.
+7. Use CUDA or MPSautomatically if available; otherwise run on CPU without changing the workflow.
 8. Follow best practices for reproducibility, code organization, and computational efficiency.
 9. Output exactly one executable Python script.
 
@@ -91,8 +91,7 @@ Task background: {background}
 Consultant plan: {suggestion}
 Consultant PRIOR_SCHEMA_JSON: {prior_schema_json}
 Current stage input and output requirements JSON: {stage_requirements_json}
-Current stage input and output paths:
-{stage_context}
+Current stage input and output paths: {stage_context}
 Available API dir: {api_dir}
 Available dataset dir: {dataset_dir}
 Available MCP tools: {mcp_tools}
@@ -138,8 +137,7 @@ Task description: {task_description}
 Consultant plan: {suggestion}
 Consultant PRIOR_SCHEMA_JSON: {prior_schema_json}
 Current stage input and output requirements JSON: {stage_requirements_json}
-Current stage input and output paths:
-{stage_context}
+Current stage input and output paths: {stage_context}
 Existing stage bundle summary: {script_summaries}
 Current stage previous code: {target_code}
 
