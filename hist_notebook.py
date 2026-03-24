@@ -18,7 +18,7 @@ def render_history_note_line(record: HistoryNoteRecord) -> str:
     return (
         f"step={record.step} action={record.action} context={record.context_mode} "
         f"attempts={record.attempts_used} run_success={record.run_success} "
-        f"failed_stage={record.failed_stage} design={record.architecture_fingerprint} "
+        f"design={record.architecture_fingerprint} "
         f"primary={record.primary_metric} value={record.metric_value} gain={record.gain} "
         f"stagnation={record.stagnation} exploit={exploit} issues={issues} "
         f"diagnosis={_short(record.evaluator_diagnosis, 160)}"
@@ -69,7 +69,7 @@ def _detect_model_family(code: str) -> str:
 
 
 def infer_design_identity(*, bundle_text: Dict[str, str], payload: Dict[str, Any], cluster_summary: Dict[str, Any]) -> tuple[str, str]:
-    code = bundle_text.get("pipeline", "")
+    code = "\n\n".join(str(text) for text in bundle_text.values() if str(text).strip())
     architecture = payload.get("architecture", {}) if isinstance(payload, dict) else {}
     label = str(architecture.get("label", "")).strip() if isinstance(architecture, dict) else ""
     code_lower = code.lower()
@@ -122,18 +122,14 @@ def _history_summary(records: List[HistoryNoteRecord]) -> str:
     if not records:
         return "<none>"
     action_counts: Dict[str, int] = {}
-    failed_stage_counts: Dict[str, int] = {}
     issue_counts: Dict[str, int] = {}
     for record in records:
         action_counts[record.action] = action_counts.get(record.action, 0) + 1
-        stage_key = str(record.failed_stage or "none")
-        failed_stage_counts[stage_key] = failed_stage_counts.get(stage_key, 0) + 1
         for issue in record.open_issues:
             issue_counts[issue] = issue_counts.get(issue, 0) + 1
     top_issues = sorted(issue_counts.items(), key=lambda item: (-item[1], item[0]))[:6]
     return (
         f"action_counts={action_counts}\n"
-        f"failed_stage_counts={failed_stage_counts}\n"
         f"top_open_issues={top_issues}"
     )
 
@@ -214,7 +210,12 @@ def _exploit_failure_patterns(records: List[HistoryNoteRecord], limit: int = 5) 
         targets = prev.get("previous_step_optimized_scripts", [])
         if not targets or record.run_success:
             continue
-        key = f"after_exploit:{','.join(targets)}->{record.failed_stage or 'unknown'}"
+        failure_target = "pipeline"
+        for issue in record.open_issues:
+            if issue.startswith("run_failed:"):
+                failure_target = issue.split(":", 1)[1] or "pipeline"
+                break
+        key = f"after_exploit:{','.join(targets)}->{failure_target}"
         counts[key] = counts.get(key, 0) + 1
     if not counts:
         return ["<none>"]

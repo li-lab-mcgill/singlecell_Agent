@@ -1,15 +1,62 @@
 # config.py
 """Configuration for GitHub Models"""
-import os
-from pathlib import Path
-from typing import Any, List, Union, Optional, Tuple, Dict, Set
-import math
-import numpy as np
-import pandas as pd
 import json
+import math
+import os
 import random
 import re
+from copy import deepcopy
+from pathlib import Path
+from typing import Any, Dict, List, Optional, Set, Tuple, Union
+
+import numpy as np
+import pandas as pd
 import textgrad as tg
+
+FIXED_DATA_PRIOR_REQUIREMENTS: Dict[str, Any] = {
+    "required_outputs": [
+        "preprocess_metadata",
+        "preprocess_train_mod1",
+        "preprocess_val_mod1",
+        "preprocess_test_mod1",
+    ],
+    "artifacts": {},
+}
+
+FIXED_MODEL_REQUIREMENTS: Dict[str, Any] = {
+    "required_outputs": [
+        "model_performance",
+        "best_model",
+        "embedding",
+        "embedding_metadata",
+        "training_logs",
+        "pipeline_summary",
+    ],
+    "artifacts": {
+        "embedding_metadata": {
+            "format": "csv",
+            "required_columns": ["cell_id", "split", "row_index", "cell_type", "batch"],
+        }
+    },
+}
+
+FIXED_DOWNSTREAM_REQUIREMENTS: Dict[str, Any] = {
+    "required_outputs": [
+        "cluster_assignments",
+        "cluster_metrics",
+        "cluster_summary",
+    ],
+    "artifacts": {
+        "cluster_assignments": {
+            "format": "csv",
+            "required_columns": ["cell_id", "predicted_cluster", "split"],
+        },
+        "cluster_metrics": {
+            "format": "json",
+            "required_keys": ["ari"],
+        },
+    },
+}
     
 class Config:
     def __init__(self, code_dir = "saved_code", result_dir = "results", data_dir = "data", file_path = None,
@@ -23,37 +70,15 @@ class Config:
         result_dir = f"{cur_path}/{result_dir}"
         data_dir = f"{cur_path}/{data_dir}"
         
+        self.cur_path = cur_path
         self.intermediate_output_dir = f"{result_dir}/intermediate_output"
         Path(self.intermediate_output_dir).mkdir(parents=True, exist_ok=True)
         self.final_out_dir = f"{result_dir}/final_output"
         self.notes_dir = f"{cur_path}/notes"
         Path(self.final_out_dir).mkdir(parents=True, exist_ok=True)
         Path(self.notes_dir).mkdir(parents=True, exist_ok=True)
-        self.preprocess_metadata_path = f"{self.intermediate_output_dir}/preprocess_metadata.json"
         self.data_mod1_path = mod1_path or file_path
         self.data_mod2_path = mod2_path
-        self.preprocess_train_out_path = f"{self.intermediate_output_dir}/preprocess_train_mod1.csv"
-        self.preprocess_val_out_path = f"{self.intermediate_output_dir}/preprocess_val_mod1.csv"
-        self.preprocess_test_out_path = f"{self.intermediate_output_dir}/preprocess_test_mod1.csv"
-        if self.data_mod2_path:
-            self.preprocess_train_out_path_mod2 = f"{self.intermediate_output_dir}/preprocess_train_mod2.csv"
-            self.preprocess_val_out_path_mod2 = f"{self.intermediate_output_dir}/preprocess_val_mod2.csv"
-            self.preprocess_test_out_path_mod2 = f"{self.intermediate_output_dir}/preprocess_test_mod2.csv"
-        else:
-            self.preprocess_train_out_path_mod2 = None
-            self.preprocess_val_out_path_mod2 = None
-            self.preprocess_test_out_path_mod2 = None
-        self.prior_output_dir = f"{self.intermediate_output_dir}/prior"
-        self.model_perf_path = f"{self.intermediate_output_dir}/model_performance.json"
-        self.best_model_path = f"{self.intermediate_output_dir}/best_model.pt"
-        self.embedding_path = f"{self.intermediate_output_dir}/embedding.npy"
-        self.embedding_metadata_path = f"{self.intermediate_output_dir}/embedding_metadata.csv"
-        self.cluster_assignments_path = f"{self.intermediate_output_dir}/cluster_assignments.csv"
-        self.cluster_metrics_path = f"{self.intermediate_output_dir}/cluster_metrics.json"
-        self.cluster_summary_path = f"{self.intermediate_output_dir}/cluster_summary.json"
-        self.training_logs_path = f"{self.intermediate_output_dir}/training_logs.json"
-        self.pipeline_summary_path = f"{self.intermediate_output_dir}/pipeline_summary.json"
-        self.prior_manifest_path = f"{self.prior_output_dir}/prior_manifest.json"
         self.single_code_dir = f"{code_dir}/singleeval"
         Path(code_dir).mkdir(parents=True, exist_ok=True)
         Path(result_dir).mkdir(parents=True, exist_ok=True)
@@ -63,6 +88,10 @@ class Config:
         self.code_dir = code_dir
         self.result_dir = result_dir
         self.data_dir = data_dir
+        self.artifact_layout_path = os.path.join(cur_path, "artifact_layout.json")
+        self.current_step_layout: Dict[str, Any] = {}
+        self.current_prior_schema: Dict[str, Any] = {}
+        self.current_prior_dir_path: str = ""
         self.task_types = ["Regression", "Classification", "Clustering", "Integration"]
         self.learning_types = ["Supervised", "Unsupervised", "Self-supervised"]
         self.id_column = id_column
@@ -106,34 +135,112 @@ class Config:
             except Exception:
                 pass
 
-    def set_step_output_paths(self, step: int) -> None:
-        step_dir = os.path.join(self.intermediate_output_dir, f"step_{step}")
+    def _load_json_config(self, path: str) -> Dict[str, Any]:
+        with open(path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        if not isinstance(data, dict):
+            raise ValueError(f"Expected JSON object at {path}")
+        return data
+
+    def load_artifact_layout(self) -> Dict[str, Any]:
+        return deepcopy(self._load_json_config(self.artifact_layout_path))
+
+    def apply_prior_schema(self, prior_schema: Dict[str, Any]) -> None:
+        if not isinstance(prior_schema, dict):
+            raise ValueError("prior schema must be a JSON object")
+        self.current_prior_schema = deepcopy(prior_schema)
+
+    def stage_requirements(self, filename: str) -> Dict[str, Any]:
+        if filename == "data_prior.py":
+            return {
+                "required_outputs": deepcopy(FIXED_DATA_PRIOR_REQUIREMENTS["required_outputs"]),
+                "artifacts": deepcopy(FIXED_DATA_PRIOR_REQUIREMENTS["artifacts"]),
+                "prior_output_dir": self.current_prior_dir_path,
+                "prior_files": self.resolved_prior_files(),
+                "prior_schema": deepcopy(self.current_prior_schema),
+            }
+        if filename == "model_training.py":
+            return deepcopy(FIXED_MODEL_REQUIREMENTS)
+        if filename == "downstream_analysis.py":
+            return deepcopy(FIXED_DOWNSTREAM_REQUIREMENTS)
+        return {"required_outputs": [], "artifacts": {}}
+
+    def downstream_requirements(self) -> Dict[str, Any]:
+        return deepcopy(FIXED_DOWNSTREAM_REQUIREMENTS)
+
+    def resolved_prior_files(self) -> List[Dict[str, Any]]:
+        prior_schema = self.current_prior_schema if isinstance(self.current_prior_schema, dict) else {}
+        required_files = prior_schema.get("required_files", [])
+        if not isinstance(required_files, list):
+            return []
+        resolved: List[Dict[str, Any]] = []
+        for item in required_files:
+            if not isinstance(item, dict):
+                continue
+            file_name = str(item.get("file_name") or "").strip()
+            if not file_name:
+                continue
+            payload = deepcopy(item)
+            payload["path"] = os.path.join(self.current_prior_dir_path, file_name) if self.current_prior_dir_path else file_name
+            resolved.append(payload)
+        return resolved
+
+    def _preprocess_split_extension(self) -> str:
+        suffix = Path(str(self.data_mod1_path or "")).suffix.lower()
+        if suffix == ".h5ad":
+            return ".h5ad"
+        return ".csv"
+
+    def set_step_output_paths(self, step: int) -> Dict[str, Any]:
+        step_dir = self.intermediate_output_dir
         Path(step_dir).mkdir(parents=True, exist_ok=True)
         prior_dir = os.path.join(step_dir, "prior")
         Path(prior_dir).mkdir(parents=True, exist_ok=True)
-        self.preprocess_metadata_path = f"{step_dir}/preprocess_metadata.json"
-        self.preprocess_train_out_path = f"{step_dir}/preprocess_train_mod1.csv"
-        self.preprocess_val_out_path = f"{step_dir}/preprocess_val_mod1.csv"
-        self.preprocess_test_out_path = f"{step_dir}/preprocess_test_mod1.csv"
+        artifact_layout = self.load_artifact_layout()
+
+        runtime_inputs = artifact_layout.get("runtime_inputs", {})
+        generated_outputs = artifact_layout.get("generated_outputs", {})
+        if not isinstance(runtime_inputs, dict) or not isinstance(generated_outputs, dict):
+            raise ValueError("artifact_layout.json must contain object keys runtime_inputs and generated_outputs")
+
+        resolved_inputs: Dict[str, str] = {}
+        if self.data_mod1_path:
+            resolved_inputs["mod1"] = os.path.abspath(self.data_mod1_path)
         if self.data_mod2_path:
-            self.preprocess_train_out_path_mod2 = f"{step_dir}/preprocess_train_mod2.csv"
-            self.preprocess_val_out_path_mod2 = f"{step_dir}/preprocess_val_mod2.csv"
-            self.preprocess_test_out_path_mod2 = f"{step_dir}/preprocess_test_mod2.csv"
-        else:
-            self.preprocess_train_out_path_mod2 = None
-            self.preprocess_val_out_path_mod2 = None
-            self.preprocess_test_out_path_mod2 = None
-        self.model_perf_path = f"{step_dir}/model_performance.json"
-        self.best_model_path = f"{step_dir}/best_model.pt"
-        self.embedding_path = f"{step_dir}/embedding.npy"
-        self.embedding_metadata_path = f"{step_dir}/embedding_metadata.csv"
-        self.cluster_assignments_path = f"{step_dir}/cluster_assignments.csv"
-        self.cluster_metrics_path = f"{step_dir}/cluster_metrics.json"
-        self.cluster_summary_path = f"{step_dir}/cluster_summary.json"
-        self.training_logs_path = f"{step_dir}/training_logs.json"
-        self.pipeline_summary_path = f"{step_dir}/pipeline_summary.json"
-        self.prior_output_dir = prior_dir
-        self.prior_manifest_path = f"{prior_dir}/prior_manifest.json"
+            resolved_inputs["mod2"] = os.path.abspath(self.data_mod2_path)
+        preprocess_ext = self._preprocess_split_extension()
+        output_names = deepcopy(generated_outputs)
+        for key in ["preprocess_train_mod1", "preprocess_val_mod1", "preprocess_test_mod1"]:
+            value = output_names.get(key)
+            if isinstance(value, str) and value:
+                stem, _ = os.path.splitext(value)
+                output_names[key] = stem + preprocess_ext
+        resolved_outputs = {
+            key: os.path.join(step_dir, value)
+            for key, value in output_names.items()
+            if isinstance(value, str) and value
+        }
+
+        for path in resolved_outputs.values():
+            parent = os.path.dirname(path)
+            if parent:
+                Path(parent).mkdir(parents=True, exist_ok=True)
+
+        resolved_layout = {
+            "step": step,
+            "run_dir": step_dir,
+            "prior_output_dir": prior_dir,
+            "runtime_inputs": resolved_inputs,
+            "generated_outputs": resolved_outputs,
+        }
+        self.current_step_layout = deepcopy(resolved_layout)
+        self.current_prior_dir_path = prior_dir
+        for key, path in resolved_inputs.items():
+            setattr(self, f"current_{key}_path", path)
+        setattr(self, "current_prior_dir_path", prior_dir)
+        for key, path in resolved_outputs.items():
+            setattr(self, f"current_{key}_path", path)
+        return resolved_layout
 
     def generate(self, prompt: str, sys_prompt: str) -> str:
         response = self.engine.generate(

@@ -1,74 +1,34 @@
 from __future__ import annotations
 
-import json
 import time
 from dataclasses import dataclass, field
-from pathlib import Path
 from typing import Any, Dict, List
 
-import textgrad as tg
 
+STAGE_FILES: List[Dict[str, str]] = [
+    {"filename": "data_prior.py", "tag": "DATA_PRIOR_CODE"},
+    {"filename": "model_training.py", "tag": "MODEL_TRAINING_CODE"},
+    {"filename": "downstream_analysis.py", "tag": "DOWNSTREAM_ANALYSIS_CODE"},
+]
 
-@dataclass
-class PipelineBundle:
-    pipeline_code: tg.Variable
-
-    def as_text_dict(self) -> Dict[str, str]:
-        return {"pipeline": self.pipeline_code.value}
+STAGE_FILENAMES: List[str] = [item["filename"] for item in STAGE_FILES]
+STAGE_TAG_BY_FILE: Dict[str, str] = {item["filename"]: item["tag"] for item in STAGE_FILES}
+STAGE_ORDER_INDEX: Dict[str, int] = {item["filename"]: idx for idx, item in enumerate(STAGE_FILES)}
 
 
 @dataclass
 class ValidationFailure:
-    stage: str
+    target: str
     error_type: str
     message: str
     details: Dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> Dict[str, Any]:
         return {
-            "stage": self.stage,
+            "target": self.target,
             "error_type": self.error_type,
             "message": self.message,
             "details": self.details,
-        }
-
-
-@dataclass
-class StepRunContract:
-    step: int
-    run_dir: str
-    contract_path: str
-    artifact_paths: Dict[str, str]
-    required_script: str
-    required_functions: List[str]
-    section_order: List[str]
-    section_output_contracts: Dict[str, List[str]]
-    component_contract_path: str = ""
-
-    def to_dict(self) -> Dict[str, Any]:
-        return {
-            "step": self.step,
-            "run_dir": self.run_dir,
-            "contract_path": self.contract_path,
-            "component_contract_path": self.component_contract_path,
-            "artifact_paths": self.artifact_paths,
-            "required_script": self.required_script,
-            "required_functions": self.required_functions,
-            "section_order": self.section_order,
-            "section_output_contracts": self.section_output_contracts,
-        }
-
-    def write(self) -> None:
-        Path(self.run_dir).mkdir(parents=True, exist_ok=True)
-        with open(self.contract_path, "w", encoding="utf-8") as f:
-            json.dump(self.to_dict(), f, indent=2, ensure_ascii=False)
-
-    def build_env(self) -> Dict[str, str]:
-        contract_env_path = self.component_contract_path or self.contract_path
-        return {
-            "SCANPY_AGENT_RUN_DIR": self.run_dir,
-            "SCANPY_AGENT_CONTRACT_PATH": contract_env_path,
-            "SCANPY_AGENT_STEP": str(self.step),
         }
 
 
@@ -79,7 +39,6 @@ class HistoryNoteRecord:
     context_mode: str
     attempts_used: int
     run_success: bool
-    failed_stage: str | None
     architecture_fingerprint: str
     design_summary: str
     decision_rationale: str
@@ -110,7 +69,6 @@ class HistoryNoteRecord:
             "context_mode": self.context_mode,
             "attempts_used": self.attempts_used,
             "run_success": self.run_success,
-            "failed_stage": self.failed_stage,
             "architecture_fingerprint": self.architecture_fingerprint,
             "design_summary": self.design_summary,
             "decision_rationale": self.decision_rationale,
@@ -147,7 +105,6 @@ class DecisionLedgerRecord:
     metric_gain: float | None
     result: str
     action: str
-    failed_stage: str | None
     failure_fingerprint: str | None
     do_not_repeat: bool = False
     do_not_repeat_reason: str = ""
@@ -169,7 +126,6 @@ class DecisionLedgerRecord:
             "metric_gain": self.metric_gain,
             "result": self.result,
             "action": self.action,
-            "failed_stage": self.failed_stage,
             "failure_fingerprint": self.failure_fingerprint,
             "exploit_applied": self.exploit_applied,
             "optimized_scripts": self.optimized_scripts,
@@ -188,7 +144,7 @@ class ConsultantPlanRecord:
     source: str
     task_description: str
     suggestion: str
-    prior_plan_json: Dict[str, Any]
+    prior_schema_json: Dict[str, Any]
     raw_output: str
     plan_fingerprint: str
     created_at: float = field(default_factory=time.time)
@@ -199,7 +155,7 @@ class ConsultantPlanRecord:
             "source": self.source,
             "task_description": self.task_description,
             "suggestion": self.suggestion,
-            "prior_plan_json": self.prior_plan_json,
+            "prior_schema_json": self.prior_schema_json,
             "raw_output": self.raw_output,
             "plan_fingerprint": self.plan_fingerprint,
             "created_at": self.created_at,

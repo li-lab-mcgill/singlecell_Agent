@@ -1,0 +1,104 @@
+{
+  "required_script": "pipeline.py",
+  "required_functions": [
+    "main"
+  ],
+  "json_schemas": {
+    "preprocess_metadata": {
+      "required_keys": [
+        "n_obs",
+        "n_vars",
+        "input_adata_path"
+      ],
+      "optional_keys": [
+        "n_hvg",
+        "split_counts",
+        "seed",
+        "qc_filters",
+        "modality_1"
+      ]
+    },
+    "prior_manifest": {
+      "required_keys": [
+        "required_files"
+      ],
+      "required_file_fields": [
+        "file_name",
+        "path"
+      ],
+      "fixed_output_subdir": "prior"
+    },
+    "model_performance": {
+      "required_keys": [
+        "train_performance",
+        "val_performance",
+        "test_performance",
+        "training_history",
+        "best_model",
+        "model_coef",
+        "embedding_dim",
+        "model_architecture"
+      ]
+    },
+    "training_logs": {
+      "required_keys": [
+        "epochs_completed",
+        "best_epoch",
+        "early_stopped",
+        "history"
+      ]
+    },
+    "pipeline_summary": {
+      "required_keys": [
+        "artifacts",
+        "runtime_seconds",
+        "model_summary",
+        "prior_summary",
+        "clustering_summary"
+      ]
+    },
+    "cluster_metrics": {
+      "required_keys": [
+        "ari",
+        "n_clusters"
+      ],
+      "optional_keys": [
+        "silhouette",
+        "nmi",
+        "resolution",
+        "method"
+      ]
+    },
+    "cluster_summary": {
+      "top_level": [
+        "n_clusters",
+        "method",
+        "resolution",
+        "embedding_source",
+        "clusters"
+      ],
+      "per_cluster": [
+        "cluster_id",
+        "size",
+        "fraction_of_cells",
+        "top_degs",
+        "marker_overlap",
+        "matched_markers",
+        "candidate_cell_types",
+        "notes"
+      ]
+    }
+  },
+  "csv_schemas": {
+    "embedding_metadata": {
+      "required_columns": [
+        "cell_id",
+        "split",
+        "row_index",
+        "cell_type",
+        "batch"
+      ],
+      "must_be_non_empty": true
+    }
+  }
+}

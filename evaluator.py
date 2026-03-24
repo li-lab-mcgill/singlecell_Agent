@@ -7,8 +7,10 @@ from dotenv import load_dotenv
 from consultant import _short
 from config import Config
 from evaluator_prompts import JOINT_EVALUATOR_SYSTEM_PROMPT, JOINT_FORMAT_STRING
+from multieval_types import STAGE_FILENAMES
 
 load_dotenv()
+
 
 def _validate_feedback_payload(feedback: Dict[str, Any]) -> None:
     required_feedback_keys = [
@@ -27,55 +29,55 @@ def _validate_feedback_payload(feedback: Dict[str, Any]) -> None:
     missing_feedback = [key for key in required_feedback_keys if key not in feedback]
     if missing_feedback:
         raise ValueError(f"Evaluator feedback missing required keys: {missing_feedback}")
-    if not isinstance(feedback.get("failed_architectures"), list):
-        raise ValueError("Evaluator feedback failed_architectures must be a list")
-    if not isinstance(feedback.get("evidence_for_consultant"), list):
-        raise ValueError("Evaluator feedback evidence_for_consultant must be a list")
-    for key in ["focus_areas", "keep_fixed", "change_next"]:
-        value = feedback.get(key)
-        if not isinstance(value, list):
-            raise ValueError(f"Evaluator feedback {key} must be a list")
-        if not all(isinstance(item, str) and item.strip() for item in value):
-            raise ValueError(f"Evaluator feedback {key} must contain non-empty strings")
-    bottleneck_reason = feedback.get("bottleneck_reason")
-    if not isinstance(bottleneck_reason, str) or not bottleneck_reason.strip():
-        raise ValueError("Evaluator feedback bottleneck_reason must be a non-empty string")
-    stop_exploit_if = feedback.get("stop_exploit_if")
-    if not isinstance(stop_exploit_if, str) or not stop_exploit_if.strip():
-        raise ValueError("Evaluator feedback stop_exploit_if must be a non-empty string")
 
 
-def parse_eval_action(text: str) -> tuple[str, dict, dict]:
+def _validate_scoped_instruction_list(name: str, items: Any) -> None:
+    if not isinstance(items, list):
+        raise ValueError(f"Evaluator feedback {name} must be a list")
+    for item in items:
+        text = str(item or "").strip()
+        if not text:
+            continue
+        if not any(text.startswith(f"{filename}:") for filename in STAGE_FILENAMES):
+            raise ValueError(
+                f"Evaluator feedback {name} entries must be file-scoped like '<filename>.py: ...'; got: {text}"
+            )
+
+
+def parse_eval_action(text: str) -> tuple[dict, dict]:
     stripped = (text or "").strip()
     if not stripped.startswith("{") or not stripped.endswith("}"):
         raise ValueError("Evaluator output must be a single JSON object with no wrapper tags or extra text")
-    try:
-        payload = json.loads(stripped)
-    except json.JSONDecodeError as exc:
-        raise ValueError(f"Evaluator output is invalid JSON: {exc}") from exc
-    if not isinstance(payload, dict):
-        raise ValueError("Evaluator output must decode to a JSON object")
+    payload = json.loads(stripped)
     required_keys = [
         "step",
-        "action",
         "primary_reason",
         "performance",
         "training_health",
         "biological_assessment",
         "architecture",
+        "optimize_targets",
         "feedback",
     ]
     missing = [key for key in required_keys if key not in payload]
     if missing:
         raise ValueError(f"Evaluator payload missing required keys: {missing}")
-    action = str(payload.get("action", "exploit")).strip().lower()
-    if action not in {"exploit", "reconsult"}:
-        raise ValueError(f"Unsupported evaluator action: {action}")
+    targets = []
+    for item in payload.get("optimize_targets", []):
+        target = str(item).strip()
+        if not target:
+            continue
+        if target not in STAGE_FILENAMES:
+            raise ValueError(f"Unsupported optimize target: {target}")
+        targets.append(target)
+    payload["optimize_targets"] = targets
     feedback = payload.get("feedback", {})
     if not isinstance(feedback, dict):
         raise ValueError("Evaluator feedback must be a JSON object")
     _validate_feedback_payload(feedback)
-    return action, payload, feedback
+    _validate_scoped_instruction_list("keep_fixed", feedback.get("keep_fixed", []))
+    _validate_scoped_instruction_list("change_next", feedback.get("change_next", []))
+    return payload, feedback
 
 
 def exploit_plan_from_feedback(feedback: Dict[str, Any]) -> Dict[str, Any]:
@@ -95,9 +97,7 @@ def exploit_plan_from_feedback(feedback: Dict[str, Any]) -> Dict[str, Any]:
 
 def to_float(x: Any) -> float | None:
     try:
-        if x is None:
-            return None
-        return float(x)
+        return float(x) if x is not None else None
     except Exception:
         return None
 
@@ -105,21 +105,11 @@ def to_float(x: Any) -> float | None:
 def build_open_issues(*, run_result: Dict[str, Any], primary_state: Dict[str, Any], payload: Dict[str, Any], feedback: Dict[str, Any]) -> List[str]:
     issues: List[str] = []
     if not run_result.get("success", False):
-        issues.append(f"run_failed:{run_result.get('failed_stage') or 'unknown'}")
+        target = str(run_result.get("failed_script") or STAGE_FILENAMES[0])
+        issues.append(f"run_failed:{target}")
     gain = to_float(primary_state.get("primary_metric_gain"))
     if gain is None or gain <= 0:
         issues.append("no_meaningful_primary_gain")
-    training_health = payload.get("training_health", {}) if isinstance(payload, dict) else {}
-    detected = training_health.get("issues_detected", []) if isinstance(training_health, dict) else []
-    if isinstance(detected, list):
-        for item in detected:
-            if str(item).lower() != "none":
-                issues.append(f"training:{item}")
-    bio = payload.get("biological_assessment", {}) if isinstance(payload, dict) else {}
-    if isinstance(bio, dict):
-        bad_clusters = bio.get("clusters_without_identity")
-        if isinstance(bad_clusters, int) and bad_clusters > 0:
-            issues.append(f"clusters_without_identity:{bad_clusters}")
     diagnosis = (feedback.get("diagnosis") if isinstance(feedback, dict) else "") or ""
     if diagnosis.strip():
         issues.append(f"diagnosis:{_short(diagnosis, 180)}")
@@ -139,84 +129,52 @@ def build_instruction_text(feedback: Dict[str, Any]) -> str:
     change_next = feedback.get("change_next", []) if isinstance(feedback, dict) else []
     stop_exploit_if = str(feedback.get("stop_exploit_if", "")).strip() if isinstance(feedback, dict) else ""
     lines = ["[Focus Areas]"]
-    if focus_areas:
-        lines.extend(f"- {item}" for item in focus_areas)
-    else:
-        lines.append("- <none>")
+    lines.extend(f"- {item}" for item in focus_areas or ["<none>"])
     if bottleneck_reason:
         lines.append("")
         lines.append(f"[Bottleneck Reason]\n- {bottleneck_reason}")
     lines.append("")
     lines.append("[Keep Fixed]")
-    if keep_fixed:
-        lines.extend(f"- {item}" for item in keep_fixed)
-    else:
-        lines.append("- <none>")
+    lines.extend(f"- {item}" for item in keep_fixed or ["<none>"])
     lines.append("")
     lines.append("[Change Next]")
-    if change_next:
-        lines.extend(f"- {item}" for item in change_next)
-    else:
-        lines.append("- <none>")
+    lines.extend(f"- {item}" for item in change_next or ["<none>"])
     if stop_exploit_if:
         lines.append("")
         lines.append(f"[Stop Exploit If]\n- {stop_exploit_if}")
     return "\n".join(lines)
 
 
-def update_primary_metric_state(
-    cluster_metrics: Dict[str, Any],
-    best_ari: float | None,
-    best_sil: float | None,
-    delta_min: float,
-    stagnation_steps: int,
-) -> Tuple[float | None, float | None, int, Dict[str, Any]]:
-    cur_ari = None
-    if isinstance(cluster_metrics, dict):
-        cur_ari = to_float(cluster_metrics.get("ari"))
-        if cur_ari is None:
-            cur_ari = to_float(cluster_metrics.get("ARI"))
+def update_primary_metric_state(cluster_metrics: Dict[str, Any], best_ari: float | None, best_sil: float | None, delta_min: float, stagnation_steps: int) -> Tuple[float | None, float | None, int, Dict[str, Any]]:
+    cur_ari = to_float(cluster_metrics.get("ari") if isinstance(cluster_metrics, dict) else None)
     cur_sil = to_float(cluster_metrics.get("silhouette") if isinstance(cluster_metrics, dict) else None)
     cur_nmi = to_float(cluster_metrics.get("nmi") if isinstance(cluster_metrics, dict) else None)
-
-    primary_name = "ari"
-    prev_best = best_ari
-    current_primary = cur_ari
-    gain = None
-    if current_primary is not None and prev_best is not None:
-        gain = current_primary - prev_best
-
-    if current_primary is None:
+    gain = None if cur_ari is None or best_ari is None else cur_ari - best_ari
+    if cur_ari is None:
         stagnation_steps += 1
+    elif best_ari is None or gain is None or gain > delta_min:
+        stagnation_steps = 0
     else:
-        if prev_best is None or gain is None or gain > delta_min:
-            stagnation_steps = 0
-        else:
-            stagnation_steps += 1
-
+        stagnation_steps += 1
     if cur_ari is not None:
         best_ari = cur_ari if best_ari is None else max(best_ari, cur_ari)
     if cur_sil is not None:
         best_sil = cur_sil if best_sil is None else max(best_sil, cur_sil)
-
-    state = {
-        "primary_metric": primary_name,
-        "fallback_to_silhouette": False,
+    return best_ari, best_sil, stagnation_steps, {
         "current_ari": cur_ari,
         "current_silhouette": cur_sil,
         "current_nmi": cur_nmi,
-        "previous_best_ari": prev_best,
+        "previous_best_ari": best_ari,
         "previous_best_silhouette": best_sil,
+        "previous_best_nmi": None,
         "primary_metric_gain": gain,
-        "stagnation_steps": stagnation_steps,
     }
-    return best_ari, best_sil, stagnation_steps, state
 
 
 class TextGradEvaluator:
     def __init__(self, config: Config, engine_name: str, task_decrp: str, background: str = "Not available", eval_type: str = "joint"):
         if eval_type != "joint":
-            raise ValueError("scAgentSingleEval only supports the joint evaluator")
+            raise ValueError("Only the joint evaluator is supported")
         self.config = config
         self.engine_name = engine_name
         self.engine = tg.get_engine(engine_name, max_tokens=7000)
@@ -231,9 +189,14 @@ class TextGradEvaluator:
             stagnation_steps="{stagnation_steps}",
             delta_min="{delta_min}",
             current_performance="{current_performance}",
-            pipeline_code="{pipeline_code}",
-            interface_contract="{interface_contract}",
-            context_mode="{context_mode}",
+            data_prior_code="{data_prior_code}",
+            model_training_code="{model_training_code}",
+            downstream_analysis_code="{downstream_analysis_code}",
+            paths="{paths}",
+            data_schema="{data_schema}",
+            prior_schema="{prior_schema}",
+            model_schema="{model_schema}",
+            downstream_schema="{downstream_schema}",
             cluster_metrics="{cluster_metrics}",
             cluster_summary="{cluster_summary}",
             training_logs="{training_logs}",
@@ -247,67 +210,24 @@ class TextGradEvaluator:
             "stagnation_steps": None,
             "delta_min": None,
             "current_performance": None,
-            "pipeline_code": None,
-            "interface_contract": None,
-            "context_mode": None,
+            "data_prior_code": None,
+            "model_training_code": None,
+            "downstream_analysis_code": None,
+            "paths": None,
+            "data_schema": None,
+            "prior_schema": None,
+            "model_schema": None,
+            "downstream_schema": None,
             "cluster_metrics": None,
             "cluster_summary": None,
             "training_logs": None,
             "pipeline_summary": None,
         }
-        self.system_prompt = tg.Variable(
-            JOINT_EVALUATOR_SYSTEM_PROMPT,
-            requires_grad=False,
-            role_description="system prompt to evaluate the single pipeline script",
-        )
-        self.formatted_llm_call = tg.autograd.FormattedLLMCall(
-            engine=self.engine,
-            format_string=format_string,
-            fields=fields,
-            system_prompt=self.system_prompt,
-        )
+        self.system_prompt = tg.Variable(JOINT_EVALUATOR_SYSTEM_PROMPT, requires_grad=False, role_description="system prompt to evaluate the three-stage pipeline")
+        self.formatted_llm_call = tg.autograd.FormattedLLMCall(engine=self.engine, format_string=format_string, fields=fields, system_prompt=self.system_prompt)
 
-    def loss_fn(
-        self,
-        notes: tg.Variable,
-        step,
-        pipeline_code: tg.Variable,
-        suggestion=None,
-        training_history=None,
-        stagnation_steps=None,
-        delta_min=None,
-        current_performance=None,
-        interface_contract: tg.Variable | None = None,
-        context_mode: tg.Variable | None = None,
-        cluster_metrics: tg.Variable | None = None,
-        cluster_summary: tg.Variable | None = None,
-        training_logs: tg.Variable | None = None,
-        pipeline_summary: tg.Variable | None = None,
-    ):
+    def loss_fn(self, *, notes: tg.Variable, step, data_prior_code: tg.Variable, model_training_code: tg.Variable, downstream_analysis_code: tg.Variable, suggestion: tg.Variable, training_history: tg.Variable, stagnation_steps: tg.Variable, delta_min: tg.Variable, current_performance: tg.Variable, paths: tg.Variable, data_schema: tg.Variable, prior_schema: tg.Variable, model_schema: tg.Variable, downstream_schema: tg.Variable, cluster_metrics: tg.Variable, cluster_summary: tg.Variable, training_logs: tg.Variable, pipeline_summary: tg.Variable):
         step_var = tg.Variable(step, requires_grad=False, role_description="step counter")
-        if suggestion is None:
-            suggestion = tg.Variable("<omitted>", requires_grad=False, role_description="consultant suggestion")
-        if training_history is None:
-            training_history = tg.Variable("[]", requires_grad=False, role_description="training history")
-        if stagnation_steps is None:
-            stagnation_steps = tg.Variable(3, requires_grad=False, role_description="stagnation steps")
-        if delta_min is None:
-            delta_min = tg.Variable("0.005", requires_grad=False, role_description="delta min")
-        if current_performance is None:
-            current_performance = tg.Variable("<omitted>", requires_grad=False, role_description="current performance")
-        if interface_contract is None:
-            interface_contract = tg.Variable("{}", requires_grad=False, role_description="interface contract")
-        if context_mode is None:
-            context_mode = tg.Variable("full", requires_grad=False, role_description="context mode")
-        if cluster_metrics is None:
-            cluster_metrics = tg.Variable("<omitted>", requires_grad=False, role_description="cluster metrics")
-        if cluster_summary is None:
-            cluster_summary = tg.Variable("<omitted>", requires_grad=False, role_description="cluster summary")
-        if training_logs is None:
-            training_logs = tg.Variable("<omitted>", requires_grad=False, role_description="training logs")
-        if pipeline_summary is None:
-            pipeline_summary = tg.Variable("<omitted>", requires_grad=False, role_description="pipeline summary")
-
         return self.formatted_llm_call(
             inputs={
                 "step": step_var,
@@ -317,13 +237,18 @@ class TextGradEvaluator:
                 "stagnation_steps": stagnation_steps,
                 "delta_min": delta_min,
                 "current_performance": current_performance,
-                "pipeline_code": pipeline_code,
-                "interface_contract": interface_contract,
-                "context_mode": context_mode,
+                "data_prior_code": data_prior_code,
+                "model_training_code": model_training_code,
+                "downstream_analysis_code": downstream_analysis_code,
+                "paths": paths,
+                "data_schema": data_schema,
+                "prior_schema": prior_schema,
+                "model_schema": model_schema,
+                "downstream_schema": downstream_schema,
                 "cluster_metrics": cluster_metrics,
                 "cluster_summary": cluster_summary,
                 "training_logs": training_logs,
                 "pipeline_summary": pipeline_summary,
             },
-            response_role_description="evaluation of the single pipeline script",
+            response_role_description="evaluation of the three-stage pipeline",
         )

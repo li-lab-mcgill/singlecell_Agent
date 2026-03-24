@@ -40,12 +40,12 @@ def _extract_exact_tag_payloads(text: str, tags: List[str]) -> Dict[str, str]:
     return payloads
 
 
-def plan_fingerprint(task_description: str, suggestion: str, prior_plan: Dict[str, Any]) -> str:
+def plan_fingerprint(task_description: str, suggestion: str, prior_schema: Dict[str, Any]) -> str:
     payload = json.dumps(
         {
             "task_description": task_description or "",
             "suggestion": suggestion or "",
-            "prior_plan": prior_plan if isinstance(prior_plan, dict) else {},
+            "prior_schema": prior_schema if isinstance(prior_schema, dict) else {},
         },
         sort_keys=True,
         ensure_ascii=False,
@@ -88,7 +88,7 @@ def build_consultant_history_context(
                 f"step={rec.step} source={rec.source} fingerprint={rec.plan_fingerprint}",
                 f"task={_short(rec.task_description, 300)}",
                 f"suggestion={_short(rec.suggestion, 1200)}",
-                f"prior_plan={json.dumps(rec.prior_plan_json, ensure_ascii=False)[:1200]}",
+                f"prior_schema={json.dumps(rec.prior_schema_json, ensure_ascii=False)[:1200]}",
             ]
         )
     return "\n".join(lines)
@@ -99,7 +99,7 @@ def build_reconsult_query(
     task_description: str,
     background: str,
     current_suggestion: str,
-    current_prior_plan: Dict[str, Any],
+    current_prior_schema: Dict[str, Any],
     current_attempt: Dict[str, Any],
     why_current_fails: Dict[str, Any],
     historical_failures: str,
@@ -115,7 +115,7 @@ def build_reconsult_query(
         "[/TASK_BLOCK]\n\n"
         "[CURRENT_PLAN_BLOCK]\n"
         f"SUGGESTION={current_suggestion}\n"
-        f"PRIOR_PLAN_JSON={json.dumps(current_prior_plan, ensure_ascii=False)}\n"
+        f"PRIOR_SCHEMA_JSON={json.dumps(current_prior_schema, ensure_ascii=False)}\n"
         "[/CURRENT_PLAN_BLOCK]\n\n"
         "[CURRENT_ATTEMPT_BLOCK]\n"
         f"{json.dumps(current_attempt, ensure_ascii=False, indent=2)}\n"
@@ -134,81 +134,48 @@ def build_reconsult_query(
         "Instructions:\n"
         "1) Propose ONE concrete new plan that addresses why the current attempt fails.\n"
         "2) Do not repeat historically failed strategies unless you explicitly state what changed and why it should work now.\n"
-        "3) Keep the plan implementation-ready for one script named pipeline.py with main() as the executable entry point.\n\n"
+        "3) Keep the plan implementation-ready for three executable stage scripts named data_prior.py, model_training.py, and downstream_analysis.py.\n\n"
         "Return ONLY:\n"
         "<TASK_DESCRIPTION>...</TASK_DESCRIPTION>\n"
         "<SUGGESTION>...</SUGGESTION>\n"
-        "<PRIOR_PLAN_JSON>{...}</PRIOR_PLAN_JSON>\n"
+        "<PRIOR_SCHEMA_JSON>{...}</PRIOR_SCHEMA_JSON>\n"
     )
 
 
-def _validate_prior_plan(prior_plan: Dict[str, Any]) -> None:
-    if not isinstance(prior_plan, dict):
-        raise ValueError("Consultant PRIOR_PLAN_JSON must decode to a JSON object")
-    prior_data_needed = prior_plan.get("prior_data_needed")
-    if not isinstance(prior_data_needed, list) or not prior_data_needed:
-        raise ValueError("Consultant PRIOR_PLAN_JSON must include a non-empty prior_data_needed list")
-    for index, component in enumerate(prior_data_needed):
-        if not isinstance(component, dict):
-            raise ValueError(f"prior_data_needed[{index}] must be an object")
-        for key in ["name", "purpose", "input_files", "processing_steps", "output_files"]:
-            if key not in component:
-                raise ValueError(f"prior_data_needed[{index}] missing required key: {key}")
-        if not isinstance(component["name"], str) or not component["name"].strip():
-            raise ValueError(f"prior_data_needed[{index}].name must be a non-empty string")
-        if not isinstance(component["purpose"], str) or not component["purpose"].strip():
-            raise ValueError(f"prior_data_needed[{index}].purpose must be a non-empty string")
-        input_files = component["input_files"]
-        if not isinstance(input_files, list) or not input_files:
-            raise ValueError(f"prior_data_needed[{index}].input_files must be a non-empty list")
-        for file_index, input_file in enumerate(input_files):
-            if not isinstance(input_file, dict):
-                raise ValueError(f"prior_data_needed[{index}].input_files[{file_index}] must be an object")
-            for key in ["file_name", "role", "required", "columns_used"]:
-                if key not in input_file:
-                    raise ValueError(f"prior_data_needed[{index}].input_files[{file_index}] missing required key: {key}")
-            if not isinstance(input_file["columns_used"], list) or not input_file["columns_used"]:
-                raise ValueError(f"prior_data_needed[{index}].input_files[{file_index}].columns_used must be a non-empty list")
-        processing_steps = component["processing_steps"]
-        if not isinstance(processing_steps, list) or not processing_steps or not all(isinstance(item, str) and item.strip() for item in processing_steps):
-            raise ValueError(f"prior_data_needed[{index}].processing_steps must be a non-empty list of strings")
-        output_files = component["output_files"]
-        if not isinstance(output_files, list) or not output_files:
-            raise ValueError(f"prior_data_needed[{index}].output_files must be a non-empty list")
-        for file_index, output_file in enumerate(output_files):
-            if not isinstance(output_file, dict):
-                raise ValueError(f"prior_data_needed[{index}].output_files[{file_index}] must be an object")
-            for key in ["file_name", "role", "columns", "dtypes"]:
-                if key not in output_file:
-                    raise ValueError(f"prior_data_needed[{index}].output_files[{file_index}] missing required key: {key}")
-            if not isinstance(output_file["columns"], list) or not output_file["columns"]:
-                raise ValueError(f"prior_data_needed[{index}].output_files[{file_index}].columns must be a non-empty list")
-            if not isinstance(output_file["dtypes"], dict) or not output_file["dtypes"]:
-                raise ValueError(f"prior_data_needed[{index}].output_files[{file_index}].dtypes must be a non-empty object")
-
-    integration = prior_plan.get("model_integration_requirements")
-    if not isinstance(integration, dict):
-        raise ValueError("Consultant PRIOR_PLAN_JSON must include model_integration_requirements")
-    for key in ["feature_space_alignment", "join_keys", "required_for_training", "fail_if_missing"]:
-        if key not in integration:
-            raise ValueError(f"model_integration_requirements missing required key: {key}")
-    if not isinstance(integration["join_keys"], list):
-        raise ValueError("model_integration_requirements.join_keys must be a list")
-    if not isinstance(integration["required_for_training"], list) or not integration["required_for_training"]:
-        raise ValueError("model_integration_requirements.required_for_training must be a non-empty list")
-    if not isinstance(integration["fail_if_missing"], bool):
-        raise ValueError("model_integration_requirements.fail_if_missing must be a boolean")
-    output_names = {
-        str(output_file["file_name"]).strip()
-        for component in prior_data_needed
-        for output_file in component.get("output_files", [])
-        if isinstance(output_file, dict) and str(output_file.get("file_name", "")).strip()
-    }
-    unknown_required = [name for name in integration["required_for_training"] if name not in output_names]
-    if unknown_required:
-        raise ValueError(
-            f"model_integration_requirements.required_for_training references unknown output files: {unknown_required}"
-        )
+def _validate_prior_schema(prior_schema: Dict[str, Any]) -> None:
+    if not isinstance(prior_schema, dict):
+        raise ValueError("Consultant PRIOR_SCHEMA_JSON must decode to a JSON object")
+    required_files = prior_schema.get("required_files")
+    if not isinstance(required_files, list) or not required_files:
+        raise ValueError("Consultant PRIOR_SCHEMA_JSON required_files must be a non-empty list")
+    placeholder_pattern = re.compile(r"^(column_[a-z0-9]+|col\d+|field[_-]?\d+|artifact[_-]?\d+|file\d+\.[a-z0-9]+)$", re.IGNORECASE)
+    for item in required_files:
+        if not isinstance(item, dict):
+            raise ValueError("Each PRIOR_SCHEMA_JSON required_files entry must be an object")
+        artifact_key = str(item.get("artifact_key") or "").strip()
+        file_name = str(item.get("file_name") or "").strip()
+        fmt = str(item.get("format") or "").strip().lower()
+        if not artifact_key or not file_name or not fmt:
+            raise ValueError("Each PRIOR_SCHEMA_JSON file must include artifact_key, file_name, and format")
+        if placeholder_pattern.match(artifact_key) or placeholder_pattern.match(file_name):
+            raise ValueError(f"Consultant PRIOR_SCHEMA_JSON uses placeholder artifact names: {artifact_key}, {file_name}")
+        if fmt == "csv":
+            required_columns = item.get("required_columns")
+            if not isinstance(required_columns, list) or not required_columns or not all(isinstance(col, str) and col.strip() for col in required_columns):
+                raise ValueError(f"CSV prior artifact {artifact_key} must declare non-empty required_columns")
+            placeholders = [col for col in required_columns if placeholder_pattern.match(col.strip())]
+            if placeholders:
+                raise ValueError(f"Consultant PRIOR_SCHEMA_JSON uses placeholder column names: {placeholders}")
+            column_descriptions = item.get("column_descriptions")
+            if not isinstance(column_descriptions, dict):
+                raise ValueError(f"CSV prior artifact {artifact_key} must define column_descriptions")
+            missing = [col for col in required_columns if not str(column_descriptions.get(col, "")).strip()]
+            if missing:
+                raise ValueError(f"Consultant PRIOR_SCHEMA_JSON missing descriptions for columns: {missing}")
+        if fmt == "json":
+            required_keys = item.get("required_keys", [])
+            if required_keys and (not isinstance(required_keys, list) or not all(isinstance(key, str) and key.strip() for key in required_keys)):
+                raise ValueError(f"JSON prior artifact {artifact_key} required_keys must be a list of non-empty strings")
 
 class TextGradConsultant:
     def __init__(self, config: Config, engine_name: str):
@@ -305,17 +272,17 @@ class TextGradConsultant:
 
     @staticmethod
     def parse_summary_tags(text: str) -> dict:
-        payloads = _extract_exact_tag_payloads(text, ["TASK_DESCRIPTION", "SUGGESTION", "PRIOR_PLAN_JSON"])
-        prior_raw = payloads["PRIOR_PLAN_JSON"]
+        payloads = _extract_exact_tag_payloads(text, ["TASK_DESCRIPTION", "SUGGESTION", "PRIOR_SCHEMA_JSON"])
+        prior_schema_raw = payloads["PRIOR_SCHEMA_JSON"]
         try:
-            prior_plan = json.loads(prior_raw)
+            prior_schema = json.loads(prior_schema_raw)
         except json.JSONDecodeError as exc:
-            raise ValueError(f"Consultant PRIOR_PLAN_JSON is invalid JSON: {exc}") from exc
-        _validate_prior_plan(prior_plan)
+            raise ValueError(f"Consultant PRIOR_SCHEMA_JSON is invalid JSON: {exc}") from exc
+        _validate_prior_schema(prior_schema)
         return {
             "task_description": payloads["TASK_DESCRIPTION"],
             "suggestion": payloads["SUGGESTION"],
-            "prior_plan": prior_plan,
+            "prior_schema": prior_schema,
         }
 
     @staticmethod

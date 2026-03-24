@@ -38,7 +38,7 @@ Identify the primary analysis objective from a single-cell perspective and summa
 </TASK_DESCRIPTION>
 
 <SUGGESTION>
-Provide a single, specific, end-to-end implementation plan for a prior-guided deep learning model across the following four parts. Do not propose alternatives, commit to one concrete strategy with clear justification.
+Provide a single, specific, end-to-end implementation plan for a prior-guided deep learning model across the following four parts to accomplish the TASK. Do not propose alternatives, commit to one concrete strategy with clear justification.
 
 Part 1 — Data Preprocessing: specify how to load and preprocess the raw data, including normalization, feature selection, filtering, and any transformations needed before modeling. Justify each decision based on dataset characteristics such as sparsity, modality, and batch structure. The plan must support a reproducible 70/15/15 train/validation/test split using random seed 42.
 
@@ -57,52 +57,34 @@ Part 3 — Prior-Guided Model Design and Representation Learning: specify the fo
 - Training pipeline: describe the full training loop design, including how train and validation loss are monitored across epochs and how the best model is selected.
 
 Part 4 — Evaluation: specify the evaluation metric(s), how best model selection should be performed across train/validation/test sets, the embedding dimensionality, and the architecture details to include in the final output JSON.
+
+The fixed downstream output requirements are provided in the prompt background. Your plan must support producing those required downstream outputs.
 </SUGGESTION>
 
-<PRIOR_PLAN_JSON>
+<PRIOR_SCHEMA_JSON>
 Return one valid JSON object only (no markdown) with this schema:
 {
-  "prior_data_needed": [
+  "required_files": [
     {
-      "name": "short identifier",
-      "purpose": "why this prior component is useful for the model",
-      "input_files": [
-        {
-          "file_name": "input file name",
-          "role": "why this file is used",
-          "required": true,
-          "columns_used": ["exact", "columns", "read"]
-        }
-      ],
-      "processing_steps": [
-        "ordered processing step",
-        "another required processing step"
-      ],
-      "output_files": [
-        {
-          "file_name": "output csv filename",
-          "role": "how the model uses this output",
-          "columns": ["required", "column", "order"],
-          "dtypes": {"column_name": "str|float|int|bool"}
-        }
-      ]
+      "artifact_key": "meaningful_artifact_key",
+      "file_name": "meaningful_file_name.ext",
+      "format": "csv",
+      "required_columns": [],
+      "column_descriptions": {},
+      "required_keys": []
     }
-  ],
-  "model_integration_requirements": {
-    "feature_space_alignment": "how outputs align to processed single-cell features",
-    "join_keys": ["keys used later by the model if needed"],
-    "required_for_training": ["output csv filename"],
-    "fail_if_missing": true
-  }
+  ]
 }
 Rules:
-- No optional files. Include only required inputs and outputs that are truly needed.
-- Every input file must specify columns_used.
-- Every output file must specify explicit column order and dtypes.
-- processing_steps must be implementation-ready and ordered.
-- required_for_training must reference output_files.file_name values.
-- Keep the plan concise and implementation-ready.
-</PRIOR_PLAN_JSON>
+- Describe the prior artifact bundle as one or more files that data_prior.py must write into the fixed prior output directory.
+- Do not include any file paths.
+- Every file must have a meaningful artifact_key and file_name.
+- Do not use placeholder names like column_a, col1, field_1, artifact_1, or file1.csv.
+- For csv files, fill required_columns with meaningful semantic column names and provide column_descriptions for each required column.
+- For json files, provide required_keys when specific keys are required.
+- For npz, pt, or other binary files, format alone is sufficient.
+- Keep the schema concise and implementation-ready.
+</PRIOR_SCHEMA_JSON>
 
 Do not include any text outside these tags.
 """

@@ -1,17 +1,27 @@
-"""Code generator for the single-script scanpy agent."""
+"""Code generator for the three-stage scanpy agent."""
 
 from __future__ import annotations
 
 import json
 import os
 import re
+from typing import Any, Dict, List
 
 import textgrad as tg
 from dotenv import load_dotenv
 
 from config import Config
-from generator_prompts import FIX_QUERY, FIX_SYSTEM_PROMPT, JOINT_INPUT_QUERY, JOINT_SYSTEM_PROMPT
-from multieval_types import PipelineBundle
+from generator_prompts import (
+    ANALYSIS_FIX_SYSTEM_PROMPT,
+    ANALYSIS_SYSTEM_PROMPT,
+    DATA_FIX_SYSTEM_PROMPT,
+    DATA_SYSTEM_PROMPT,
+    FIX_QUERY,
+    MODEL_FIX_SYSTEM_PROMPT,
+    MODEL_SYSTEM_PROMPT,
+    STAGE_QUERY,
+)
+from multieval_types import STAGE_FILES, STAGE_FILENAMES, STAGE_TAG_BY_FILE
 
 load_dotenv()
 
@@ -22,110 +32,11 @@ class BundleFormatError(ValueError):
         self.raw_response = raw_response
 
 
-class SingleScriptGenerator:
-    def __init__(self, config: Config, engine_name: str, results_path: str):
+class StageScriptGenerator:
+    def __init__(self, config: Config, engine_name: str):
         self.config = config
-        self.results_path = results_path
-        self.engine = tg.get_engine(engine_name, max_tokens=20000)
-
-        base_dir = os.path.dirname(os.path.abspath(__file__))
-        api_dir = getattr(config, "api_dir", f"{base_dir}/apis")
-        dataset_dir = getattr(config, "dataset_dir", f"{base_dir}/Datasets")
-        system_prompt_text = JOINT_SYSTEM_PROMPT.format(
-            raw_mod1_path=config.data_mod1_path,
-            raw_mod2_path=config.data_mod2_path,
-            prep_train_out_path=config.preprocess_train_out_path,
-            prep_val_out_path=config.preprocess_val_out_path,
-            prep_test_out_path=config.preprocess_test_out_path,
-            stats_json_path=config.preprocess_metadata_path,
-            training_stats_json_path=config.model_perf_path,
-            training_logs_path=config.training_logs_path,
-            pipeline_summary_path=config.pipeline_summary_path,
-            cluster_assignments_path=config.cluster_assignments_path,
-            cluster_metrics_path=config.cluster_metrics_path,
-            cluster_summary_path=config.cluster_summary_path,
-            prior_manifest_path=config.prior_manifest_path,
-            dataset_dir=dataset_dir,
-        )
-        self.system_prompt = tg.Variable(
-            system_prompt_text,
-            requires_grad=False,
-            role_description="system prompt for single-script pipeline generation",
-        )
-
-    def create_query(
-        self,
-        task_descrp: str,
-        data_summary: str,
-        suggestion: str,
-        interface_contract: str,
-        script_summaries: str,
-        background: str = "Not available",
-        metadata: str = "<omitted>",
-        preprocess_output_summary: str = "<omitted>",
-        cluster_metrics: str = "<omitted>",
-        cluster_summary: str = "<omitted>",
-        mcp_tools_text: str = "(unavailable)",
-        api_dir: str | None = None,
-        dataset_dir: str | None = None,
-    ) -> str:
-        api_dir_text = api_dir or "<not provided>"
-        dataset_dir_text = dataset_dir or "<not provided>"
-        metrics_str = ", ".join(self.config.metrics) if isinstance(self.config.metrics, list) else str(self.config.metrics)
-        primary_metric = metrics_str.split(",")[0].strip()
-        return JOINT_INPUT_QUERY.format(
-            task_descrp=task_descrp,
-            background=background,
-            api_dir=api_dir_text,
-            dataset_dir=dataset_dir_text,
-            mcp_tools=mcp_tools_text,
-            metrics=metrics_str,
-            primary_metric=primary_metric,
-            file_path=self.config.file_path,
-            data_summary=data_summary,
-            suggestion=suggestion,
-            time_budget=self.config.timeout,
-            metadata=metadata,
-            preprocess_output_summary=preprocess_output_summary,
-            results_path=self.results_path,
-            interface_contract=interface_contract,
-            script_summaries=script_summaries,
-            cluster_metrics=cluster_metrics,
-            cluster_summary=cluster_summary,
-        )
-
-    def _generate_response(self, prompt: str) -> str:
-        response = self.engine.generate(
-            content=prompt,
-            system_prompt=self.system_prompt.value,
-            temperature=0.2,
-        )
-        return str(response)
-
-    def generate_bundle(self, prompt: str) -> PipelineBundle:
-        response = self._generate_response(prompt)
-        return self._parse_bundle_response(response, prompt)
-
-    def regenerate_bundle(self, prompt: str, error: str) -> PipelineBundle:
-        retry_prompt = (
-            f"{prompt}\n\n"
-            "[PREVIOUS_GENERATION_ERROR]\n"
-            f"{error}\n"
-            "[/PREVIOUS_GENERATION_ERROR]\n"
-            "Regenerate the full single-script pipeline. Return only the exact PIPELINE_CODE tag."
-        )
-        response = self._generate_response(retry_prompt)
-        return self._parse_bundle_response(response, retry_prompt)
-
-    @staticmethod
-    def _extract_exact_bundle(response: str) -> str:
-        match = re.fullmatch(r"\s*<PIPELINE_CODE>(.*?)</PIPELINE_CODE>\s*", response or "", flags=re.DOTALL | re.IGNORECASE)
-        if not match:
-            raise BundleFormatError(
-                "Generator output must contain exactly one PIPELINE_CODE block and no extra text",
-                raw_response=response,
-            )
-        return match.group(1).strip()
+        self.engine = tg.get_engine(engine_name, max_tokens=12000)
+        self.path_prompt_fields = self._build_path_prompt_fields(config.current_step_layout)
 
     @staticmethod
     def _clean_code(raw_code: str) -> str:
@@ -134,43 +45,299 @@ class SingleScriptGenerator:
             return match.group(1).strip()
         return raw_code.strip()
 
-    def _parse_bundle_response(self, response: str, prompt: str) -> PipelineBundle:
-        code = self._clean_code(self._extract_exact_bundle(response))
-        query = tg.Variable(prompt, requires_grad=False, role_description="single pipeline input query")
-        return PipelineBundle(
-            pipeline_code=tg.Variable(
-                code,
-                requires_grad=True,
-                role_description="single pipeline script",
-                predecessors=[self.system_prompt, query],
-            )
-        )
-
-    def fix(self, code: tg.Variable, error: str) -> None:
-        fix_prompt = FIX_QUERY.format(code=code.value, error=error)
-        response = self.engine.generate(
-            content=fix_prompt,
-            system_prompt=FIX_SYSTEM_PROMPT,
-            temperature=0.2,
-        )
-        code.set_value(self._clean_code(str(response)))
-
-    def fix_stage(self, bundle: PipelineBundle, failed_stage: str, error: str, max_fix_step: int) -> bool:
-        scoped_error = f"Target section: {failed_stage}\n{error}"
-        for _ in range(max_fix_step):
-            self.fix(bundle.pipeline_code, scoped_error)
-        return True
-
-    def save_bundle(self, bundle: PipelineBundle, step_tag: str) -> str:
-        step_dir = os.path.join(self.config.code_dir, f"code_{step_tag}")
-        os.makedirs(step_dir, exist_ok=True)
-        path = os.path.join(step_dir, "pipeline.py")
-        with open(path, "w", encoding="utf-8") as f:
-            f.write(bundle.pipeline_code.value)
-        return path
+    def _build_path_prompt_fields(self, artifact_layout: Dict[str, Any]) -> Dict[str, str]:
+        runtime_inputs = artifact_layout.get("runtime_inputs", {}) if isinstance(artifact_layout, dict) else {}
+        generated_outputs = artifact_layout.get("generated_outputs", {}) if isinstance(artifact_layout, dict) else {}
+        return {
+            "input_mod1_path": str(runtime_inputs.get("mod1", "")),
+            "input_mod2_path": str(runtime_inputs.get("mod2", "")),
+            "preprocess_metadata_path": str(generated_outputs.get("preprocess_metadata", "")),
+            "preprocess_train_mod1_path": str(generated_outputs.get("preprocess_train_mod1", "")),
+            "preprocess_val_mod1_path": str(generated_outputs.get("preprocess_val_mod1", "")),
+            "preprocess_test_mod1_path": str(generated_outputs.get("preprocess_test_mod1", "")),
+            "prior_output_dir_path": str(artifact_layout.get("prior_output_dir", "")),
+            "model_performance_path": str(generated_outputs.get("model_performance", "")),
+            "best_model_path": str(generated_outputs.get("best_model", "")),
+            "embedding_path": str(generated_outputs.get("embedding", "")),
+            "embedding_metadata_path": str(generated_outputs.get("embedding_metadata", "")),
+            "training_logs_path": str(generated_outputs.get("training_logs", "")),
+            "pipeline_summary_path": str(generated_outputs.get("pipeline_summary", "")),
+            "cluster_assignments_path": str(generated_outputs.get("cluster_assignments", "")),
+            "cluster_metrics_path": str(generated_outputs.get("cluster_metrics", "")),
+            "cluster_summary_path": str(generated_outputs.get("cluster_summary", "")),
+        }
 
     @staticmethod
-    def summarize_bundle(bundle: PipelineBundle, max_chars: int = 2400) -> str:
-        text = bundle.pipeline_code.value
-        payload = {"lines": len(text.splitlines()), "head": text[:max_chars]}
+    def _path_label(key: str) -> str:
+        labels = {
+            "input_mod1_path": "Input modality 1 dataset file",
+            "input_mod2_path": "Input modality 2 dataset file",
+            "preprocess_metadata_path": "Preprocessing metadata JSON",
+            "preprocess_train_mod1_path": "Input training split h5ad",
+            "preprocess_val_mod1_path": "Input validation split h5ad",
+            "preprocess_test_mod1_path": "Input test split h5ad",
+            "prior_output_dir_path": "Prior artifact directory",
+            "model_performance_path": "Output model performance JSON",
+            "best_model_path": "Output best-model checkpoint file",
+            "embedding_path": "Output embedding NPY file",
+            "embedding_metadata_path": "Output embedding metadata CSV",
+            "training_logs_path": "Output training logs JSON",
+            "pipeline_summary_path": "Output pipeline summary JSON",
+            "cluster_assignments_path": "Output cluster assignments CSV",
+            "cluster_metrics_path": "Output cluster metrics JSON",
+            "cluster_summary_path": "Output cluster summary JSON",
+        }
+        return labels.get(key, key)
+
+    def _primary_metric(self) -> str:
+        metrics = self.config.metrics
+        if isinstance(metrics, list):
+            return str(metrics[0]).strip() if metrics else "ARI"
+        return str(metrics).split(",")[0].strip() if metrics is not None else "ARI"
+
+    def _stage_requirements_json(self, filename: str) -> str:
+        return json.dumps(self.config.stage_requirements(filename), ensure_ascii=False)
+
+    def _prior_schema_context(self, filename: str) -> str:
+        if filename not in {"data_prior.py", "model_training.py"}:
+            return "<none>"
+        return json.dumps(self.config.current_prior_schema, ensure_ascii=False)
+
+    def _prior_resource_lines(self) -> List[str]:
+        dataset_dir = getattr(self.config, "dataset_dir", "") or ""
+        if not dataset_dir:
+            return []
+        resources = [
+            "MsigDB.csv",
+            "NeST.tsv",
+            "GO_terms.csv",
+            "Cell_marker_Human.xlsx",
+            "meta_info.csv",
+        ]
+        return [f"{name}: {os.path.join(dataset_dir, name)}" for name in resources]
+
+    def _resolved_prior_files(self) -> List[Dict[str, Any]]:
+        return self.config.resolved_prior_files()
+
+    def _prior_file_lines(self) -> List[str]:
+        lines: List[str] = []
+        for item in self._resolved_prior_files():
+            artifact_key = str(item.get("artifact_key") or "").strip()
+            path = str(item.get("path") or "").strip()
+            fmt = str(item.get("format") or "").strip()
+            role = str(item.get("description") or item.get("role") or "").strip()
+            if not role and fmt == "csv":
+                cols = item.get("required_columns", [])
+                if isinstance(cols, list) and cols:
+                    role = f"CSV with required columns: {', '.join(str(col) for col in cols)}"
+            if not role and fmt == "json":
+                keys = item.get("required_keys", [])
+                if isinstance(keys, list) and keys:
+                    role = f"JSON with required keys: {', '.join(str(key) for key in keys)}"
+            base = f"Prior artifact {artifact_key}: path={path}; format={fmt}"
+            lines.append(f"{base}; description={role}" if role else base)
+        return lines
+
+    def _stage_context(self, filename: str) -> str:
+        fields = self.path_prompt_fields
+        lines: List[str] = []
+        if filename == "data_prior.py":
+            lines.extend([
+                f"{self._path_label('input_mod1_path')}: {fields['input_mod1_path']}",
+                f"{self._path_label('input_mod2_path')}: {fields['input_mod2_path']}",
+                f"{self._path_label('preprocess_metadata_path')}: {fields['preprocess_metadata_path']}",
+                f"Output training split h5ad: {fields['preprocess_train_mod1_path']}",
+                f"Output validation split h5ad: {fields['preprocess_val_mod1_path']}",
+                f"Output test split h5ad: {fields['preprocess_test_mod1_path']}",
+                f"{self._path_label('prior_output_dir_path')}: {fields['prior_output_dir_path']}",
+                "This script must perform both preprocessing and prior construction.",
+                "Use raw prior resource tables during feature selection so prior information can influence the selected genes.",
+                "Write exactly the prior artifact files declared in Consultant PRIOR_SCHEMA_JSON at the specified paths below after final gene selection.",
+            ])
+            lines.extend(self._prior_file_lines())
+            lines.extend(f"Dataset resource path: {path}" for path in self._prior_resource_lines())
+        elif filename == "model_training.py":
+            lines.extend([
+                f"{self._path_label('preprocess_metadata_path')}: {fields['preprocess_metadata_path']}",
+                f"{self._path_label('preprocess_train_mod1_path')}: {fields['preprocess_train_mod1_path']}",
+                f"{self._path_label('preprocess_val_mod1_path')}: {fields['preprocess_val_mod1_path']}",
+                f"{self._path_label('preprocess_test_mod1_path')}: {fields['preprocess_test_mod1_path']}",
+                f"{self._path_label('prior_output_dir_path')}: {fields['prior_output_dir_path']}",
+                f"{self._path_label('model_performance_path')}: {fields['model_performance_path']}",
+                f"{self._path_label('best_model_path')}: {fields['best_model_path']}",
+                f"{self._path_label('embedding_path')}: {fields['embedding_path']}",
+                f"{self._path_label('embedding_metadata_path')}: {fields['embedding_metadata_path']}",
+                f"{self._path_label('training_logs_path')}: {fields['training_logs_path']}",
+                f"{self._path_label('pipeline_summary_path')}: {fields['pipeline_summary_path']}",
+            ])
+            lines.extend(self._prior_file_lines())
+        elif filename == "downstream_analysis.py":
+            lines.extend([
+                f"{self._path_label('input_mod1_path')}: {fields['input_mod1_path']}",
+                f"{self._path_label('input_mod2_path')}: {fields['input_mod2_path']}",
+                f"{self._path_label('preprocess_metadata_path')}: {fields['preprocess_metadata_path']}",
+                f"{self._path_label('preprocess_train_mod1_path')}: {fields['preprocess_train_mod1_path']}",
+                f"{self._path_label('preprocess_val_mod1_path')}: {fields['preprocess_val_mod1_path']}",
+                f"{self._path_label('preprocess_test_mod1_path')}: {fields['preprocess_test_mod1_path']}",
+                f"Input embedding NPY file: {fields['embedding_path']}",
+                f"Input embedding metadata CSV: {fields['embedding_metadata_path']}",
+                f"Input model performance JSON: {fields['model_performance_path']}",
+                f"Input pipeline summary JSON: {fields['pipeline_summary_path']}",
+                f"{self._path_label('cluster_assignments_path')}: {fields['cluster_assignments_path']}",
+                f"{self._path_label('cluster_metrics_path')}: {fields['cluster_metrics_path']}",
+                f"{self._path_label('cluster_summary_path')}: {fields['cluster_summary_path']}",
+            ])
+        return "\n".join(line for line in lines if line.strip()) or "<none>"
+
+    def _stage_query(self, *, filename: str, task_description: str, background: str, suggestion: str, data_summary: str, script_summaries: str, existing_code: str, mcp_tools_text: str, api_dir: str | None, dataset_dir: str | None) -> str:
+        prompt_fields = {
+            "target_file": filename,
+            "target_tag": STAGE_TAG_BY_FILE[filename],
+            "task_description": task_description,
+            "background": background,
+            "suggestion": suggestion,
+            "prior_schema_json": self._prior_schema_context(filename),
+            "stage_requirements_json": self._stage_requirements_json(filename),
+            "stage_context": self._stage_context(filename),
+            "api_dir": api_dir or "<not provided>",
+            "dataset_dir": dataset_dir or "<not provided>",
+            "mcp_tools": mcp_tools_text,
+            "data_summary": data_summary,
+            "primary_metric": self._primary_metric(),
+            "metrics": ", ".join(self.config.metrics) if isinstance(self.config.metrics, list) else str(self.config.metrics),
+            "time_budget": self.config.timeout,
+            "script_summaries": script_summaries,
+            "existing_code": existing_code or "<none>",
+        }
+        return STAGE_QUERY.format(**prompt_fields)
+
+    def _extract_single_tag(self, response: str, tag: str) -> str:
+        match = re.fullmatch(rf"\s*<{tag}>(.*?)</{tag}>\s*", response or "", flags=re.DOTALL | re.IGNORECASE)
+        if not match:
+            raise BundleFormatError(f"Generator output must contain exactly one {tag} block and no extra text", raw_response=response)
+        return self._clean_code(match.group(1))
+
+    def _stage_system_prompt(self, filename: str) -> str:
+        fields = self.path_prompt_fields
+        if filename == "data_prior.py":
+            return DATA_SYSTEM_PROMPT.format(
+                raw_mod1_path=fields.get("input_mod1_path", ""),
+                raw_mod2_path=fields.get("input_mod2_path", ""),
+                prep_train_out_path=fields.get("preprocess_train_mod1_path", ""),
+                prep_val_out_path=fields.get("preprocess_val_mod1_path", ""),
+                prep_test_out_path=fields.get("preprocess_test_mod1_path", ""),
+                stats_json_path=fields.get("preprocess_metadata_path", ""),
+            )
+        if filename == "model_training.py":
+            return MODEL_SYSTEM_PROMPT.format(
+                prep_train_out_path=fields.get("preprocess_train_mod1_path", ""),
+                prep_val_out_path=fields.get("preprocess_val_mod1_path", ""),
+                prep_test_out_path=fields.get("preprocess_test_mod1_path", ""),
+                best_model_out_path=fields.get("best_model_path", ""),
+                embedding_out_path=fields.get("embedding_path", ""),
+                embedding_metadata_out_path=fields.get("embedding_metadata_path", ""),
+                performance_out_path=fields.get("model_performance_path", ""),
+                training_logs_out_path=fields.get("training_logs_path", ""),
+                pipeline_summary_out_path=fields.get("pipeline_summary_path", ""),
+            )
+        if filename == "downstream_analysis.py":
+            return ANALYSIS_SYSTEM_PROMPT.format(
+                cluster_assignments_out_path=fields.get("cluster_assignments_path", ""),
+                cluster_metrics_out_path=fields.get("cluster_metrics_path", ""),
+                cluster_summary_out_path=fields.get("cluster_summary_path", ""),
+            )
+        return MODEL_SYSTEM_PROMPT.format(
+            prep_train_out_path=fields.get("preprocess_train_mod1_path", ""),
+            prep_val_out_path=fields.get("preprocess_val_mod1_path", ""),
+            prep_test_out_path=fields.get("preprocess_test_mod1_path", ""),
+            best_model_out_path=fields.get("best_model_path", ""),
+            embedding_out_path=fields.get("embedding_path", ""),
+            embedding_metadata_out_path=fields.get("embedding_metadata_path", ""),
+            performance_out_path=fields.get("model_performance_path", ""),
+            training_logs_out_path=fields.get("training_logs_path", ""),
+            pipeline_summary_out_path=fields.get("pipeline_summary_path", ""),
+        )
+
+    @staticmethod
+    def _fix_system_prompt(filename: str) -> str:
+        if filename == "data_prior.py":
+            return DATA_FIX_SYSTEM_PROMPT
+        if filename == "model_training.py":
+            return MODEL_FIX_SYSTEM_PROMPT
+        if filename == "downstream_analysis.py":
+            return ANALYSIS_FIX_SYSTEM_PROMPT
+        return MODEL_FIX_SYSTEM_PROMPT
+
+    def generate_bundle(self, *, task_description: str, background: str, suggestion: str, data_summary: str, script_summaries: str, mcp_tools_text: str, api_dir: str | None, dataset_dir: str | None, existing_bundle: Dict[str, tg.Variable] | None = None) -> Dict[str, tg.Variable]:
+        bundle: Dict[str, tg.Variable] = {}
+        for item in STAGE_FILES:
+            filename = item["filename"]
+            existing_code = existing_bundle[filename].value if existing_bundle and filename in existing_bundle else ""
+            prompt = self._stage_query(
+                filename=filename,
+                task_description=task_description,
+                background=background,
+                suggestion=suggestion,
+                data_summary=data_summary,
+                script_summaries=script_summaries,
+                existing_code=existing_code,
+                mcp_tools_text=mcp_tools_text,
+                api_dir=api_dir,
+                dataset_dir=dataset_dir,
+            )
+            system_prompt = self._stage_system_prompt(filename)
+            response = self.engine.generate(content=prompt, system_prompt=system_prompt, temperature=0.2)
+            code = self._extract_single_tag(str(response), item["tag"])
+            prompt_var = tg.Variable(prompt, requires_grad=False, role_description=f"generation prompt for {filename}")
+            system_prompt_var = tg.Variable(
+                system_prompt,
+                requires_grad=False,
+                role_description=f"system prompt for {filename}",
+            )
+            bundle[filename] = tg.Variable(
+                code,
+                requires_grad=True,
+                role_description=f"generated code for {filename}",
+                predecessors=[system_prompt_var, prompt_var],
+            )
+        return bundle
+
+    def fix_target(self, *, code_bundle: Dict[str, tg.Variable], target: str, error: str, task_description: str, suggestion: str, max_fix_step: int = 1) -> bool:
+        filename = target if target in STAGE_TAG_BY_FILE else STAGE_FILENAMES[0]
+        target_var = code_bundle[filename]
+        prompt_fields = {
+            "target_file": filename,
+            "target_tag": STAGE_TAG_BY_FILE[filename],
+            "task_description": task_description,
+            "suggestion": suggestion,
+            "prior_schema_json": self._prior_schema_context(filename),
+            "stage_requirements_json": self._stage_requirements_json(filename),
+            "stage_context": self._stage_context(filename),
+            "script_summaries": self.summarize_bundle(code_bundle),
+            "target_code": target_var.value,
+            "error": error,
+        }
+        prompt = FIX_QUERY.format(**prompt_fields)
+        fix_system_prompt = self._fix_system_prompt(filename)
+        for _ in range(max_fix_step):
+            response = self.engine.generate(content=prompt, system_prompt=fix_system_prompt, temperature=0.2)
+            target_var.set_value(self._extract_single_tag(str(response), STAGE_TAG_BY_FILE[filename]))
+        return True
+
+    def save_bundle(self, code_bundle: Dict[str, tg.Variable], step_tag: str) -> str:
+        step_dir = os.path.join(self.config.code_dir, f"code_{step_tag}")
+        os.makedirs(step_dir, exist_ok=True)
+        for item in STAGE_FILES:
+            with open(os.path.join(step_dir, item["filename"]), "w", encoding="utf-8") as f:
+                f.write(code_bundle[item["filename"]].value)
+        return step_dir
+
+    @staticmethod
+    def summarize_bundle(code_bundle: Dict[str, tg.Variable] | None, max_chars_per_file: int = 500) -> str:
+        if not code_bundle:
+            return "<none>"
+        payload = {}
+        for item in STAGE_FILES:
+            text = code_bundle[item["filename"]].value if item["filename"] in code_bundle else ""
+            payload[item["filename"]] = {"lines": len(text.splitlines()), "head": text[:max_chars_per_file]}
         return json.dumps(payload, ensure_ascii=False)

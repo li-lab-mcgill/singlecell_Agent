@@ -1,17 +1,16 @@
-"""Executor for the single-script pipeline."""
+"""Executor for the three-stage pipeline."""
 
 from __future__ import annotations
 
 import json
 import os
-import re
-import shutil
 import subprocess
-from typing import Any, Dict
+import sys
+from typing import Any, Dict, List
 
 from config import Config
-from multieval_types import StepRunContract, ValidationFailure
-from validator import SECTION_ORDER, validate_pipeline_outputs
+from multieval_types import STAGE_FILENAMES, STAGE_ORDER_INDEX
+from validator import validate_stage_outputs
 
 
 def _read_json_safe(path: str) -> Dict[str, Any]:
@@ -25,128 +24,101 @@ def _read_json_safe(path: str) -> Dict[str, Any]:
         return {}
 
 
-def _infer_failed_stage(stderr: str) -> str:
-    text = stderr or ""
-    function_to_stage = {
-        "run_dataloader": "dataloader",
-        "run_prior": "prior",
-        "build_model": "model",
-        "run_train": "train",
-        "run_clustering": "clustering",
-    }
-    for function_name, stage in function_to_stage.items():
-        if re.search(rf"\b{function_name}\b", text):
-            return stage
-    for stage in SECTION_ORDER:
-        if stage in text.lower():
-            return stage
-    return "pipeline"
-
-
 class CodeExecutor:
     def __init__(self, config: Config):
         self.config = config
 
-    def _prepare_input_dir(self, contract: StepRunContract) -> str:
-        input_dir = os.path.join(contract.run_dir, "input_data")
-        os.makedirs(input_dir, exist_ok=True)
+    def _validate_runtime_inputs(self, resolved_artifact_layout: Dict[str, Any]) -> None:
+        runtime_inputs = resolved_artifact_layout.get("runtime_inputs", {})
+        if not isinstance(runtime_inputs, dict):
+            raise ValueError("Resolved artifact layout missing runtime_inputs")
+        mod1_path = runtime_inputs.get("mod1")
+        if not mod1_path or not os.path.exists(mod1_path):
+            raise FileNotFoundError(f"Configured input path does not exist: {mod1_path}")
+        mod2_path = runtime_inputs.get("mod2")
+        if mod2_path and not os.path.exists(mod2_path):
+            raise FileNotFoundError(f"Configured modality 2 path does not exist: {mod2_path}")
 
-        staged_targets = [
-            (getattr(self.config, "data_mod1_path", None), os.path.join(input_dir, "adata.h5ad")),
-        ]
-        mod2_path = getattr(self.config, "data_mod2_path", None)
-        if mod2_path:
-            staged_targets.append((mod2_path, os.path.join(input_dir, os.path.basename(mod2_path))))
+    def _run_script(self, filepath: str) -> Dict[str, Any]:
+        result = subprocess.run(
+            [sys.executable, filepath],
+            capture_output=True,
+            text=True,
+            timeout=self.config.timeout,
+            cwd=os.path.dirname(filepath),
+        )
+        return {
+            "success": result.returncode == 0,
+            "output": result.stdout.strip(),
+            "error": result.stderr.strip(),
+            "filepath": filepath,
+        }
 
-        for source_path, staged_path in staged_targets:
-            if not source_path:
-                continue
-            if not os.path.exists(source_path):
-                raise FileNotFoundError(f"Configured input path does not exist: {source_path}")
-            if os.path.lexists(staged_path):
-                continue
-            try:
-                os.symlink(source_path, staged_path)
-            except OSError:
-                shutil.copy2(source_path, staged_path)
-        return input_dir
-
-    def _run_script(self, filepath: str, contract: StepRunContract) -> Dict[str, Any]:
+    def run_bundle(self, script_dir: str, resolved_artifact_layout: Dict[str, Any], stage_schemas: Dict[str, Dict[str, Any]], start_from: str | None = None) -> Dict[str, Any]:
         try:
-            env = os.environ.copy()
-            env.update(contract.build_env())
-            input_dir = self._prepare_input_dir(contract)
-            env["SCANPY_AGENT_INPUT_DIR"] = input_dir
-            env["SCANPY_AGENT_INPUT_MOD1_PATH"] = getattr(self.config, "data_mod1_path", "") or ""
-            env["SCANPY_AGENT_INPUT_MOD2_PATH"] = getattr(self.config, "data_mod2_path", "") or ""
-            result = subprocess.run(
-                ["python", filepath],
-                capture_output=True,
-                text=True,
-                timeout=self.config.timeout,
-                cwd=os.path.dirname(filepath),
-                env=env,
-            )
-            return {
-                "success": result.returncode == 0,
-                "output": result.stdout.strip(),
-                "error": result.stderr.strip(),
-                "filepath": filepath,
-            }
-        except subprocess.TimeoutExpired:
-            return {
-                "success": False,
-                "output": "",
-                "error": f"Execution timeout ({self.config.timeout}s)",
-                "filepath": filepath,
-            }
+            self._validate_runtime_inputs(resolved_artifact_layout)
         except Exception as exc:
             return {
                 "success": False,
-                "output": "",
                 "error": str(exc),
-                "filepath": filepath,
+                "stage_results": {},
+                "failed_script": STAGE_FILENAMES[0],
             }
 
-    @staticmethod
-    def _failure_from_validation(failure: ValidationFailure, stage_result: Dict[str, Any], metrics: Dict[str, Any]) -> Dict[str, Any]:
-        return {
-            "success": False,
-            "failed_stage": failure.stage,
-            "error": failure.message,
-            "stage_results": {"pipeline": stage_result},
-            "metrics": metrics,
-            "validation_failure": failure.to_dict(),
-        }
+        start_index = STAGE_ORDER_INDEX.get(start_from or STAGE_FILENAMES[0], 0)
+        stage_results: Dict[str, Dict[str, Any]] = {}
+        for filename in STAGE_FILENAMES[start_index:]:
+            filepath = os.path.join(script_dir, filename)
+            if not os.path.exists(filepath):
+                return {
+                    "success": False,
+                    "error": f"Missing script: {filename}",
+                    "stage_results": stage_results,
+                    "failed_script": filename,
+                }
+            try:
+                stage_result = self._run_script(filepath)
+            except subprocess.TimeoutExpired:
+                return {
+                    "success": False,
+                    "error": f"Execution timeout ({self.config.timeout}s)",
+                    "stage_results": stage_results,
+                    "failed_script": filename,
+                }
+            except Exception as exc:
+                return {
+                    "success": False,
+                    "error": str(exc),
+                    "stage_results": stage_results,
+                    "failed_script": filename,
+                }
+            stage_results[filename] = stage_result
+            if not stage_result["success"]:
+                return {
+                    "success": False,
+                    "error": stage_result["error"],
+                    "stage_results": stage_results,
+                    "failed_script": filename,
+                }
 
-    def run_bundle(self, script_path: str, contract: StepRunContract) -> Dict[str, Any]:
-        stage_result = self._run_script(script_path, contract=contract)
-        if not stage_result["success"]:
-            return {
-                "success": False,
-                "failed_stage": _infer_failed_stage(stage_result["error"]),
-                "error": stage_result["error"],
-                "stage_results": {"pipeline": stage_result},
-                "metrics": _read_json_safe(self.config.model_perf_path),
-            }
+            failures = validate_stage_outputs(resolved_artifact_layout, stage_schemas.get(filename, {}), filename)
+            if failures:
+                return {
+                    "success": False,
+                    "error": failures[0].message,
+                    "stage_results": stage_results,
+                    "failed_script": filename,
+                    "validation_failure": failures[0].to_dict(),
+                }
 
-        output_failures = validate_pipeline_outputs(contract)
-        if output_failures:
-            return self._failure_from_validation(
-                output_failures[0],
-                stage_result=stage_result,
-                metrics=_read_json_safe(self.config.model_perf_path),
-            )
-
+        outputs = resolved_artifact_layout.get("generated_outputs", {})
         return {
             "success": True,
-            "failed_stage": None,
             "error": "",
-            "stage_results": {"pipeline": stage_result},
-            "metrics": _read_json_safe(self.config.model_perf_path),
-            "cluster_metrics": _read_json_safe(self.config.cluster_metrics_path),
-            "cluster_summary": _read_json_safe(self.config.cluster_summary_path),
-            "training_logs": _read_json_safe(self.config.training_logs_path),
-            "pipeline_summary": _read_json_safe(self.config.pipeline_summary_path),
-            "prior_manifest": _read_json_safe(self.config.prior_manifest_path),
+            "stage_results": stage_results,
+            "metrics": _read_json_safe(str(outputs.get("model_performance", ""))),
+            "cluster_metrics": _read_json_safe(str(outputs.get("cluster_metrics", ""))),
+            "cluster_summary": _read_json_safe(str(outputs.get("cluster_summary", ""))),
+            "training_logs": _read_json_safe(str(outputs.get("training_logs", ""))),
+            "pipeline_summary": _read_json_safe(str(outputs.get("pipeline_summary", ""))),
         }
