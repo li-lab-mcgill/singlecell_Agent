@@ -1,0 +1,21 @@
+{
+  "runtime_inputs": {
+    "mod1": "adata.h5ad",
+    "mod2": "mod2.h5ad"
+  },
+  "generated_outputs": {
+    "preprocess_metadata": "preprocess_metadata.json",
+    "preprocess_train_mod1": "preprocess_train_mod1.csv",
+    "preprocess_val_mod1": "preprocess_val_mod1.csv",
+    "preprocess_test_mod1": "preprocess_test_mod1.csv",
+    "model_performance": "model_performance.json",
+    "best_model": "best_model.pt",
+    "embedding": "embedding.npy",
+    "embedding_metadata": "embedding_metadata.csv",
+    "training_logs": "training_logs.json",
+    "pipeline_summary": "pipeline_summary.json",
+    "cluster_assignments": "cluster_assignments.csv",
+    "cluster_metrics": "cluster_metrics.json",
+    "cluster_summary": "cluster_summary.json"
+  }
+}
