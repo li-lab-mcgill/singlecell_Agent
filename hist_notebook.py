@@ -3,6 +3,9 @@ import re
 from difflib import unified_diff
 from typing import Any, Dict, List
 
+import textgrad as tg
+
+from hist_notebook_prompts import NOTEBOOK_PROMPT, NOTEBOOK_QUERY
 from multieval_types import DecisionLedgerRecord, HistoryNoteRecord, ScriptNoteRecord
 
 
@@ -68,6 +71,10 @@ def build_code_diff(old_text: str | None, new_text: str | None, *, from_label: s
     return "\n".join(diff_lines)
 
 
+def build_missing_code_note(message: str) -> str:
+    return f"N/A: {message}"
+
+
 def append_script_note_record(record: ScriptNoteRecord, *, records: List[ScriptNoteRecord], note_jsonl_path: str, mirror_jsonl_path: str | None = None) -> None:
     records.append(record)
     with open(note_jsonl_path, "a", encoding="utf-8") as f:
@@ -89,12 +96,140 @@ def _summarize_diff_text(diff_text: str, max_lines: int = 12) -> str:
     return "\n".join(lines[:max_lines])
 
 
+def _json_text(payload: Dict[str, Any]) -> str:
+    if not isinstance(payload, dict) or not payload:
+        return "<empty>"
+    return json.dumps(payload, indent=2, ensure_ascii=False)
+
+
+def _role_for_script(script: str) -> str:
+    if script == "data_prior.py":
+        return "Data Prior Engineer"
+    if script == "model_training.py":
+        return "Model Training Engineer"
+    if script == "downstream_analysis.py":
+        return "Downstream Analysis Engineer"
+    return "Pipeline Engineer"
+
+
+class ScriptNotebook:
+    def __init__(self, *, engine_name: str, task_description: str):
+        self.engine = tg.get_engine(engine_name, max_tokens=2500)
+        self.task_description = str(task_description or "").strip()
+
+    def _fallback_note(
+        self,
+        *,
+        script: str,
+        optimization_text: str,
+        prev_step: int | None,
+        current_vs_prev_diff: str,
+        observed_outputs: Dict[str, Any],
+    ) -> str:
+        return "\n".join(
+            [
+                "Current Behavior:",
+                f"- {script} executed successfully in the current step context.",
+                "",
+                "Step Change:",
+                f"- Optimization intent: {optimization_text or 'not optimized this step'}",
+                f"- Previous step reference: {prev_step if prev_step is not None and prev_step >= 0 else 'none'}",
+                f"- Diff vs previous step: {_summarize_diff_text(current_vs_prev_diff)}",
+                "",
+                "Observed Outputs:",
+                f"- {_short(_json_text(observed_outputs), 500)}",
+                "",
+                "Risks / Watchouts:",
+                "- Review the raw diffs for exact implementation details if this summary is too coarse.",
+            ]
+        )
+
+    def create_note(
+        self,
+        *,
+        script: str,
+        cur_code: str,
+        cur_step: int,
+        prev_code: str,
+        prev_step: int | None,
+        optimization_text: str,
+        current_vs_prev_diff: str,
+        metric_name: str,
+        metric_value: float | None,
+        gain: float | None,
+        observed_outputs: Dict[str, Any] | None = None,
+    ) -> str:
+        observed_outputs = observed_outputs if isinstance(observed_outputs, dict) else {}
+        role = _role_for_script(script)
+        query = NOTEBOOK_QUERY.format(
+            task_description=self.task_description or "<unknown task>",
+            code_role=role,
+            cur_step=cur_step,
+            cur_code=cur_code,
+            prev_step=prev_step if prev_step is not None and prev_step >= 0 else "N/A",
+            prev_code=prev_code or "<none>",
+        )
+        sections = [
+            query.strip(),
+            f"Optimization applied at Step {cur_step}:\n{optimization_text or 'not optimized this step'}",
+            (
+                f"Raw code diff against previous step:\n"
+                f"<CURRENT_VS_PREV_DIFF>\n{current_vs_prev_diff}\n</CURRENT_VS_PREV_DIFF>"
+            ),
+            (
+                "Observed outputs and metric snapshot:\n"
+                "<OBSERVED_OUTPUTS>\n"
+                + _json_text(
+                    {
+                        "metric_name": metric_name,
+                        "metric_value": metric_value,
+                        "gain": gain,
+                        "outputs": observed_outputs,
+                    }
+                )
+                + "\n</OBSERVED_OUTPUTS>"
+            ),
+        ]
+        prompt = "\n\n".join(section for section in sections if section)
+        try:
+            response = self.engine.generate(
+                content=prompt,
+                system_prompt=NOTEBOOK_PROMPT,
+                temperature=0.2,
+            )
+            note = str(response or "").strip()
+            if note:
+                return note
+        except Exception:
+            pass
+        return self._fallback_note(
+            script=script,
+            optimization_text=optimization_text,
+            prev_step=prev_step,
+            current_vs_prev_diff=current_vs_prev_diff,
+            observed_outputs=observed_outputs,
+        )
+
+
 def build_script_notes_history(records: List[ScriptNoteRecord], *, current_step: int, keep_last: int = 8) -> str:
     prior_records = [record for record in records if record.step < current_step]
     if not prior_records:
         return "<empty>"
     sections: List[str] = []
     for record in prior_records[-keep_last:]:
+        note_text = str(record.note_text or "").strip()
+        if note_text:
+            sections.extend(
+                [
+                    f"Step {record.step} | {record.script}",
+                    f"optimization_text: {record.optimization_text or 'not optimized this step'}",
+                    f"metric_value: {record.metric_value}",
+                    f"gain: {record.gain}",
+                    note_text,
+                    "",
+                ]
+            )
+            continue
         sections.extend(
             [
                 f"Step {record.step} | {record.script}",

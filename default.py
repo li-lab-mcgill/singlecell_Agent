@@ -30,12 +30,14 @@ from evaluator import (
 from executor import CodeExecutor
 from generator import StageScriptGenerator
 from hist_notebook import (
+    ScriptNotebook,
     append_decision_record,
     append_history_note,
     append_script_note_record,
     build_code_diff,
     build_current_diffs_payload,
     build_history_digest,
+    build_missing_code_note,
     build_script_notes_history,
     infer_design_identity,
 )
@@ -539,6 +541,7 @@ Use labels only for evaluation, never for training.
     model_evaluator = TextGradEvaluator(config=config, engine_name=args.engine, task_decrp=task_summary["task_description"], background=background, eval_type="model")
     data_science_evaluator = TextGradEvaluator(config=config, engine_name=args.engine, task_decrp=task_summary["task_description"], background=background, eval_type="data_science")
     biology_evaluator = TextGradEvaluator(config=config, engine_name=args.engine, task_decrp=task_summary["task_description"], background=background, eval_type="biology")
+    script_notebook = ScriptNotebook(engine_name=args.engine, task_description=task_summary["task_description"])
     executor = CodeExecutor(config)
     outer_state = OuterLoopState()
     global_note_records: List[HistoryNoteRecord] = []
@@ -583,7 +586,7 @@ Use labels only for evaluation, never for training.
         last_error_message = ""
         start_from = STAGE_FILENAMES[0]
         for attempt in range(config.max_fix_step + 1):
-            script_dir = generator.save_bundle(code_bundle, step_tag=f"step_{step}" if attempt == 0 else f"step_{step}_fix{attempt-1}")
+            script_dir = generator.save_bundle(code_bundle, step_tag=f"step_{step}")
             run_result = executor.run_bundle(script_dir, resolved_artifact_layout=resolved_artifact_layout, stage_schemas=stage_schemas, start_from=start_from)
             if run_result.get("success", False):
                 break
@@ -632,17 +635,25 @@ Use labels only for evaluation, never for training.
             current_text = current_bundle_texts.get(filename, "")
             prev_text = previous_step_bundle_texts.get(filename)
             best_text = best_bundle_texts.get(filename)
-            current_vs_prev_diff = build_code_diff(
-                prev_text,
-                current_text,
-                from_label=f"step_{step-1}:{filename}",
-                to_label=f"step_{step}:{filename}",
+            current_vs_prev_diff = (
+                build_code_diff(
+                    prev_text,
+                    current_text,
+                    from_label=f"step_{step-1}:{filename}",
+                    to_label=f"step_{step}:{filename}",
+                )
+                if prev_text is not None
+                else build_missing_code_note(f"no previous version for step_{step}:{filename}")
             )
-            current_vs_best_diff = build_code_diff(
-                best_text,
-                current_text,
-                from_label=f"best_step:{filename}",
-                to_label=f"step_{step}:{filename}",
+            current_vs_best_diff = (
+                build_code_diff(
+                    best_text,
+                    current_text,
+                    from_label=f"best_step:{filename}",
+                    to_label=f"step_{step}:{filename}",
+                )
+                if best_text is not None
+                else build_missing_code_note(f"no best-step version for {filename}")
             )
             script_prev_diffs[filename] = current_vs_prev_diff
             script_best_diffs[filename] = current_vs_best_diff
@@ -655,6 +666,62 @@ Use labels only for evaluation, never for training.
                 metric_value=current_metric_value,
                 gain=primary_gain,
             )
+        script_note_texts = {
+            "data_prior.py": script_notebook.create_note(
+                script="data_prior.py",
+                cur_code=current_bundle_texts.get("data_prior.py", ""),
+                cur_step=step,
+                prev_code=previous_step_bundle_texts.get("data_prior.py", ""),
+                prev_step=step - 1 if previous_step_bundle_texts.get("data_prior.py") is not None else None,
+                optimization_text=applied_change_contexts.get("data_prior.py", "not optimized this step"),
+                current_vs_prev_diff=script_prev_diffs.get("data_prior.py", "N/A"),
+                metric_name=config.metrics,
+                metric_value=current_metric_value,
+                gain=primary_gain,
+                observed_outputs={
+                    "preprocess_metadata": preprocess_metadata,
+                    "pipeline_summary": pipeline_summary,
+                    "data_schema": config.stage_requirements("data_prior.py"),
+                    "prior_schema": config.current_prior_schema,
+                },
+            ),
+            "model_training.py": script_notebook.create_note(
+                script="model_training.py",
+                cur_code=current_bundle_texts.get("model_training.py", ""),
+                cur_step=step,
+                prev_code=previous_step_bundle_texts.get("model_training.py", ""),
+                prev_step=step - 1 if previous_step_bundle_texts.get("model_training.py") is not None else None,
+                optimization_text=applied_change_contexts.get("model_training.py", "not optimized this step"),
+                current_vs_prev_diff=script_prev_diffs.get("model_training.py", "N/A"),
+                metric_name=config.metrics,
+                metric_value=current_metric_value,
+                gain=primary_gain,
+                observed_outputs={
+                    "current_performance": {"perf_summary": pstat, "primary_state": primary_state},
+                    "training_logs": training_logs,
+                    "pipeline_summary": pipeline_summary,
+                    "model_schema": config.stage_requirements("model_training.py"),
+                },
+            ),
+            "downstream_analysis.py": script_notebook.create_note(
+                script="downstream_analysis.py",
+                cur_code=current_bundle_texts.get("downstream_analysis.py", ""),
+                cur_step=step,
+                prev_code=previous_step_bundle_texts.get("downstream_analysis.py", ""),
+                prev_step=step - 1 if previous_step_bundle_texts.get("downstream_analysis.py") is not None else None,
+                optimization_text=applied_change_contexts.get("downstream_analysis.py", "not optimized this step"),
+                current_vs_prev_diff=script_prev_diffs.get("downstream_analysis.py", "N/A"),
+                metric_name=config.metrics,
+                metric_value=current_metric_value,
+                gain=primary_gain,
+                observed_outputs={
+                    "cluster_metrics": cluster_metrics,
+                    "cluster_summary": cluster_summary,
+                    "pipeline_summary": pipeline_summary,
+                    "downstream_schema": config.stage_requirements("downstream_analysis.py"),
+                },
+            ),
+        }
 
         notes_text = build_history_digest(outer_notes=outer_state.note_records, global_notes=global_note_records, decision_records=decision_records, keep_last=20)
         with open(history_digest_path, "w", encoding="utf-8") as f:
@@ -847,6 +914,7 @@ Use labels only for evaluation, never for training.
                     optimization_text=applied_change_contexts.get(filename, "not optimized this step"),
                     current_vs_prev_diff=script_prev_diffs.get(filename, "N/A"),
                     current_vs_best_diff=script_best_diffs.get(filename, "N/A"),
+                    note_text=script_note_texts.get(filename, ""),
                     metric_value=current_metric_value,
                     gain=primary_gain,
                 ),
@@ -884,6 +952,7 @@ Use labels only for evaluation, never for training.
             "pipeline_summary": pipeline_summary,
             "script_notes_history": script_notes_history,
             "script_current_diffs": script_current_diffs,
+            "script_note_texts": script_note_texts,
             "script_dir": script_dir,
             "optimized_targets": optimize_targets,
         }
@@ -944,6 +1013,7 @@ Use labels only for evaluation, never for training.
             model_evaluator = TextGradEvaluator(config=config, engine_name=args.engine, task_decrp=task_summary["task_description"], background=background, eval_type="model")
             data_science_evaluator = TextGradEvaluator(config=config, engine_name=args.engine, task_decrp=task_summary["task_description"], background=background, eval_type="data_science")
             biology_evaluator = TextGradEvaluator(config=config, engine_name=args.engine, task_decrp=task_summary["task_description"], background=background, eval_type="biology")
+            script_notebook = ScriptNotebook(engine_name=args.engine, task_description=task_summary["task_description"])
             code_bundle = None
             optimizers = {}
             outer_state.reset()

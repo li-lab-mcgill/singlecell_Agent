@@ -101,6 +101,7 @@ class ScriptNoteRecord:
     optimization_text: str
     current_vs_prev_diff: str
     current_vs_best_diff: str
+    note_text: str
     metric_value: float | None
     gain: float | None
     created_at: float = field(default_factory=time.time)
@@ -112,6 +113,7 @@ class ScriptNoteRecord:
             "optimization_text": self.optimization_text,
             "current_vs_prev_diff": self.current_vs_prev_diff,
             "current_vs_best_diff": self.current_vs_best_diff,
+            "note_text": self.note_text,
             "metric_value": self.metric_value,
             "gain": self.gain,
             "created_at": self.created_at,
