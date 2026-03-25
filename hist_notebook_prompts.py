@@ -15,9 +15,6 @@ Step Change:
 
 Observed Outputs:
 - ...
-
-Risks / Watchouts:
-- ...
 """
 
 

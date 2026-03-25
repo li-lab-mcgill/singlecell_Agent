@@ -9,6 +9,8 @@ from config import Config
 from evaluator_prompts import (
     BIOLOGY_EVALUATOR_SYSTEM_PROMPT,
     BIOLOGY_FORMAT_STRING,
+    CRITIC_FORMAT_STRING,
+    CRITIC_SYSTEM_PROMPT,
     DATA_SCIENCE_EVALUATOR_SYSTEM_PROMPT,
     DATA_SCIENCE_FORMAT_STRING,
     MODEL_EVALUATOR_SYSTEM_PROMPT,
@@ -18,31 +20,8 @@ from multieval_types import STAGE_FILENAMES
 
 load_dotenv()
 
-
-def _validate_feedback_payload(feedback: Dict[str, Any]) -> None:
-    required_feedback_keys = ["diagnosis", "focus_areas", "keep_fixed", "change_next"]
-    missing_feedback = [key for key in required_feedback_keys if key not in feedback]
-    if missing_feedback:
-        raise ValueError(f"Evaluator feedback missing required keys: {missing_feedback}")
-    if not isinstance(feedback.get("focus_areas"), list):
-        raise ValueError("Evaluator feedback focus_areas must be a list")
-
-
-def _validate_feedback_only_payload(feedback: Dict[str, Any]) -> None:
-    required_feedback_keys = ["diagnosis", "focus_areas", "keep_fixed", "change_next"]
-    missing_feedback = [key for key in required_feedback_keys if key not in feedback]
-    if missing_feedback:
-        raise ValueError(f"Advisory evaluator feedback missing required keys: {missing_feedback}")
-    if not isinstance(feedback.get("focus_areas"), list):
-        raise ValueError("Advisory evaluator feedback focus_areas must be a list")
-
-
-def _validate_instruction_list(name: str, items: Any) -> None:
-    if not isinstance(items, list):
-        raise ValueError(f"Evaluator feedback {name} must be a list")
-    for item in items:
-        if not str(item or "").strip():
-            continue
+EVALUATOR_ROLES = {"data_science", "model", "biology"}
+CRITIC_TARGETS = {"data_prior.py", "model_training.py", "downstream_analysis.py"}
 
 
 def _parse_json_object(text: str, label: str) -> Dict[str, Any]:
@@ -55,56 +34,65 @@ def _parse_json_object(text: str, label: str) -> Dict[str, Any]:
     return payload
 
 
-def parse_eval_action(text: str) -> tuple[dict, dict]:
-    payload = _parse_json_object(text, "Evaluator")
-    required_keys = [
-        "step",
-        "primary_reason",
-        "performance",
-        "training_health",
-        "feedback",
-    ]
-    missing = [key for key in required_keys if key not in payload]
+def _validate_feedback_text(feedback: Any, label: str) -> str:
+    text = str(feedback or "").strip()
+    if not text:
+        raise ValueError(f"{label} feedback must be a non-empty string")
+    return text
+
+
+def parse_evaluator_message(text: str, expected_role: str) -> Dict[str, Any]:
+    if expected_role not in EVALUATOR_ROLES:
+        raise ValueError(f"Unsupported evaluator role: {expected_role}")
+    payload = _parse_json_object(text, f"{expected_role} evaluator")
+    required = ["role", "feedback"]
+    missing = [key for key in required if key not in payload]
     if missing:
-        raise ValueError(f"Evaluator payload missing required keys: {missing}")
-    feedback = payload.get("feedback", {})
-    if not isinstance(feedback, dict):
-        raise ValueError("Evaluator feedback must be a JSON object")
-    _validate_feedback_payload(feedback)
-    _validate_instruction_list("keep_fixed", feedback.get("keep_fixed", []))
-    _validate_instruction_list("change_next", feedback.get("change_next", []))
-    return payload, feedback
+        raise ValueError(f"{expected_role} evaluator payload missing required keys: {missing}")
+    role = str(payload.get("role") or "").strip()
+    if role != expected_role:
+        raise ValueError(f"{expected_role} evaluator role must be '{expected_role}', got: {role}")
+    payload["feedback"] = _validate_feedback_text(payload.get("feedback"), f"{expected_role} evaluator")
+    return payload
 
 
-def parse_advisory_eval_action(text: str, eval_type: str) -> tuple[dict, dict]:
-    if eval_type not in {"data_science", "biology"}:
-        raise ValueError(f"Unsupported advisory evaluator type: {eval_type}")
-    payload = _parse_json_object(text, f"{eval_type} evaluator")
-    if "optimize_targets" in payload:
-        raise ValueError(f"{eval_type} evaluator must not emit optimize_targets")
-    required_keys = ["step", "feedback"]
-    if eval_type == "biology":
-        required_keys.append("biological_assessment")
-    missing = [key for key in required_keys if key not in payload]
+def parse_critic_output(text: str) -> Dict[str, Any]:
+    payload = _parse_json_object(text, "critic")
+    required = ["step", "global_rationale", "targets"]
+    missing = [key for key in required if key not in payload]
     if missing:
-        raise ValueError(f"{eval_type} evaluator payload missing required keys: {missing}")
-    feedback = payload.get("feedback", {})
-    if not isinstance(feedback, dict):
-        raise ValueError(f"{eval_type} evaluator feedback must be a JSON object")
-    _validate_feedback_only_payload(feedback)
-    _validate_instruction_list("keep_fixed", feedback.get("keep_fixed", []))
-    _validate_instruction_list("change_next", feedback.get("change_next", []))
-    return payload, feedback
+        raise ValueError(f"critic payload missing required keys: {missing}")
+    payload["global_rationale"] = _validate_feedback_text(payload.get("global_rationale"), "critic")
+    targets = payload.get("targets")
+    if not isinstance(targets, dict):
+        raise ValueError("critic targets must be a JSON object")
+    normalized_targets: Dict[str, Dict[str, str]] = {}
+    for target, target_payload in targets.items():
+        if target not in CRITIC_TARGETS:
+            raise ValueError(f"critic target must be one of {sorted(CRITIC_TARGETS)}, got: {target}")
+        if not isinstance(target_payload, dict):
+            raise ValueError(f"critic target payload for {target} must be a JSON object")
+        if "feedback" not in target_payload:
+            raise ValueError(f"critic target payload for {target} missing required key: feedback")
+        feedback = _validate_feedback_text(target_payload.get("feedback"), f"critic target {target}")
+        normalized_targets[target] = {"feedback": feedback}
+    payload["targets"] = normalized_targets
+    return payload
 
 
-def exploit_plan_from_feedback(feedback: Dict[str, Any]) -> Dict[str, Any]:
-    keep_fixed = feedback.get("keep_fixed", []) if isinstance(feedback, dict) else []
-    change_next = feedback.get("change_next", []) if isinstance(feedback, dict) else []
+def critic_plan_from_payload(payload: Dict[str, Any]) -> Dict[str, Any]:
+    if not isinstance(payload, dict):
+        return {"global_rationale": "", "targets": {}}
+    targets = payload.get("targets", {})
+    if not isinstance(targets, dict):
+        targets = {}
     return {
-        "diagnosis": str(feedback.get("diagnosis", "")).strip() if isinstance(feedback, dict) else "",
-        "focus_areas": [str(item).strip() for item in feedback.get("focus_areas", []) if str(item).strip()] if isinstance(feedback, dict) else [],
-        "keep_fixed": [str(item).strip() for item in keep_fixed if str(item).strip()],
-        "change_next": [str(item).strip() for item in change_next if str(item).strip()],
+        "global_rationale": str(payload.get("global_rationale", "")).strip(),
+        "targets": {
+            str(target): {"feedback": str((target_payload or {}).get("feedback", "")).strip()}
+            for target, target_payload in targets.items()
+            if str(target).strip()
+        },
     }
 
 
@@ -115,7 +103,7 @@ def to_float(x: Any) -> float | None:
         return None
 
 
-def build_open_issues(*, run_result: Dict[str, Any], primary_state: Dict[str, Any], payload: Dict[str, Any], feedback: Dict[str, Any]) -> List[str]:
+def build_open_issues(*, run_result: Dict[str, Any], primary_state: Dict[str, Any], critic_payload: Dict[str, Any]) -> List[str]:
     issues: List[str] = []
     if not run_result.get("success", False):
         target = str(run_result.get("failed_script") or STAGE_FILENAMES[0])
@@ -123,9 +111,9 @@ def build_open_issues(*, run_result: Dict[str, Any], primary_state: Dict[str, An
     gain = to_float(primary_state.get("primary_metric_gain"))
     if gain is None or gain <= 0:
         issues.append("no_meaningful_primary_gain")
-    diagnosis = (feedback.get("diagnosis") if isinstance(feedback, dict) else "") or ""
-    if diagnosis.strip():
-        issues.append(f"diagnosis:{_short(diagnosis, 180)}")
+    rationale = str(critic_payload.get("global_rationale") or "").strip()
+    if rationale:
+        issues.append(f"critic:{_short(rationale, 180)}")
     seen = set()
     out: List[str] = []
     for issue in issues:
@@ -135,19 +123,16 @@ def build_open_issues(*, run_result: Dict[str, Any], primary_state: Dict[str, An
     return out
 
 
-def build_instruction_text(feedback: Dict[str, Any]) -> str:
-    focus_areas = feedback.get("focus_areas", []) if isinstance(feedback, dict) else []
-    keep_fixed = feedback.get("keep_fixed", []) if isinstance(feedback, dict) else []
-    change_next = feedback.get("change_next", []) if isinstance(feedback, dict) else []
-    lines = ["[Focus Areas]"]
-    lines.extend(f"- {item}" for item in focus_areas or ["<none>"])
-    lines.append("")
-    lines.append("[Keep Fixed]")
-    lines.extend(f"- {item}" for item in keep_fixed or ["<none>"])
-    lines.append("")
-    lines.append("[Change Next]")
-    lines.extend(f"- {item}" for item in change_next or ["<none>"])
-    return "\n".join(lines)
+def build_instruction_text(critic_targets: Dict[str, Dict[str, str]]) -> str:
+    if not isinstance(critic_targets, dict) or not critic_targets:
+        return "<none>"
+    lines: List[str] = []
+    for target, payload in critic_targets.items():
+        feedback = str((payload or {}).get("feedback", "")).strip()
+        lines.append(f"[{target}]")
+        lines.append(feedback or "<none>")
+        lines.append("")
+    return "\n".join(lines).strip()
 
 
 def update_primary_metric_state(cluster_metrics: Dict[str, Any], best_ari: float | None, best_sil: float | None, delta_min: float, stagnation_steps: int) -> Tuple[float | None, float | None, int, Dict[str, Any]]:
@@ -161,6 +146,8 @@ def update_primary_metric_state(cluster_metrics: Dict[str, Any], best_ari: float
         stagnation_steps = 0
     else:
         stagnation_steps += 1
+    previous_best_ari = best_ari
+    previous_best_sil = best_sil
     if cur_ari is not None:
         best_ari = cur_ari if best_ari is None else max(best_ari, cur_ari)
     if cur_sil is not None:
@@ -169,8 +156,8 @@ def update_primary_metric_state(cluster_metrics: Dict[str, Any], best_ari: float
         "current_ari": cur_ari,
         "current_silhouette": cur_sil,
         "current_nmi": cur_nmi,
-        "previous_best_ari": best_ari,
-        "previous_best_silhouette": best_sil,
+        "previous_best_ari": previous_best_ari,
+        "previous_best_silhouette": previous_best_sil,
         "previous_best_nmi": None,
         "primary_metric_gain": gain,
     }
@@ -201,6 +188,7 @@ class TextGradEvaluator:
                 model_schema="{model_schema}",
                 training_logs="{training_logs}",
                 pipeline_summary="{pipeline_summary}",
+                chat_history="{chat_history}",
             )
             self.fields = {
                 "step": None,
@@ -217,10 +205,11 @@ class TextGradEvaluator:
                 "model_schema": None,
                 "training_logs": None,
                 "pipeline_summary": None,
+                "chat_history": None,
             }
             system_prompt = MODEL_EVALUATOR_SYSTEM_PROMPT
-            response_role = "model evaluation of the three-stage pipeline"
-            prompt_role = "system prompt to evaluate model training and architecture"
+            response_role = "model deliberation message"
+            prompt_role = "system prompt for model evaluator"
         elif eval_type == "data_science":
             format_string = DATA_SCIENCE_FORMAT_STRING.format(
                 task=task_decrp,
@@ -240,6 +229,7 @@ class TextGradEvaluator:
                 data_schema="{data_schema}",
                 prior_schema="{prior_schema}",
                 pipeline_summary="{pipeline_summary}",
+                chat_history="{chat_history}",
             )
             self.fields = {
                 "step": None,
@@ -258,10 +248,11 @@ class TextGradEvaluator:
                 "data_schema": None,
                 "prior_schema": None,
                 "pipeline_summary": None,
+                "chat_history": None,
             }
             system_prompt = DATA_SCIENCE_EVALUATOR_SYSTEM_PROMPT
-            response_role = "advisory data-science evaluation of data_prior.py"
-            prompt_role = "system prompt for advisory data-science evaluation"
+            response_role = "data-science deliberation message"
+            prompt_role = "system prompt for data-science evaluator"
         elif eval_type == "biology":
             format_string = BIOLOGY_FORMAT_STRING.format(
                 task=task_decrp,
@@ -278,6 +269,7 @@ class TextGradEvaluator:
                 downstream_analysis_code="{downstream_analysis_code}",
                 cluster_summary="{cluster_summary}",
                 downstream_schema="{downstream_schema}",
+                chat_history="{chat_history}",
             )
             self.fields = {
                 "step": None,
@@ -293,10 +285,40 @@ class TextGradEvaluator:
                 "downstream_analysis_code": None,
                 "cluster_summary": None,
                 "downstream_schema": None,
+                "chat_history": None,
             }
             system_prompt = BIOLOGY_EVALUATOR_SYSTEM_PROMPT
-            response_role = "advisory biology evaluation of downstream_analysis.py"
-            prompt_role = "system prompt for advisory biology evaluation"
+            response_role = "biology deliberation message"
+            prompt_role = "system prompt for biology evaluator"
+        elif eval_type == "critic":
+            format_string = CRITIC_FORMAT_STRING.format(
+                task=task_decrp,
+                step="{step}",
+                suggestion="{suggestion}",
+                current_performance="{current_performance}",
+                training_logs="{training_logs}",
+                pipeline_summary="{pipeline_summary}",
+                data_prior_notes_history="{data_prior_notes_history}",
+                model_training_notes_history="{model_training_notes_history}",
+                downstream_analysis_notes_history="{downstream_analysis_notes_history}",
+                script_summaries="{script_summaries}",
+                chat_history="{chat_history}",
+            )
+            self.fields = {
+                "step": None,
+                "suggestion": None,
+                "current_performance": None,
+                "training_logs": None,
+                "pipeline_summary": None,
+                "data_prior_notes_history": None,
+                "model_training_notes_history": None,
+                "downstream_analysis_notes_history": None,
+                "script_summaries": None,
+                "chat_history": None,
+            }
+            system_prompt = CRITIC_SYSTEM_PROMPT
+            response_role = "critic optimizer-driving message"
+            prompt_role = "system prompt for critic"
         else:
             raise ValueError(f"Unsupported evaluator type: {eval_type}")
         self.response_role_description = response_role
