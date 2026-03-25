@@ -29,7 +29,16 @@ from evaluator import (
 )
 from executor import CodeExecutor
 from generator import StageScriptGenerator
-from hist_notebook import append_decision_record, append_history_note, build_history_digest, infer_design_identity
+from hist_notebook import (
+    append_decision_record,
+    append_history_note,
+    append_script_note_record,
+    build_code_diff,
+    build_current_diffs_payload,
+    build_history_digest,
+    build_script_notes_history,
+    infer_design_identity,
+)
 from mcp_utils import fetch_mcp_tools_text
 from multieval_types import (
     ConsultantPlanRecord,
@@ -37,6 +46,7 @@ from multieval_types import (
     GlobalBestState,
     HistoryNoteRecord,
     OuterLoopState,
+    ScriptNoteRecord,
     STAGE_FILENAMES,
 )
 from validator import write_failure_record
@@ -51,6 +61,16 @@ def read_json_safe(path: str) -> Dict[str, Any]:
         return data if isinstance(data, dict) else {}
     except Exception:
         return {}
+
+
+def read_text_safe(path: str) -> str:
+    if not path or not os.path.exists(path):
+        return ""
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            return f.read()
+    except Exception:
+        return ""
 
 
 def read_perf(path: str) -> Dict[str, Any]:
@@ -102,6 +122,12 @@ def collect_eval_data(resolved_artifact_layout: Dict[str, Any], run_result: Dict
 
 def bundle_text_map(code_bundle: Dict[str, tg.Variable]) -> Dict[str, str]:
     return {filename: code_bundle[filename].value for filename in STAGE_FILENAMES if filename in code_bundle}
+
+
+def bundle_text_map_from_dir(script_dir: str) -> Dict[str, str]:
+    if not script_dir or not os.path.isdir(script_dir):
+        return {}
+    return {filename: read_text_safe(os.path.join(script_dir, filename)) for filename in STAGE_FILENAMES}
 
 
 def classify_run_failure(run_result: Dict[str, Any]) -> tuple[str | None, str | None, str]:
@@ -294,20 +320,6 @@ def _dedupe_preserve_order(items: List[str]) -> List[str]:
     return out
 
 
-def _merge_feedback_instructions(*feedbacks: Dict[str, Any]) -> Dict[str, List[str]]:
-    merged_keep: List[str] = []
-    merged_change: List[str] = []
-    for feedback in feedbacks:
-        if not isinstance(feedback, dict):
-            continue
-        merged_keep.extend(str(item).strip() for item in feedback.get("keep_fixed", []) if str(item).strip())
-        merged_change.extend(str(item).strip() for item in feedback.get("change_next", []) if str(item).strip())
-    return {
-        "keep_fixed": _dedupe_preserve_order(merged_keep),
-        "change_next": _dedupe_preserve_order(merged_change),
-    }
-
-
 def _feedback_has_signal(feedback: Dict[str, Any]) -> bool:
     if not isinstance(feedback, dict):
         return False
@@ -473,7 +485,18 @@ Use labels only for evaluation, never for training.
     history_notes_result_path = f"{config.result_dir}/feedback/history_notes.jsonl"
     decision_ledger_result_path = f"{config.result_dir}/feedback/decision_ledger.jsonl"
     consultant_history_path = f"{config.result_dir}/feedback/consultant_history.jsonl"
+    script_note_paths = {
+        filename: f"{config.notes_dir}/{filename.replace('.py', '')}_notes.jsonl"
+        for filename in STAGE_FILENAMES
+    }
+    script_note_result_paths = {
+        filename: f"{config.result_dir}/feedback/{filename.replace('.py', '')}_notes.jsonl"
+        for filename in STAGE_FILENAMES
+    }
     for path in [note_path, history_notes_path, decision_ledger_path, history_notes_result_path, decision_ledger_result_path, consultant_history_path]:
+        with open(path, "w", encoding="utf-8"):
+            pass
+    for path in list(script_note_paths.values()) + list(script_note_result_paths.values()):
         with open(path, "w", encoding="utf-8"):
             pass
     with open(history_digest_path, "w", encoding="utf-8") as f:
@@ -525,6 +548,9 @@ Use labels only for evaluation, never for training.
     suggestion = task_summary["suggestion"]
     code_bundle: Dict[str, tg.Variable] | None = None
     optimizers: Dict[str, tg.TextualGradientDescent] = {}
+    script_note_records: Dict[str, List[ScriptNoteRecord]] = {filename: [] for filename in STAGE_FILENAMES}
+    previous_step_bundle_texts: Dict[str, str] = {}
+    applied_change_contexts: Dict[str, str] = {filename: "initial generation" for filename in STAGE_FILENAMES}
 
     for step in range(config.opt_step + 1):
         step_start = time.perf_counter()
@@ -591,13 +617,50 @@ Use labels only for evaluation, never for training.
             delta_min=args.delta_min,
             stagnation_steps=outer_state.stagnation_steps,
         )
+        current_metric_value = metric_from_dict(cluster_metrics, ["ari", "ARI"])
+        primary_gain = to_float(primary_state.get("primary_metric_gain"))
+        current_bundle_texts = bundle_text_map(code_bundle)
+        best_bundle_texts = bundle_text_map_from_dir(global_best.best_script_path)
+        script_notes_history = {
+            filename: build_script_notes_history(script_note_records[filename], current_step=step)
+            for filename in STAGE_FILENAMES
+        }
+        script_current_diffs: Dict[str, str] = {}
+        script_prev_diffs: Dict[str, str] = {}
+        script_best_diffs: Dict[str, str] = {}
+        for filename in STAGE_FILENAMES:
+            current_text = current_bundle_texts.get(filename, "")
+            prev_text = previous_step_bundle_texts.get(filename)
+            best_text = best_bundle_texts.get(filename)
+            current_vs_prev_diff = build_code_diff(
+                prev_text,
+                current_text,
+                from_label=f"step_{step-1}:{filename}",
+                to_label=f"step_{step}:{filename}",
+            )
+            current_vs_best_diff = build_code_diff(
+                best_text,
+                current_text,
+                from_label=f"best_step:{filename}",
+                to_label=f"step_{step}:{filename}",
+            )
+            script_prev_diffs[filename] = current_vs_prev_diff
+            script_best_diffs[filename] = current_vs_best_diff
+            script_current_diffs[filename] = build_current_diffs_payload(
+                step=step,
+                script=filename,
+                optimization_text=applied_change_contexts.get(filename, "not optimized this step"),
+                current_vs_prev_diff=current_vs_prev_diff,
+                current_vs_best_diff=current_vs_best_diff,
+                metric_value=current_metric_value,
+                gain=primary_gain,
+            )
 
         notes_text = build_history_digest(outer_notes=outer_state.note_records, global_notes=global_note_records, decision_records=decision_records, keep_last=20)
         with open(history_digest_path, "w", encoding="utf-8") as f:
             f.write(notes_text + "\n")
 
         model_eval_out = model_evaluator.loss_fn(
-            notes=tg.Variable(notes_text or "<empty>", requires_grad=False, role_description="multi-step notes"),
             step=step,
             data_prior_code=code_bundle["data_prior.py"],
             model_training_code=code_bundle["model_training.py"],
@@ -606,6 +669,8 @@ Use labels only for evaluation, never for training.
             stagnation_steps=tg.Variable(str(outer_state.stagnation_steps), requires_grad=False, role_description="current stagnation steps"),
             delta_min=tg.Variable(str(args.delta_min), requires_grad=False, role_description="minimum meaningful validation gain"),
             current_performance=tg.Variable(json.dumps({"perf_summary": pstat, "primary_state": primary_state}, ensure_ascii=False), requires_grad=False, role_description="current performance summary"),
+            model_training_notes_history=tg.Variable(script_notes_history["model_training.py"], requires_grad=False, role_description="model training note history"),
+            model_training_current_diffs=tg.Variable(script_current_diffs["model_training.py"], requires_grad=False, role_description="current model training raw diffs"),
             paths=tg.Variable(json.dumps(generator.path_prompt_fields, ensure_ascii=False), requires_grad=False, role_description="fixed artifact paths"),
             model_schema=tg.Variable(json.dumps(config.stage_requirements("model_training.py"), ensure_ascii=False), requires_grad=False, role_description="model requirements"),
             training_logs=tg.Variable(json.dumps(training_logs, ensure_ascii=False), requires_grad=False, role_description="training logs"),
@@ -618,13 +683,14 @@ Use labels only for evaluation, never for training.
             step=step,
             metrics=tg.Variable(config.metrics, requires_grad=False, role_description="primary metric name"),
             time_budget=tg.Variable(str(config.timeout), requires_grad=False, role_description="time budget seconds"),
-            notes=tg.Variable(notes_text or "<empty>", requires_grad=False, role_description="multi-step notes"),
             data_prior_code=code_bundle["data_prior.py"],
             suggestion=tg.Variable(suggestion, requires_grad=False, role_description="current consultant suggestion"),
             training_history=tg.Variable(json.dumps(perf.get("training_history", []), ensure_ascii=False), requires_grad=False, role_description="training history"),
             stagnation_steps=tg.Variable(str(outer_state.stagnation_steps), requires_grad=False, role_description="current stagnation steps"),
             delta_min=tg.Variable(str(args.delta_min), requires_grad=False, role_description="minimum meaningful validation gain"),
             current_performance=tg.Variable(json.dumps({"perf_summary": pstat, "primary_state": primary_state}, ensure_ascii=False), requires_grad=False, role_description="current performance summary"),
+            data_prior_notes_history=tg.Variable(script_notes_history["data_prior.py"], requires_grad=False, role_description="data prior note history"),
+            data_prior_current_diffs=tg.Variable(script_current_diffs["data_prior.py"], requires_grad=False, role_description="current data prior raw diffs"),
             preprocessing_summary=tg.Variable(json.dumps(preprocess_metadata, ensure_ascii=False), requires_grad=False, role_description="preprocess metadata json"),
             paths=tg.Variable(json.dumps(generator.path_prompt_fields, ensure_ascii=False), requires_grad=False, role_description="fixed artifact paths"),
             data_schema=tg.Variable(json.dumps(config.stage_requirements("data_prior.py"), ensure_ascii=False), requires_grad=False, role_description="data/prior requirements"),
@@ -638,13 +704,14 @@ Use labels only for evaluation, never for training.
             step=step,
             metrics=tg.Variable(config.metrics, requires_grad=False, role_description="primary metric name"),
             time_budget=tg.Variable(str(config.timeout), requires_grad=False, role_description="time budget seconds"),
-            notes=tg.Variable(notes_text or "<empty>", requires_grad=False, role_description="multi-step notes"),
             downstream_analysis_code=code_bundle["downstream_analysis.py"],
             suggestion=tg.Variable(suggestion, requires_grad=False, role_description="current consultant suggestion"),
             training_history=tg.Variable(json.dumps(perf.get("training_history", []), ensure_ascii=False), requires_grad=False, role_description="training history"),
             stagnation_steps=tg.Variable(str(outer_state.stagnation_steps), requires_grad=False, role_description="current stagnation steps"),
             delta_min=tg.Variable(str(args.delta_min), requires_grad=False, role_description="minimum meaningful validation gain"),
             current_performance=tg.Variable(json.dumps({"perf_summary": pstat, "primary_state": primary_state}, ensure_ascii=False), requires_grad=False, role_description="current performance summary"),
+            downstream_analysis_notes_history=tg.Variable(script_notes_history["downstream_analysis.py"], requires_grad=False, role_description="downstream analysis note history"),
+            downstream_analysis_current_diffs=tg.Variable(script_current_diffs["downstream_analysis.py"], requires_grad=False, role_description="current downstream raw diffs"),
             cluster_summary=tg.Variable(json.dumps(cluster_summary, ensure_ascii=False), requires_grad=False, role_description="cluster summary"),
             downstream_schema=tg.Variable(json.dumps(config.stage_requirements("downstream_analysis.py"), ensure_ascii=False), requires_grad=False, role_description="downstream requirements"),
         )
@@ -658,22 +725,14 @@ Use labels only for evaluation, never for training.
             if _feedback_has_signal(feedback):
                 feedback_by_target["model_training.py"] = feedback
                 optimize_targets.append("model_training.py")
-            data_prior_feedback = _merge_feedback_instructions(data_science_feedback, biology_feedback)
-            if _feedback_has_signal(data_science_feedback) or _feedback_has_signal(biology_feedback):
+            if _feedback_has_signal(data_science_feedback):
                 feedback_by_target["data_prior.py"] = {
-                    "diagnosis": _dedupe_preserve_order([
-                        str(data_science_feedback.get("diagnosis", "")).strip(),
-                        str(biology_feedback.get("diagnosis", "")).strip(),
-                    ])[0] if _dedupe_preserve_order([
-                        str(data_science_feedback.get("diagnosis", "")).strip(),
-                        str(biology_feedback.get("diagnosis", "")).strip(),
-                    ]) else "",
+                    "diagnosis": str(data_science_feedback.get("diagnosis", "")).strip(),
                     "focus_areas": _dedupe_preserve_order(
                         [str(item).strip() for item in data_science_feedback.get("focus_areas", [])]
-                        + [str(item).strip() for item in biology_feedback.get("focus_areas", [])]
                     ),
-                    "keep_fixed": data_prior_feedback["keep_fixed"],
-                    "change_next": data_prior_feedback["change_next"],
+                    "keep_fixed": _dedupe_preserve_order([str(item).strip() for item in data_science_feedback.get("keep_fixed", []) if str(item).strip()]),
+                    "change_next": _dedupe_preserve_order([str(item).strip() for item in data_science_feedback.get("change_next", []) if str(item).strip()]),
                 }
                 optimize_targets.append("data_prior.py")
             if _feedback_has_signal(biology_feedback):
@@ -709,8 +768,6 @@ Use labels only for evaluation, never for training.
 
         open_issues = build_open_issues(run_result=run_result, primary_state=primary_state, payload=payload, feedback=feedback)
         attempts_used = attempt
-        current_metric_value = metric_from_dict(cluster_metrics, ["ari", "ARI"])
-        primary_gain = to_float(primary_state.get("primary_metric_gain"))
         architecture_fingerprint, design_summary = infer_design_identity(bundle_text=bundle_text_map(code_bundle), payload=payload, cluster_summary=cluster_summary)
         failure_phase, failure_fingerprint, root_cause = classify_run_failure(run_result)
         decision_rationale = str(payload.get("primary_reason") or feedback.get("diagnosis") or "").strip() or "No explicit rationale provided"
@@ -782,6 +839,31 @@ Use labels only for evaluation, never for training.
             final_out_dir=config.final_out_dir,
         )
 
+        for filename in STAGE_FILENAMES:
+            append_script_note_record(
+                ScriptNoteRecord(
+                    step=step,
+                    script=filename,
+                    optimization_text=applied_change_contexts.get(filename, "not optimized this step"),
+                    current_vs_prev_diff=script_prev_diffs.get(filename, "N/A"),
+                    current_vs_best_diff=script_best_diffs.get(filename, "N/A"),
+                    metric_value=current_metric_value,
+                    gain=primary_gain,
+                ),
+                records=script_note_records[filename],
+                note_jsonl_path=script_note_paths[filename],
+                mirror_jsonl_path=script_note_result_paths[filename],
+            )
+
+        previous_step_bundle_texts = current_bundle_texts
+        next_applied_change_contexts = {filename: "not optimized this step" for filename in STAGE_FILENAMES}
+        if action == "exploit":
+            for filename in optimize_targets:
+                next_applied_change_contexts[filename] = exploit_summary.get(filename) or feedback_by_target.get(filename, {}).get("diagnosis", "") or "optimized this step"
+        elif action == "reconsult":
+            next_applied_change_contexts = {filename: "reconsult regeneration" for filename in STAGE_FILENAMES}
+        applied_change_contexts = next_applied_change_contexts
+
         step_log = {
             "step": step,
             "action": action,
@@ -800,6 +882,8 @@ Use labels only for evaluation, never for training.
             "cluster_summary": cluster_summary,
             "training_logs": training_logs,
             "pipeline_summary": pipeline_summary,
+            "script_notes_history": script_notes_history,
+            "script_current_diffs": script_current_diffs,
             "script_dir": script_dir,
             "optimized_targets": optimize_targets,
         }

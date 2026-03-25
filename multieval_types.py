@@ -95,6 +95,30 @@ class HistoryNoteRecord:
 
 
 @dataclass
+class ScriptNoteRecord:
+    step: int
+    script: str
+    optimization_text: str
+    current_vs_prev_diff: str
+    current_vs_best_diff: str
+    metric_value: float | None
+    gain: float | None
+    created_at: float = field(default_factory=time.time)
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "step": self.step,
+            "script": self.script,
+            "optimization_text": self.optimization_text,
+            "current_vs_prev_diff": self.current_vs_prev_diff,
+            "current_vs_best_diff": self.current_vs_best_diff,
+            "metric_value": self.metric_value,
+            "gain": self.gain,
+            "created_at": self.created_at,
+        }
+
+
+@dataclass
 class DecisionLedgerRecord:
     step: int
     architecture_fingerprint: str

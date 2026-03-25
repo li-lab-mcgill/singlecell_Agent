@@ -1,8 +1,9 @@
 import json
 import re
+from difflib import unified_diff
 from typing import Any, Dict, List
 
-from multieval_types import DecisionLedgerRecord, HistoryNoteRecord
+from multieval_types import DecisionLedgerRecord, HistoryNoteRecord, ScriptNoteRecord
 
 
 def _short(text: str, max_chars: int) -> str:
@@ -46,6 +47,83 @@ def append_decision_record(record: DecisionLedgerRecord, *, decision_records: Li
     if mirror_jsonl_path:
         with open(mirror_jsonl_path, "a", encoding="utf-8") as f:
             f.write(json.dumps(record.to_dict(), ensure_ascii=False) + "\n")
+
+
+def build_code_diff(old_text: str | None, new_text: str | None, *, from_label: str, to_label: str) -> str:
+    old = str(old_text or "")
+    new = str(new_text or "")
+    if not old and not new:
+        return "N/A: no code available"
+    if not old:
+        return f"N/A: no previous version for {to_label}"
+    if old == new:
+        return "No code changes."
+    diff_lines = unified_diff(
+        old.splitlines(),
+        new.splitlines(),
+        fromfile=from_label,
+        tofile=to_label,
+        lineterm="",
+    )
+    return "\n".join(diff_lines)
+
+
+def append_script_note_record(record: ScriptNoteRecord, *, records: List[ScriptNoteRecord], note_jsonl_path: str, mirror_jsonl_path: str | None = None) -> None:
+    records.append(record)
+    with open(note_jsonl_path, "a", encoding="utf-8") as f:
+        f.write(json.dumps(record.to_dict(), ensure_ascii=False) + "\n")
+    if mirror_jsonl_path:
+        with open(mirror_jsonl_path, "a", encoding="utf-8") as f:
+            f.write(json.dumps(record.to_dict(), ensure_ascii=False) + "\n")
+
+
+def _summarize_diff_text(diff_text: str, max_lines: int = 12) -> str:
+    text = str(diff_text or "").strip()
+    if not text:
+        return "N/A"
+    if text.startswith("N/A:") or text == "No code changes.":
+        return text
+    lines = [line for line in text.splitlines() if line and not line.startswith("---") and not line.startswith("+++") and not line.startswith("@@")]
+    if not lines:
+        return "No code changes."
+    return "\n".join(lines[:max_lines])
+
+
+def build_script_notes_history(records: List[ScriptNoteRecord], *, current_step: int, keep_last: int = 8) -> str:
+    prior_records = [record for record in records if record.step < current_step]
+    if not prior_records:
+        return "<empty>"
+    sections: List[str] = []
+    for record in prior_records[-keep_last:]:
+        sections.extend(
+            [
+                f"Step {record.step} | {record.script}",
+                f"optimization_text: {record.optimization_text or 'not optimized this step'}",
+                f"metric_value: {record.metric_value}",
+                f"gain: {record.gain}",
+                "current_vs_prev_diff:",
+                _summarize_diff_text(record.current_vs_prev_diff),
+                "current_vs_best_diff:",
+                _summarize_diff_text(record.current_vs_best_diff),
+                "",
+            ]
+        )
+    return "\n".join(sections).strip() or "<empty>"
+
+
+def build_current_diffs_payload(*, step: int, script: str, optimization_text: str, current_vs_prev_diff: str, current_vs_best_diff: str, metric_value: float | None, gain: float | None) -> str:
+    return "\n".join(
+        [
+            f"Step {step} | {script}",
+            f"optimization_text: {optimization_text or 'not optimized this step'}",
+            f"metric_value: {metric_value}",
+            f"gain: {gain}",
+            "current_vs_prev_diff:",
+            str(current_vs_prev_diff or "N/A"),
+            "current_vs_best_diff:",
+            str(current_vs_best_diff or "N/A"),
+        ]
+    )
 
 
 def _slugify(text: str, max_len: int = 32) -> str:

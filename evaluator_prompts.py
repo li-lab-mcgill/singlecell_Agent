@@ -1,8 +1,11 @@
 GLOSSARY_TEXT = """
 ### Glossary of tags that will be sent to you:
-# - |TASK DESCRP|, |STEP|, |METRICS|, |NOTES|, |PLAN|
+# - |TASK DESCRP|, |STEP|, |METRICS|, |PLAN|
 # - |DELTA_MIN|, |STAGNATION_STEPS|, |CURRENT_PERFORMANCE|
 # - |DATA_PRIOR_CODE|, |MODEL_TRAINING_CODE|, |DOWNSTREAM_ANALYSIS_CODE|
+# - |DATA_PRIOR_NOTES_HISTORY|, |DATA_PRIOR_CURRENT_DIFFS|
+# - |MODEL_TRAINING_NOTES_HISTORY|, |MODEL_TRAINING_CURRENT_DIFFS|
+# - |DOWNSTREAM_ANALYSIS_NOTES_HISTORY|, |DOWNSTREAM_ANALYSIS_CURRENT_DIFFS|
 # - |PATHS|, |DATA_SCHEMA|, |PRIOR_SCHEMA|, |MODEL_SCHEMA|, |DOWNSTREAM_SCHEMA|
 # - |CLUSTER_METRICS|, |CLUSTER_SUMMARY|, |TRAINING_LOGS|, |PIPELINE_SUMMARY|
 """
@@ -11,7 +14,7 @@ MODEL_EVALUATOR_SYSTEM_PROMPT = (
     """
 Role:
 You are a deep learning specialist. You evaluate the current model training and architecture choices in MODEL_TRAINING_CODE for TASK and PLAN.
-You do not write code. Previous descions are provided in NOTES. 
+You do not write code. Previous step history is provided in MODEL_TRAINING_NOTES_HISTORY and the current-step raw diffs are provided in MODEL_TRAINING_CURRENT_DIFFS.
 
 Goal:
 - Understand the current model architecture, training pipeline, and performance based on MODEL_TRAINING_CODE, TRAINING_LOGS, PIPELINE_SUMMARY and CURRENT_PERFORMANCE.
@@ -61,7 +64,7 @@ DATA_SCIENCE_EVALUATOR_SYSTEM_PROMPT = (
     """
 Role:
 You are a data scientist. You evaluate whether the current data preprocessing and prior construction pipeline in DATA_PRIOR_CODE is the best practice, well-aligned with the downstream modeling task and produces the correct outputs.
-You do not write code. You only provide feedback for DATA_PRIOR_CODE. Previous descions are provided in NOTES. 
+You do not write code. You only provide feedback for DATA_PRIOR_CODE. Previous step history is provided in DATA_PRIOR_NOTES_HISTORY and the current-step raw diffs are provided in DATA_PRIOR_CURRENT_DIFFS.
 
 Goal:
 - Evaluate whether data preprocessing DATA_PRIOR_CODE is the best practice for the given TASK and satisfies the goal PLAN.
@@ -92,7 +95,7 @@ BIOLOGY_EVALUATOR_SYSTEM_PROMPT = (
 """
 Role:
 You are a computational biologist. Based on CURRENT_PERFORMANCE, you evaluate whether the current downstream analysis in DOWNSTREAM_ANALYSIS_CODE is the best practice, well-aligned with the goal of the TASK and produces the correct outputs.
-You do not write code. You only provide feedback for DOWNSTREAM_ANALYSIS_CODE. Previous descions are provided in NOTES. 
+You do not write code. You only provide feedback for DOWNSTREAM_ANALYSIS_CODE. Previous step history is provided in DOWNSTREAM_ANALYSIS_NOTES_HISTORY and the current-step raw diffs are provided in DOWNSTREAM_ANALYSIS_CURRENT_DIFFS.
 
 Goal:
 - Evaluate whether DOWNSTREAM_ANALYSIS_CODE is the best practice for single cell analysis, based on outputs such as cluster_metrics and cluster_summary.
@@ -129,12 +132,13 @@ MODEL_FORMAT_STRING = (
     "|STEP|: {step}\n|/STEP|\n"
     "|METRICS|: {metrics}\n|/METRICS|\n"
     "|TIME_BUDGET|: {time_budget}\n|/TIME_BUDGET|\n"
-    "|NOTES|: {notes}\n|/NOTES|\n"
     "|PLAN|: {suggestion}\n|/PLAN|\n"
     "|TRAINING_HISTORY|: {training_history}\n|/TRAINING_HISTORY|\n"
     "|STAGNATION_STEPS|: {stagnation_steps}\n|/STAGNATION_STEPS|\n"
     "|DELTA_MIN|: {delta_min}\n|/DELTA_MIN|\n"
     "|CURRENT_PERFORMANCE|: {current_performance}\n|/CURRENT_PERFORMANCE|\n"
+    "|MODEL_TRAINING_NOTES_HISTORY|: {model_training_notes_history}\n|/MODEL_TRAINING_NOTES_HISTORY|\n"
+    "|MODEL_TRAINING_CURRENT_DIFFS|: {model_training_current_diffs}\n|/MODEL_TRAINING_CURRENT_DIFFS|\n"
     "|DATA_PRIOR_CODE|: {data_prior_code}\n|/DATA_PRIOR_CODE|\n"
     "|MODEL_TRAINING_CODE|: {model_training_code}\n|/MODEL_TRAINING_CODE|\n"
     "|PATHS|: {paths}\n|/PATHS|\n"
@@ -148,12 +152,13 @@ DATA_SCIENCE_FORMAT_STRING = (
     "|STEP|: {step}\n|/STEP|\n"
     "|METRICS|: {metrics}\n|/METRICS|\n"
     "|TIME_BUDGET|: {time_budget}\n|/TIME_BUDGET|\n"
-    "|NOTES|: {notes}\n|/NOTES|\n"
     "|PLAN|: {suggestion}\n|/PLAN|\n"
     "|TRAINING_HISTORY|: {training_history}\n|/TRAINING_HISTORY|\n"
     "|STAGNATION_STEPS|: {stagnation_steps}\n|/STAGNATION_STEPS|\n"
     "|DELTA_MIN|: {delta_min}\n|/DELTA_MIN|\n"
     "|CURRENT_PERFORMANCE|: {current_performance}\n|/CURRENT_PERFORMANCE|\n"
+    "|DATA_PRIOR_NOTES_HISTORY|: {data_prior_notes_history}\n|/DATA_PRIOR_NOTES_HISTORY|\n"
+    "|DATA_PRIOR_CURRENT_DIFFS|: {data_prior_current_diffs}\n|/DATA_PRIOR_CURRENT_DIFFS|\n"
     "|DATA_PRIOR_CODE|: {data_prior_code}\n|/DATA_PRIOR_CODE|\n"
     "|PREPROCESSING_SUMMARY|: {preprocessing_summary}\n|/PREPROCESSING_SUMMARY|\n"
     "|PATHS|: {paths}\n|/PATHS|\n"
@@ -168,12 +173,13 @@ BIOLOGY_FORMAT_STRING = (
     "|STEP|: {step}\n|/STEP|\n"
     "|METRICS|: {metrics}\n|/METRICS|\n"
     "|TIME_BUDGET|: {time_budget}\n|/TIME_BUDGET|\n"
-    "|NOTES|: {notes}\n|/NOTES|\n"
     "|PLAN|: {suggestion}\n|/PLAN|\n"
     "|TRAINING_HISTORY|: {training_history}\n|/TRAINING_HISTORY|\n"
     "|STAGNATION_STEPS|: {stagnation_steps}\n|/STAGNATION_STEPS|\n"
     "|DELTA_MIN|: {delta_min}\n|/DELTA_MIN|\n"
     "|CURRENT_PERFORMANCE|: {current_performance}\n|/CURRENT_PERFORMANCE|\n"
+    "|DOWNSTREAM_ANALYSIS_NOTES_HISTORY|: {downstream_analysis_notes_history}\n|/DOWNSTREAM_ANALYSIS_NOTES_HISTORY|\n"
+    "|DOWNSTREAM_ANALYSIS_CURRENT_DIFFS|: {downstream_analysis_current_diffs}\n|/DOWNSTREAM_ANALYSIS_CURRENT_DIFFS|\n"
     "|DOWNSTREAM_ANALYSIS_CODE|: {downstream_analysis_code}\n|/DOWNSTREAM_ANALYSIS_CODE|\n"
     "|CLUSTER_SUMMARY|: {cluster_summary}\n|/CLUSTER_SUMMARY|\n"
     "|DOWNSTREAM_SCHEMA|: {downstream_schema}\n|/DOWNSTREAM_SCHEMA|\n"
