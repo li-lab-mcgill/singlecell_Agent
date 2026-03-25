@@ -126,6 +126,7 @@ class Config:
 
         self.engine = tg.get_engine(self.engine_name, max_tokens=5000)
         self.feat_stats = self.summarize_dataset_stats(sample_n=1, feature_n=100, random_seed=42)
+        self.prior_resource_summary = self.summarize_prior_resources()
         if self.label_column is None:
             try:
                 parsed = json.loads(self.feat_stats.split("LLM SUMMARY (JSON):", 1)[-1])
@@ -250,6 +251,59 @@ class Config:
         )
         
         return response
+
+    def summarize_prior_resources(self, sample_rows: int = 5) -> str:
+        dataset_dir = getattr(self, "dataset_dir", None) or os.path.join(self.cur_path, "Datasets")
+        resource_specs = [
+            ("MsigDB.csv", "csv"),
+            ("NeST.tsv", "tsv"),
+            ("GO_terms.csv", "csv"),
+            ("Cell_marker_Human.xlsx", "excel"),
+            ("meta_info.csv", "csv"),
+        ]
+        summaries: List[Dict[str, Any]] = []
+        for file_name, fmt in resource_specs:
+            path = os.path.join(dataset_dir, file_name)
+            entry: Dict[str, Any] = {
+                "file_path": path,
+                "format": fmt,
+                "exists": os.path.exists(path),
+            }
+            if not os.path.exists(path):
+                entry["notes"] = "file not found"
+                summaries.append(entry)
+                continue
+            try:
+                if fmt == "excel":
+                    xls = pd.ExcelFile(path)
+                    entry["sheet_names"] = list(xls.sheet_names)
+                    preview_frames: Dict[str, pd.DataFrame] = {}
+                    total_rows = 0
+                    first_columns: List[str] = []
+                    for idx, sheet in enumerate(xls.sheet_names[:3]):
+                        df = pd.read_excel(path, sheet_name=sheet)
+                        total_rows += int(df.shape[0])
+                        if idx == 0:
+                            first_columns = [str(col) for col in df.columns.tolist()]
+                        preview_frames[sheet] = df.head(sample_rows)
+                    entry["n_rows"] = total_rows
+                    entry["n_cols"] = len(first_columns)
+                    entry["column_names"] = first_columns
+                    entry["sample_rows"] = {
+                        sheet: preview.to_dict(orient="records")
+                        for sheet, preview in preview_frames.items()
+                    }
+                else:
+                    sep = "\t" if fmt == "tsv" else ","
+                    df = pd.read_csv(path, sep=sep)
+                    entry["n_rows"] = int(df.shape[0])
+                    entry["n_cols"] = int(df.shape[1])
+                    entry["column_names"] = [str(col) for col in df.columns.tolist()]
+                    entry["sample_rows"] = df.head(sample_rows).to_dict(orient="records")
+            except Exception as exc:
+                entry["notes"] = f"failed to summarize: {exc}"
+            summaries.append(entry)
+        return json.dumps({"prior_resources": summaries}, indent=2, ensure_ascii=False)
 
 
     def _parse_llm_feature_lists(

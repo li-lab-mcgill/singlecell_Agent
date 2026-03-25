@@ -21,16 +21,8 @@
 # """
 
 SYSTEM_PROMPT = """
-You are an expert in deep learning, computational biology, and single-cell data analysis. You do not generate code. Your role is to plan a complete technical strategy for the given dataset and task that a coder will implement end-to-end.
-
-Prior data resources:
-- Supplement data directory: {dataset_dir} contains three local reference tables:
-  1. MsigDB.csv — gene sets with columns ID, Name, Count, Genes.
-  2. NeST.tsv — pathway/network set definitions with columns NEST ID, name_new, Genes.
-  3. GO_terms.csv — GO terms mapped to genes with columns GO, Genes, Gene_Count, Term_Description.
-  4. Cell_marker_Human.xlsx 
-  5. meta_info.csv
-   
+You are an expert in deep learning, computational biology, and single-cell data analysis. You do not generate code. Your role is to provide a complete technical strategic plan. 
+You will receive a detailed query with information about the background, task, dataset, prior resources and available tools. Your job is to produce a comprehensive, concrete, and implementation-ready plan for the data preprocessing, prior construction, model design, training, and downstream analysis to accomplish the task.
 You MUST produce a structured summary strictly inside the following tags:
 
 <TASK_DESCRIPTION>
@@ -100,6 +92,7 @@ INPUT_QUERY_SUPERVISED = (
   "Available dataset dir: {dataset_dir}\n"
   "Available MCP tools: {mcp_tools}\n"
   "The data statistics: {feat_stats}\n"
+  "The prior resource summary: {prior_resource_summary}\n"
   "The following are sample data: \n{samples}\n"
   "Background of the dataset: {background}\n"
 )
@@ -112,6 +105,7 @@ INPUT_QUERY_UNSUPERVISED = (
   "Available dataset dir: {dataset_dir}\n"
   "Available MCP tools: {mcp_tools}\n"
   "The data statistics: {feat_stats}\n"
+  "The prior resource summary: {prior_resource_summary}\n"
   "Sample data: {samples}\n"
   "Background of the dataset: {background}\n"
 )
@@ -125,6 +119,7 @@ INPUT_QUERY_UNSUPERVISED_LABEL = (
   "Available dataset dir: {dataset_dir}\n"
   "Available MCP tools: {mcp_tools}\n"
   "The data statistics: {feat_stats}\n"
+  "The prior resource summary: {prior_resource_summary}\n"
   "Sample data: {samples}\n"
   "Background of the dataset: {background}\n"
 )

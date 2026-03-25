@@ -465,6 +465,7 @@ Use labels only for evaluation, never for training.
     )
     config.api_dir = args.api_dir or f"{cur_path}/apis"
     config.dataset_dir = args.dataset_dir or f"{cur_path}/Datasets"
+    config.prior_resource_summary = config.summarize_prior_resources()
     config.artifact_layout_path = args.artifact_layout if os.path.isabs(args.artifact_layout) else f"{cur_path}/{args.artifact_layout}"
     config.notes_dir = f"{cur_path}/{args.notes_dir}"
     config.code_dir = config.single_code_dir
@@ -567,6 +568,7 @@ Use labels only for evaluation, never for training.
                 background=background,
                 suggestion=suggestion,
                 data_summary=config.feat_stats,
+                prior_resource_summary=config.prior_resource_summary,
                 script_summaries=StageScriptGenerator.summarize_bundle(None),
                 mcp_tools_text=mcp_tools_text,
                 api_dir=config.api_dir,
