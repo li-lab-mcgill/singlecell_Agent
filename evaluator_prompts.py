@@ -11,7 +11,7 @@ MODEL_EVALUATOR_SYSTEM_PROMPT = (
     """
 Role:
 You are a Deep learning specialist. You evaluate the current model training and architecture choices in MODEL_TRAINING_CODE for a single-cell workflow.
-You do not write code. You evaluate the current scripts as a whole and identify bottlenecks and concrete improvements for the TASK and each script specifically.
+You do not write code. You evaluate the current scripts as a whole and identify bottlenecks and concrete improvements for the TASK and only provide feedback for MODEL_TRAINING_CODE.
 
 **Evaluation Criteria**
 Examine whether the training pipeline applies the right feature scaling and transformations for the chosen architecture — for example, whether normalization, embedding handling, or input encoding are correctly implemented and consistently applied across train and validation splits. Detect signs of overfitting or underfitting from the training dynamics, and identify any failure modes such as loss divergence, vanishing or exploding gradients, class imbalance, or improper normalization.
@@ -40,26 +40,15 @@ Return one JSON object only, with keys:
     "issues_detected": "<string>",
     "explanation": "<string>"
   },
-  "optimize_targets": ["<filename>.py"],
   "feedback": {
     "diagnosis": "<string>",
-    "strategy": "<string>",
-    "strategy_source": "<consultant_suggestion|incremental_refinement>",
-    "expected_metric_effect": "<string>",
-    "failed_architectures": ["<string>"],
-    "evidence_for_consultant": ["<string>"],
     "focus_areas": ["<string>"],
-    "bottleneck_reason": "<string>",
-    "keep_fixed": ["<string>"],
-    "change_next": ["<string>"],
-    "stop_exploit_if": "<string>"
+    "keep_fixed": ["<instruction>"],
+    "change_next": ["<instruction>"]
   }
 }
 
 Constraints:
- - optimize_targets should contain one or more filenames from: data_prior.py, model_training.py, downstream_analysis.py when code changes are recommended.
-- Every keep_fixed entry must be file-scoped using the format "<filename>.py: <instruction>".
-- Every change_next entry must be file-scoped using the format "<filename>.py: <instruction>".
 - Be concrete and code-actionable.
 - Return exactly one JSON object and no surrounding text.
 """
@@ -157,8 +146,13 @@ Return one JSON object only, with keys:
 DATA_SCIENCE_FORMAT_STRING = (
     "|TASK DESCRP|: {task}\n|/TASK DESCRP|\n"
     "|STEP|: {step}\n|/STEP|\n"
+    "|METRICS|: {metrics}\n|/METRICS|\n"
+    "|TIME_BUDGET|: {time_budget}\n|/TIME_BUDGET|\n"
     "|NOTES|: {notes}\n|/NOTES|\n"
     "|SUGGESTION|: {suggestion}\n|/SUGGESTION|\n"
+    "|TRAINING_HISTORY|: {training_history}\n|/TRAINING_HISTORY|\n"
+    "|STAGNATION_STEPS|: {stagnation_steps}\n|/STAGNATION_STEPS|\n"
+    "|DELTA_MIN|: {delta_min}\n|/DELTA_MIN|\n"
     "|CURRENT_PERFORMANCE|: {current_performance}\n|/CURRENT_PERFORMANCE|\n"
     "|DATA_PRIOR_CODE|: {data_prior_code}\n|/DATA_PRIOR_CODE|\n"
     "|MODEL_TRAINING_CODE|: {model_training_code}\n|/MODEL_TRAINING_CODE|\n"
@@ -177,8 +171,13 @@ DATA_SCIENCE_FORMAT_STRING = (
 BIOLOGY_FORMAT_STRING = (
     "|TASK DESCRP|: {task}\n|/TASK DESCRP|\n"
     "|STEP|: {step}\n|/STEP|\n"
+    "|METRICS|: {metrics}\n|/METRICS|\n"
+    "|TIME_BUDGET|: {time_budget}\n|/TIME_BUDGET|\n"
     "|NOTES|: {notes}\n|/NOTES|\n"
     "|SUGGESTION|: {suggestion}\n|/SUGGESTION|\n"
+    "|TRAINING_HISTORY|: {training_history}\n|/TRAINING_HISTORY|\n"
+    "|STAGNATION_STEPS|: {stagnation_steps}\n|/STAGNATION_STEPS|\n"
+    "|DELTA_MIN|: {delta_min}\n|/DELTA_MIN|\n"
     "|CURRENT_PERFORMANCE|: {current_performance}\n|/CURRENT_PERFORMANCE|\n"
     "|DATA_PRIOR_CODE|: {data_prior_code}\n|/DATA_PRIOR_CODE|\n"
     "|CLUSTER_METRICS|: {cluster_metrics}\n|/CLUSTER_METRICS|\n"

@@ -20,22 +20,12 @@ load_dotenv()
 
 
 def _validate_feedback_payload(feedback: Dict[str, Any]) -> None:
-    required_feedback_keys = [
-        "diagnosis",
-        "strategy",
-        "strategy_source",
-        "expected_metric_effect",
-        "failed_architectures",
-        "evidence_for_consultant",
-        "focus_areas",
-        "bottleneck_reason",
-        "keep_fixed",
-        "change_next",
-        "stop_exploit_if",
-    ]
+    required_feedback_keys = ["diagnosis", "focus_areas", "keep_fixed", "change_next"]
     missing_feedback = [key for key in required_feedback_keys if key not in feedback]
     if missing_feedback:
         raise ValueError(f"Evaluator feedback missing required keys: {missing_feedback}")
+    if not isinstance(feedback.get("focus_areas"), list):
+        raise ValueError("Evaluator feedback focus_areas must be a list")
 
 
 def _validate_feedback_only_payload(feedback: Dict[str, Any]) -> None:
@@ -72,21 +62,11 @@ def parse_eval_action(text: str) -> tuple[dict, dict]:
         "primary_reason",
         "performance",
         "training_health",
-        "optimize_targets",
         "feedback",
     ]
     missing = [key for key in required_keys if key not in payload]
     if missing:
         raise ValueError(f"Evaluator payload missing required keys: {missing}")
-    targets = []
-    for item in payload.get("optimize_targets", []):
-        target = str(item).strip()
-        if not target:
-            continue
-        if target != "model_training.py":
-            raise ValueError(f"Model evaluator optimize_targets must only contain model_training.py; got: {target}")
-        targets.append(target)
-    payload["optimize_targets"] = targets
     feedback = payload.get("feedback", {})
     if not isinstance(feedback, dict):
         raise ValueError("Evaluator feedback must be a JSON object")
@@ -122,13 +102,9 @@ def exploit_plan_from_feedback(feedback: Dict[str, Any]) -> Dict[str, Any]:
     change_next = feedback.get("change_next", []) if isinstance(feedback, dict) else []
     return {
         "diagnosis": str(feedback.get("diagnosis", "")).strip() if isinstance(feedback, dict) else "",
-        "strategy": str(feedback.get("strategy", "")).strip() if isinstance(feedback, dict) else "",
-        "expected_metric_effect": str(feedback.get("expected_metric_effect", "")).strip() if isinstance(feedback, dict) else "",
         "focus_areas": [str(item).strip() for item in feedback.get("focus_areas", []) if str(item).strip()] if isinstance(feedback, dict) else [],
-        "bottleneck_reason": str(feedback.get("bottleneck_reason", "")).strip() if isinstance(feedback, dict) else "",
         "keep_fixed": [str(item).strip() for item in keep_fixed if str(item).strip()],
         "change_next": [str(item).strip() for item in change_next if str(item).strip()],
-        "stop_exploit_if": str(feedback.get("stop_exploit_if", "")).strip() if isinstance(feedback, dict) else "",
     }
 
 
@@ -161,24 +137,16 @@ def build_open_issues(*, run_result: Dict[str, Any], primary_state: Dict[str, An
 
 def build_instruction_text(feedback: Dict[str, Any]) -> str:
     focus_areas = feedback.get("focus_areas", []) if isinstance(feedback, dict) else []
-    bottleneck_reason = str(feedback.get("bottleneck_reason", "")).strip() if isinstance(feedback, dict) else ""
     keep_fixed = feedback.get("keep_fixed", []) if isinstance(feedback, dict) else []
     change_next = feedback.get("change_next", []) if isinstance(feedback, dict) else []
-    stop_exploit_if = str(feedback.get("stop_exploit_if", "")).strip() if isinstance(feedback, dict) else ""
     lines = ["[Focus Areas]"]
     lines.extend(f"- {item}" for item in focus_areas or ["<none>"])
-    if bottleneck_reason:
-        lines.append("")
-        lines.append(f"[Bottleneck Reason]\n- {bottleneck_reason}")
     lines.append("")
     lines.append("[Keep Fixed]")
     lines.extend(f"- {item}" for item in keep_fixed or ["<none>"])
     lines.append("")
     lines.append("[Change Next]")
     lines.extend(f"- {item}" for item in change_next or ["<none>"])
-    if stop_exploit_if:
-        lines.append("")
-        lines.append(f"[Stop Exploit If]\n- {stop_exploit_if}")
     return "\n".join(lines)
 
 

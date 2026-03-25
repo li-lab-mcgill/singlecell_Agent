@@ -180,23 +180,14 @@ def build_exploit_gradient_text(*, target: str, feedback: Dict[str, Any]) -> str
     change_next = feedback.get("change_next", []) if isinstance(feedback, dict) else []
     scoped_keep = _target_specific_instructions(target, keep_fixed)
     scoped_change = _target_specific_instructions(target, change_next)
-    failed_architectures = feedback.get("failed_architectures", []) if isinstance(feedback, dict) else []
-    evidence = feedback.get("evidence_for_consultant", []) if isinstance(feedback, dict) else []
     focus_areas = feedback.get("focus_areas", []) if isinstance(feedback, dict) else []
     lines = [
         "Parsed evaluator feedback for optimization:",
         f"[Target]\n- {target}",
         f"[Diagnosis]\n- {str(feedback.get('diagnosis', '<none>')).strip() if isinstance(feedback, dict) else '<none>'}",
-        f"[Strategy]\n- {str(feedback.get('strategy', '<none>')).strip() if isinstance(feedback, dict) else '<none>'}",
-        f"[Expected Metric Effect]\n- {str(feedback.get('expected_metric_effect', '<none>')).strip() if isinstance(feedback, dict) else '<none>'}",
-        f"[Bottleneck Reason]\n- {str(feedback.get('bottleneck_reason', '<none>')).strip() if isinstance(feedback, dict) else '<none>'}",
         "[Focus Areas]",
     ]
     lines.extend(f"- {item}" for item in (focus_areas or ["<none>"]))
-    lines.append("[Failed Architectures]")
-    lines.extend(f"- {item}" for item in (failed_architectures or ["<none>"]))
-    lines.append("[Evidence For Consultant]")
-    lines.extend(f"- {item}" for item in (evidence or ["<none>"]))
     lines.append("[Keep Fixed]")
     lines.extend(f"- {item}" for item in (scoped_keep or ["<none>"]))
     lines.append("[Change Next]")
@@ -671,10 +662,9 @@ Use labels only for evaluation, never for training.
         optimize_targets: List[str] = []
         feedback_by_target: Dict[str, Dict[str, Any]] = {}
         if action == "exploit":
-            model_targets = [target for target in payload.get("optimize_targets", []) if target == "model_training.py"]
-            if model_targets:
+            if _feedback_has_signal(feedback):
                 feedback_by_target["model_training.py"] = feedback
-                optimize_targets.extend(model_targets)
+                optimize_targets.append("model_training.py")
             data_prior_feedback = _merge_feedback_instructions(data_science_feedback, biology_feedback)
             if _feedback_has_signal(data_science_feedback) or _feedback_has_signal(biology_feedback):
                 feedback_by_target["data_prior.py"] = {
@@ -730,7 +720,7 @@ Use labels only for evaluation, never for training.
         primary_gain = to_float(primary_state.get("primary_metric_gain"))
         architecture_fingerprint, design_summary = infer_design_identity(bundle_text=bundle_text_map(code_bundle), payload=payload, cluster_summary=cluster_summary)
         failure_phase, failure_fingerprint, root_cause = classify_run_failure(run_result)
-        decision_rationale = str(payload.get("primary_reason") or feedback.get("strategy") or "").strip() or "No explicit rationale provided"
+        decision_rationale = str(payload.get("primary_reason") or feedback.get("diagnosis") or "").strip() or "No explicit rationale provided"
         prev_exploit_context = previous_exploit_context(global_note_records)
         reconsult_reason = f"Automatic reconsult after reaching stagnation limit ({outer_state.stagnation_steps}/{args.stagnation_steps_limit})."
 
@@ -781,7 +771,7 @@ Use labels only for evaluation, never for training.
                 optimized_scripts=optimize_targets,
                 exploit_change_types=exploit_change_types,
                 exploit_summary=exploit_summary,
-                rejected_design_labels=[str(item) for item in feedback.get("failed_architectures", []) if str(item).strip()],
+                rejected_design_labels=[],
             ),
             decision_records=decision_records,
             decision_jsonl_path=decision_ledger_path,
