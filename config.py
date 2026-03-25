@@ -192,7 +192,7 @@ class Config:
         return ".csv"
 
     def set_step_output_paths(self, step: int) -> Dict[str, Any]:
-        step_dir = self.intermediate_output_dir
+        step_dir = os.path.join(self.intermediate_output_dir, f"step_{step}")
         Path(step_dir).mkdir(parents=True, exist_ok=True)
         prior_dir = os.path.join(step_dir, "prior")
         Path(prior_dir).mkdir(parents=True, exist_ok=True)
