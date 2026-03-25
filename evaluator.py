@@ -196,7 +196,6 @@ class TextGradEvaluator:
                 current_performance="{current_performance}",
                 data_prior_code="{data_prior_code}",
                 model_training_code="{model_training_code}",
-                downstream_analysis_code="{downstream_analysis_code}",
                 paths="{paths}",
                 model_schema="{model_schema}",
                 training_logs="{training_logs}",
@@ -212,7 +211,6 @@ class TextGradEvaluator:
                 "current_performance": None,
                 "data_prior_code": None,
                 "model_training_code": None,
-                "downstream_analysis_code": None,
                 "paths": None,
                 "model_schema": None,
                 "training_logs": None,
@@ -234,15 +232,10 @@ class TextGradEvaluator:
                 delta_min="{delta_min}",
                 current_performance="{current_performance}",
                 data_prior_code="{data_prior_code}",
-                model_training_code="{model_training_code}",
-                downstream_analysis_code="{downstream_analysis_code}",
                 preprocessing_summary="{preprocessing_summary}",
                 paths="{paths}",
                 data_schema="{data_schema}",
                 prior_schema="{prior_schema}",
-                cluster_metrics="{cluster_metrics}",
-                cluster_summary="{cluster_summary}",
-                training_logs="{training_logs}",
                 pipeline_summary="{pipeline_summary}",
             )
             self.fields = {
@@ -256,15 +249,10 @@ class TextGradEvaluator:
                 "delta_min": None,
                 "current_performance": None,
                 "data_prior_code": None,
-                "model_training_code": None,
-                "downstream_analysis_code": None,
                 "preprocessing_summary": None,
                 "paths": None,
                 "data_schema": None,
                 "prior_schema": None,
-                "cluster_metrics": None,
-                "cluster_summary": None,
-                "training_logs": None,
                 "pipeline_summary": None,
             }
             system_prompt = DATA_SCIENCE_EVALUATOR_SYSTEM_PROMPT
@@ -282,8 +270,7 @@ class TextGradEvaluator:
                 stagnation_steps="{stagnation_steps}",
                 delta_min="{delta_min}",
                 current_performance="{current_performance}",
-                data_prior_code="{data_prior_code}",
-                cluster_metrics="{cluster_metrics}",
+                downstream_analysis_code="{downstream_analysis_code}",
                 cluster_summary="{cluster_summary}",
                 downstream_schema="{downstream_schema}",
             )
@@ -297,13 +284,12 @@ class TextGradEvaluator:
                 "stagnation_steps": None,
                 "delta_min": None,
                 "current_performance": None,
-                "data_prior_code": None,
-                "cluster_metrics": None,
+                "downstream_analysis_code": None,
                 "cluster_summary": None,
                 "downstream_schema": None,
             }
             system_prompt = BIOLOGY_EVALUATOR_SYSTEM_PROMPT
-            response_role = "advisory biology evaluation of data_prior.py and downstream_analysis.py"
+            response_role = "advisory biology evaluation of downstream_analysis.py"
             prompt_role = "system prompt for advisory biology evaluation"
         else:
             raise ValueError(f"Unsupported evaluator type: {eval_type}")
