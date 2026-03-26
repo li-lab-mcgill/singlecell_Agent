@@ -424,6 +424,7 @@ Use labels only for evaluation, never for training.
     )
     config.api_dir = args.api_dir or f"{cur_path}/apis"
     config.dataset_dir = args.dataset_dir or f"{cur_path}/Datasets"
+    config.prior_resource_summary = config.summarize_prior_resources()
     config.artifact_layout_path = args.artifact_layout if os.path.isabs(args.artifact_layout) else f"{cur_path}/{args.artifact_layout}"
     config.notes_dir = f"{cur_path}/{args.notes_dir}"
     config.code_dir = config.single_code_dir
@@ -527,6 +528,7 @@ Use labels only for evaluation, never for training.
                 background=background,
                 suggestion=suggestion,
                 data_summary=config.feat_stats,
+                prior_resource_summary=config.prior_resource_summary,
                 script_summaries=StageScriptGenerator.summarize_bundle(None),
                 mcp_tools_text=mcp_tools_text,
                 api_dir=config.api_dir,
@@ -700,6 +702,7 @@ Use labels only for evaluation, never for training.
             data_prior_notes_history=tg.Variable(script_notes_history["data_prior.py"], requires_grad=False, role_description="data prior note history"),
             data_prior_current_diffs=tg.Variable(script_current_diffs["data_prior.py"], requires_grad=False, role_description="current data prior raw diffs"),
             preprocessing_summary=tg.Variable(json.dumps(preprocess_metadata, ensure_ascii=False), requires_grad=False, role_description="preprocess metadata json"),
+            prior_resource_summary=tg.Variable(config.prior_resource_summary, requires_grad=False, role_description="structured summary of prior resource files"),
             paths=tg.Variable(json.dumps(generator.path_prompt_fields, ensure_ascii=False), requires_grad=False, role_description="fixed artifact paths"),
             data_schema=tg.Variable(json.dumps(config.stage_requirements("data_prior.py"), ensure_ascii=False), requires_grad=False, role_description="data/prior requirements"),
             prior_schema=tg.Variable(json.dumps(config.current_prior_schema, ensure_ascii=False), requires_grad=False, role_description="prior schema"),
@@ -768,6 +771,8 @@ Use labels only for evaluation, never for training.
         critic_out = critic_evaluator.loss_fn(
             step=step,
             suggestion=tg.Variable(suggestion, requires_grad=False, role_description="current consultant suggestion"),
+            raw_data_summary=tg.Variable(config.feat_stats, requires_grad=False, role_description="raw data summary"),
+            prior_resource_summary=tg.Variable(config.prior_resource_summary, requires_grad=False, role_description="prior resource summary"),
             current_performance=tg.Variable(json.dumps({"perf_summary": pstat, "primary_state": primary_state}, ensure_ascii=False), requires_grad=False, role_description="current performance summary"),
             training_logs=tg.Variable(json.dumps(training_logs, ensure_ascii=False), requires_grad=False, role_description="training logs"),
             pipeline_summary=tg.Variable(json.dumps(pipeline_summary, ensure_ascii=False), requires_grad=False, role_description="pipeline summary"),

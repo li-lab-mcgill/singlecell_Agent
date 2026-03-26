@@ -241,12 +241,14 @@ class TextGradConsultant:
                 query = INPUT_QUERY_UNSUPERVISED_LABEL.format(task_type=self.config.task_type, learning_type=self.config.learning_type,
                                                               feat_stats=self.config.feat_stats if include_feat_stats else "<omitted>", label_col=label_col, id_col=id_col, 
                                                               api_dir=api_dir_text, dataset_dir=dataset_dir_text,
+                                                              prior_resource_summary=getattr(self.config, "prior_resource_summary", "<omitted>"),
                                                               mcp_tools=mcp_tools_text,
                                                               metrics=self.config.metrics, samples=samples, background=background)
             else:
                 query = INPUT_QUERY_UNSUPERVISED.format(task_type=self.config.task_type, learning_type=self.config.learning_type,
                     feat_stats=self.config.feat_stats if include_feat_stats else "<omitted>", id_col=id_col, metrics=self.config.metrics,
                     api_dir=api_dir_text, dataset_dir=dataset_dir_text,
+                    prior_resource_summary=getattr(self.config, "prior_resource_summary", "<omitted>"),
                     mcp_tools=mcp_tools_text,
                                                         samples=samples, background=background)
 
@@ -254,6 +256,7 @@ class TextGradConsultant:
             query = INPUT_QUERY_SUPERVISED.format(task_type=self.config.task_type, learning_type=self.config.learning_type,
                 feat_stats=self.config.feat_stats if include_feat_stats else "<omitted>", label_col=label_col, metrics=self.config.metrics,
                 api_dir=api_dir_text, dataset_dir=dataset_dir_text,
+                prior_resource_summary=getattr(self.config, "prior_resource_summary", "<omitted>"),
                 mcp_tools=mcp_tools_text,
                                                   id_col=id_col, samples=samples, background=background)
 

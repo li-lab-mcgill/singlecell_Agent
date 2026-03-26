@@ -96,6 +96,7 @@ Available API dir: {api_dir}
 Available dataset dir: {dataset_dir}
 Available MCP tools: {mcp_tools}
 Feature/data summary: {data_summary}
+Prior resource summary: {prior_resource_summary}
 Primary metric to optimize: {primary_metric}
 Use these evaluation metrics: {metrics}
 Time budget given for running the code: {time_budget} seconds

@@ -100,6 +100,7 @@ INPUT_QUERY_SUPERVISED = (
   "Available dataset dir: {dataset_dir}\n"
   "Available MCP tools: {mcp_tools}\n"
   "The data statistics: {feat_stats}\n"
+  "The prior resource summary: {prior_resource_summary}\n"
   "The following are sample data: \n{samples}\n"
   "Background of the dataset: {background}\n"
 )
@@ -112,6 +113,7 @@ INPUT_QUERY_UNSUPERVISED = (
   "Available dataset dir: {dataset_dir}\n"
   "Available MCP tools: {mcp_tools}\n"
   "The data statistics: {feat_stats}\n"
+  "The prior resource summary: {prior_resource_summary}\n"
   "Sample data: {samples}\n"
   "Background of the dataset: {background}\n"
 )
@@ -125,6 +127,7 @@ INPUT_QUERY_UNSUPERVISED_LABEL = (
   "Available dataset dir: {dataset_dir}\n"
   "Available MCP tools: {mcp_tools}\n"
   "The data statistics: {feat_stats}\n"
+  "The prior resource summary: {prior_resource_summary}\n"
   "Sample data: {samples}\n"
   "Background of the dataset: {background}\n"
 )

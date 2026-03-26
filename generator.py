@@ -189,7 +189,7 @@ class StageScriptGenerator:
             ])
         return "\n".join(line for line in lines if line.strip()) or "<none>"
 
-    def _stage_query(self, *, filename: str, task_description: str, background: str, suggestion: str, data_summary: str, script_summaries: str, existing_code: str, mcp_tools_text: str, api_dir: str | None, dataset_dir: str | None) -> str:
+    def _stage_query(self, *, filename: str, task_description: str, background: str, suggestion: str, data_summary: str, prior_resource_summary: str, script_summaries: str, existing_code: str, mcp_tools_text: str, api_dir: str | None, dataset_dir: str | None) -> str:
         prompt_fields = {
             "target_file": filename,
             "target_tag": STAGE_TAG_BY_FILE[filename],
@@ -203,6 +203,7 @@ class StageScriptGenerator:
             "dataset_dir": dataset_dir or "<not provided>",
             "mcp_tools": mcp_tools_text,
             "data_summary": data_summary,
+            "prior_resource_summary": prior_resource_summary if filename == "data_prior.py" else "<none>",
             "primary_metric": self._primary_metric(),
             "metrics": ", ".join(self.config.metrics) if isinstance(self.config.metrics, list) else str(self.config.metrics),
             "time_budget": self.config.timeout,
@@ -268,7 +269,7 @@ class StageScriptGenerator:
             return ANALYSIS_FIX_SYSTEM_PROMPT
         return MODEL_FIX_SYSTEM_PROMPT
 
-    def generate_bundle(self, *, task_description: str, background: str, suggestion: str, data_summary: str, script_summaries: str, mcp_tools_text: str, api_dir: str | None, dataset_dir: str | None, existing_bundle: Dict[str, tg.Variable] | None = None) -> Dict[str, tg.Variable]:
+    def generate_bundle(self, *, task_description: str, background: str, suggestion: str, data_summary: str, prior_resource_summary: str, script_summaries: str, mcp_tools_text: str, api_dir: str | None, dataset_dir: str | None, existing_bundle: Dict[str, tg.Variable] | None = None) -> Dict[str, tg.Variable]:
         bundle: Dict[str, tg.Variable] = {}
         for item in STAGE_FILES:
             filename = item["filename"]
@@ -279,6 +280,7 @@ class StageScriptGenerator:
                 background=background,
                 suggestion=suggestion,
                 data_summary=data_summary,
+                prior_resource_summary=prior_resource_summary,
                 script_summaries=script_summaries,
                 existing_code=existing_code,
                 mcp_tools_text=mcp_tools_text,
