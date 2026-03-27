@@ -294,15 +294,24 @@ def _feedback_has_signal(feedback: str) -> bool:
 def _build_optimizer_constraints_for_file(filename: str, path_fields: Dict[str, str], stage_schema: Dict[str, Any], config: Config) -> List[str]:
     constraints = [f"Return ONLY valid executable Python code for {filename}."]
     constraints.extend(_non_negotiable_constraints())
-    if filename == "data_prior.py":
+    if filename == "prior_construction.py":
         constraints.append(f"Current consultant prior schema JSON: {json.dumps(config.current_prior_schema, ensure_ascii=False)}")
-        for key in ["input_mod1_path", "input_mod2_path", "preprocess_metadata_path", "preprocess_train_mod1_path", "preprocess_val_mod1_path", "preprocess_test_mod1_path", "prior_output_dir_path"]:
+        for key in ["input_mod1_path", "input_mod2_path", "prior_output_dir_path"]:
             value = path_fields.get(key, "")
             if str(value).strip():
                 constraints.append(_path_constraint_line(key, value))
         constraints.extend(_resolved_prior_file_constraints(config))
         for resource_path in _prior_resource_paths(config):
             constraints.append(f"Prior resource path: {resource_path}")
+        return constraints
+
+    if filename == "data_preprocess.py":
+        constraints.append(f"Current consultant prior schema JSON: {json.dumps(config.current_prior_schema, ensure_ascii=False)}")
+        for key in ["input_mod1_path", "input_mod2_path", "preprocess_metadata_path", "preprocess_train_mod1_path", "preprocess_val_mod1_path", "preprocess_test_mod1_path", "prior_output_dir_path"]:
+            value = path_fields.get(key, "")
+            if str(value).strip():
+                constraints.append(_path_constraint_line(key, value))
+        constraints.extend(_resolved_prior_file_constraints(config))
         return constraints
 
     constraints.append(f"Current stage requirements JSON: {json.dumps(stage_schema, ensure_ascii=False)}")
@@ -390,10 +399,10 @@ TASK:
 Develop a prior guided unsupervised deep learning Python pipeline for single-cell RNA-seq representation learning.
 
 The pipeline MUST:
-1. Use three executable scripts: data_prior.py, model_training.py, and downstream_analysis.py.
-2. data_prior.py performs preprocessing and prior construction together.
-3. data_prior.py must use raw prior resource tables during feature selection so prior information can influence the selected genes.
-4. model_training.py consumes data_prior outputs.
+1. Use four executable scripts: prior_construction.py, data_preprocess.py, model_training.py, and downstream_analysis.py.
+2. prior_construction.py builds the fixed prior bundle first.
+3. data_preprocess.py performs preprocessing and consumes prior_construction.py outputs.
+4. model_training.py consumes data_preprocess outputs and prior outputs.
 5. downstream_analysis.py consumes outputs from all earlier scripts.
 6. All scripts must use fixed config-owned artifact paths.
 
@@ -447,6 +456,7 @@ Use labels only for evaluation, never for training.
     history_notes_result_path = f"{config.result_dir}/feedback/history_notes.jsonl"
     decision_ledger_result_path = f"{config.result_dir}/feedback/decision_ledger.jsonl"
     consultant_history_path = f"{config.result_dir}/feedback/consultant_history.jsonl"
+    prior_consultant_history_path = f"{config.result_dir}/feedback/prior_consultant_history.jsonl"
     script_note_paths = {
         filename: f"{config.notes_dir}/{filename.replace('.py', '')}_notes.jsonl"
         for filename in STAGE_FILENAMES
@@ -455,7 +465,7 @@ Use labels only for evaluation, never for training.
         filename: f"{config.result_dir}/feedback/{filename.replace('.py', '')}_notes.jsonl"
         for filename in STAGE_FILENAMES
     }
-    for path in [note_path, history_notes_path, decision_ledger_path, history_notes_result_path, decision_ledger_result_path, consultant_history_path]:
+    for path in [note_path, history_notes_path, decision_ledger_path, history_notes_result_path, decision_ledger_result_path, consultant_history_path, prior_consultant_history_path]:
         with open(path, "w", encoding="utf-8"):
             pass
     for path in list(script_note_paths.values()) + list(script_note_result_paths.values()):
@@ -464,9 +474,12 @@ Use labels only for evaluation, never for training.
     with open(history_digest_path, "w", encoding="utf-8") as f:
         f.write("<empty>\n")
 
-    consultant = TextGradConsultant(config=config, engine_name=args.engine)
+    prior_consultant = TextGradConsultant(config=config, engine_name=args.engine, consultant_type="prior")
+    consultant = TextGradConsultant(config=config, engine_name=args.engine, consultant_type="main")
     mcp_tools_text = fetch_mcp_tools_text()
-    consultant_query = consultant.create_query(
+    print(f"data_summary:\n{config.feat_stats}")
+    print(f"prior_resource_summary:\n{config.prior_resource_summary}")
+    prior_consultant_query = prior_consultant.create_query(
         samples=None,
         id_col=None,
         background=consultant_background,
@@ -478,10 +491,43 @@ Use labels only for evaluation, never for training.
         api_dir=config.api_dir,
         dataset_dir=config.dataset_dir,
     )
+    prior_consultant_output = prior_consultant.generate(prompt=prior_consultant_query)
+    print(f"prior_consultant_output:\n{prior_consultant_output}")
+    prior_task_summary = TextGradConsultant.parse_prior_summary_tags(prior_consultant_output)
+    config.apply_prior_schema(prior_task_summary["prior_schema"])
+
+    prior_consultant_records: List[ConsultantPlanRecord] = []
+    record_consultant_plan(
+        consultant_records=prior_consultant_records,
+        path=prior_consultant_history_path,
+        record=ConsultantPlanRecord(
+            step=-1,
+            source="initial",
+            task_description=prior_task_summary["task_description"],
+            suggestion=prior_task_summary["suggestion"],
+            prior_schema_json=prior_task_summary["prior_schema"],
+            raw_output=prior_consultant_output,
+            plan_fingerprint=plan_fingerprint(prior_task_summary["task_description"], prior_task_summary["suggestion"], prior_task_summary["prior_schema"]),
+        ),
+    )
+
+    consultant_query = consultant.create_query(
+        samples=None,
+        id_col=None,
+        background=consultant_background,
+        label_col=None,
+        include_feat_stats=True,
+        background_only=False,
+        include_samples=False,
+        mcp_tools_text=mcp_tools_text,
+        api_dir=config.api_dir,
+        dataset_dir=config.dataset_dir,
+        prior_plan=prior_task_summary["suggestion"],
+        prior_output_summary=json.dumps(prior_task_summary["prior_schema"], ensure_ascii=False),
+    )
     consultant_output = consultant.generate(prompt=consultant_query)
     print(f"consultant_output:\n{consultant_output}")
-    task_summary = TextGradConsultant.parse_summary_tags(consultant_output)
-    config.apply_prior_schema(task_summary["prior_schema"])
+    task_summary = TextGradConsultant.parse_main_summary_tags(consultant_output)
 
     consultant_records: List[ConsultantPlanRecord] = []
     record_consultant_plan(
@@ -492,12 +538,13 @@ Use labels only for evaluation, never for training.
             source="initial",
             task_description=task_summary["task_description"],
             suggestion=task_summary["suggestion"],
-            prior_schema_json=task_summary["prior_schema"],
+            prior_schema_json={},
             raw_output=consultant_output,
-            plan_fingerprint=plan_fingerprint(task_summary["task_description"], task_summary["suggestion"], task_summary["prior_schema"]),
+            plan_fingerprint=plan_fingerprint(task_summary["task_description"], task_summary["suggestion"], {}),
         ),
     )
 
+    prior_evaluator = TextGradEvaluator(config=config, engine_name=args.engine, task_decrp=task_summary["task_description"], background=background, eval_type="prior")
     model_evaluator = TextGradEvaluator(config=config, engine_name=args.engine, task_decrp=task_summary["task_description"], background=background, eval_type="model")
     data_science_evaluator = TextGradEvaluator(config=config, engine_name=args.engine, task_decrp=task_summary["task_description"], background=background, eval_type="data_science")
     biology_evaluator = TextGradEvaluator(config=config, engine_name=args.engine, task_decrp=task_summary["task_description"], background=background, eval_type="biology")
@@ -509,6 +556,7 @@ Use labels only for evaluation, never for training.
     decision_records: List[DecisionLedgerRecord] = []
     global_best = GlobalBestState()
     last_cluster_metrics: Dict[str, Any] = {}
+    prior_suggestion = prior_task_summary["suggestion"]
     suggestion = task_summary["suggestion"]
     code_bundle: Dict[str, tg.Variable] | None = None
     optimizers: Dict[str, tg.TextualGradientDescent] = {}
@@ -526,7 +574,8 @@ Use labels only for evaluation, never for training.
             code_bundle = generator.generate_bundle(
                 task_description=task_summary["task_description"],
                 background=background,
-                suggestion=suggestion,
+                main_plan=suggestion,
+                prior_plan=prior_suggestion,
                 data_summary=config.feat_stats,
                 prior_resource_summary=config.prior_resource_summary,
                 script_summaries=StageScriptGenerator.summarize_bundle(None),
@@ -564,7 +613,8 @@ Use labels only for evaluation, never for training.
                 target=target,
                 error=last_error_message,
                 task_description=task_summary["task_description"],
-                suggestion=suggestion,
+                main_plan=suggestion,
+                prior_plan=prior_suggestion,
                 max_fix_step=1,
             )
             start_from = target
@@ -629,22 +679,38 @@ Use labels only for evaluation, never for training.
                 gain=primary_gain,
             )
         script_note_texts = {
-            "data_prior.py": script_notebook.create_note(
-                script="data_prior.py",
-                cur_code=current_bundle_texts.get("data_prior.py", ""),
+            "prior_construction.py": script_notebook.create_note(
+                script="prior_construction.py",
+                cur_code=current_bundle_texts.get("prior_construction.py", ""),
                 cur_step=step,
-                prev_code=previous_step_bundle_texts.get("data_prior.py", ""),
-                prev_step=step - 1 if previous_step_bundle_texts.get("data_prior.py") is not None else None,
-                optimization_text=applied_change_contexts.get("data_prior.py", "not optimized this step"),
-                current_vs_prev_diff=script_prev_diffs.get("data_prior.py", "N/A"),
+                prev_code=previous_step_bundle_texts.get("prior_construction.py", ""),
+                prev_step=step - 1 if previous_step_bundle_texts.get("prior_construction.py") is not None else None,
+                optimization_text=applied_change_contexts.get("prior_construction.py", "not optimized this step"),
+                current_vs_prev_diff=script_prev_diffs.get("prior_construction.py", "N/A"),
+                metric_name=config.metrics,
+                metric_value=current_metric_value,
+                gain=primary_gain,
+                observed_outputs={
+                    "prior_schema": config.current_prior_schema,
+                    "prior_files": config.resolved_prior_files(),
+                    "prior_resource_summary": config.prior_resource_summary,
+                },
+            ),
+            "data_preprocess.py": script_notebook.create_note(
+                script="data_preprocess.py",
+                cur_code=current_bundle_texts.get("data_preprocess.py", ""),
+                cur_step=step,
+                prev_code=previous_step_bundle_texts.get("data_preprocess.py", ""),
+                prev_step=step - 1 if previous_step_bundle_texts.get("data_preprocess.py") is not None else None,
+                optimization_text=applied_change_contexts.get("data_preprocess.py", "not optimized this step"),
+                current_vs_prev_diff=script_prev_diffs.get("data_preprocess.py", "N/A"),
                 metric_name=config.metrics,
                 metric_value=current_metric_value,
                 gain=primary_gain,
                 observed_outputs={
                     "preprocess_metadata": preprocess_metadata,
                     "pipeline_summary": pipeline_summary,
-                    "data_schema": config.stage_requirements("data_prior.py"),
-                    "prior_schema": config.current_prior_schema,
+                    "data_schema": config.stage_requirements("data_preprocess.py"),
                 },
             ),
             "model_training.py": script_notebook.create_note(
@@ -689,29 +755,29 @@ Use labels only for evaluation, never for training.
         with open(history_digest_path, "w", encoding="utf-8") as f:
             f.write(notes_text + "\n")
 
+        evaluator_conversation: List[Dict[str, str]] = []
+        evaluator_errors: Dict[str, str] = {}
         data_science_eval_out = data_science_evaluator.loss_fn(
             step=step,
             metrics=tg.Variable(config.metrics, requires_grad=False, role_description="primary metric name"),
             time_budget=tg.Variable(str(config.timeout), requires_grad=False, role_description="time budget seconds"),
-            data_prior_code=code_bundle["data_prior.py"],
+            data_preprocess_code=code_bundle["data_preprocess.py"],
             suggestion=tg.Variable(suggestion, requires_grad=False, role_description="current consultant suggestion"),
             training_history=tg.Variable(json.dumps(perf.get("training_history", []), ensure_ascii=False), requires_grad=False, role_description="training history"),
             stagnation_steps=tg.Variable(str(outer_state.stagnation_steps), requires_grad=False, role_description="current stagnation steps"),
             delta_min=tg.Variable(str(args.delta_min), requires_grad=False, role_description="minimum meaningful validation gain"),
             current_performance=tg.Variable(json.dumps({"perf_summary": pstat, "primary_state": primary_state}, ensure_ascii=False), requires_grad=False, role_description="current performance summary"),
-            data_prior_notes_history=tg.Variable(script_notes_history["data_prior.py"], requires_grad=False, role_description="data prior note history"),
-            data_prior_current_diffs=tg.Variable(script_current_diffs["data_prior.py"], requires_grad=False, role_description="current data prior raw diffs"),
+            data_preprocess_notes_history=tg.Variable(script_notes_history["data_preprocess.py"], requires_grad=False, role_description="data preprocessing note history"),
+            data_preprocess_current_diffs=tg.Variable(script_current_diffs["data_preprocess.py"], requires_grad=False, role_description="current data preprocessing raw diffs"),
             preprocessing_summary=tg.Variable(json.dumps(preprocess_metadata, ensure_ascii=False), requires_grad=False, role_description="preprocess metadata json"),
             prior_resource_summary=tg.Variable(config.prior_resource_summary, requires_grad=False, role_description="structured summary of prior resource files"),
             paths=tg.Variable(json.dumps(generator.path_prompt_fields, ensure_ascii=False), requires_grad=False, role_description="fixed artifact paths"),
-            data_schema=tg.Variable(json.dumps(config.stage_requirements("data_prior.py"), ensure_ascii=False), requires_grad=False, role_description="data/prior requirements"),
+            data_schema=tg.Variable(json.dumps(config.stage_requirements("data_preprocess.py"), ensure_ascii=False), requires_grad=False, role_description="data preprocessing requirements"),
             prior_schema=tg.Variable(json.dumps(config.current_prior_schema, ensure_ascii=False), requires_grad=False, role_description="prior schema"),
             pipeline_summary=tg.Variable(json.dumps(pipeline_summary, ensure_ascii=False), requires_grad=False, role_description="pipeline summary"),
-            chat_history=tg.Variable("[]", requires_grad=False, role_description="current step evaluator chat history"),
+            chat_history=tg.Variable(json.dumps(evaluator_conversation, ensure_ascii=False), requires_grad=False, role_description="current step evaluator chat history"),
         )
         print(f"data_science_evaluator_output_step_{step}:\n{data_science_eval_out.value}")
-        evaluator_conversation: List[Dict[str, str]] = []
-        evaluator_errors: Dict[str, str] = {}
         data_science_payload: Dict[str, Any] | None = None
         try:
             data_science_payload = parse_evaluator_message(data_science_eval_out.value, "data_science")
@@ -721,7 +787,7 @@ Use labels only for evaluation, never for training.
 
         model_eval_out = model_evaluator.loss_fn(
             step=step,
-            data_prior_code=code_bundle["data_prior.py"],
+            data_preprocess_code=code_bundle["data_preprocess.py"],
             model_training_code=code_bundle["model_training.py"],
             suggestion=tg.Variable(suggestion, requires_grad=False, role_description="current consultant suggestion"),
             training_history=tg.Variable(json.dumps(perf.get("training_history", []), ensure_ascii=False), requires_grad=False, role_description="training history"),
@@ -743,6 +809,33 @@ Use labels only for evaluation, never for training.
             evaluator_conversation.append(model_payload)
         except Exception as exc:
             evaluator_errors["model"] = str(exc)
+
+        prior_payload: Dict[str, Any] | None = None
+        prior_eval_out = prior_evaluator.loss_fn(
+            step=step,
+            suggestion=tg.Variable(prior_suggestion, requires_grad=False, role_description="current prior consultant suggestion"),
+            training_history=tg.Variable(json.dumps(perf.get("training_history", []), ensure_ascii=False), requires_grad=False, role_description="training history"),
+            stagnation_steps=tg.Variable(str(outer_state.stagnation_steps), requires_grad=False, role_description="current stagnation steps"),
+            delta_min=tg.Variable(str(args.delta_min), requires_grad=False, role_description="minimum meaningful validation gain"),
+            current_performance=tg.Variable(json.dumps({"perf_summary": pstat, "primary_state": primary_state}, ensure_ascii=False), requires_grad=False, role_description="current performance summary"),
+            prior_construction_notes_history=tg.Variable(script_notes_history["prior_construction.py"], requires_grad=False, role_description="prior construction note history"),
+            prior_construction_current_diffs=tg.Variable(script_current_diffs["prior_construction.py"], requires_grad=False, role_description="current prior construction raw diffs"),
+            prior_construction_code=code_bundle["prior_construction.py"],
+            prior_resource_summary=tg.Variable(config.prior_resource_summary, requires_grad=False, role_description="structured summary of prior resource files"),
+            raw_data_summary=tg.Variable(config.feat_stats, requires_grad=False, role_description="raw data summary"),
+            cluster_summary=tg.Variable(json.dumps(cluster_summary, ensure_ascii=False), requires_grad=False, role_description="cluster summary"),
+            training_logs=tg.Variable(json.dumps(training_logs, ensure_ascii=False), requires_grad=False, role_description="training logs"),
+            paths=tg.Variable(json.dumps(generator.path_prompt_fields, ensure_ascii=False), requires_grad=False, role_description="fixed artifact paths"),
+            prior_schema=tg.Variable(json.dumps(config.current_prior_schema, ensure_ascii=False), requires_grad=False, role_description="prior schema"),
+            pipeline_summary=tg.Variable(json.dumps(pipeline_summary, ensure_ascii=False), requires_grad=False, role_description="pipeline summary"),
+            chat_history=tg.Variable(json.dumps(evaluator_conversation, ensure_ascii=False), requires_grad=False, role_description="current step evaluator chat history"),
+        )
+        print(f"prior_evaluator_output_step_{step}:\n{prior_eval_out.value}")
+        try:
+            prior_payload = parse_evaluator_message(prior_eval_out.value, "prior")
+            evaluator_conversation.append(prior_payload)
+        except Exception as exc:
+            evaluator_errors["prior"] = str(exc)
 
         biology_eval_out = biology_evaluator.loss_fn(
             step=step,
@@ -776,7 +869,8 @@ Use labels only for evaluation, never for training.
             current_performance=tg.Variable(json.dumps({"perf_summary": pstat, "primary_state": primary_state}, ensure_ascii=False), requires_grad=False, role_description="current performance summary"),
             training_logs=tg.Variable(json.dumps(training_logs, ensure_ascii=False), requires_grad=False, role_description="training logs"),
             pipeline_summary=tg.Variable(json.dumps(pipeline_summary, ensure_ascii=False), requires_grad=False, role_description="pipeline summary"),
-            data_prior_notes_history=tg.Variable(script_notes_history["data_prior.py"], requires_grad=False, role_description="data prior note history"),
+            prior_construction_notes_history=tg.Variable(script_notes_history["prior_construction.py"], requires_grad=False, role_description="prior construction note history"),
+            data_preprocess_notes_history=tg.Variable(script_notes_history["data_preprocess.py"], requires_grad=False, role_description="data preprocessing note history"),
             model_training_notes_history=tg.Variable(script_notes_history["model_training.py"], requires_grad=False, role_description="model training note history"),
             downstream_analysis_notes_history=tg.Variable(script_notes_history["downstream_analysis.py"], requires_grad=False, role_description="downstream analysis note history"),
             script_summaries=tg.Variable(StageScriptGenerator.summarize_bundle(code_bundle), requires_grad=False, role_description="current script summaries"),
@@ -923,6 +1017,7 @@ Use labels only for evaluation, never for training.
             "action": action,
             "critic_payload": critic_payload,
             "critic_plan": critic_plan,
+            "prior_evaluator_payload": prior_payload,
             "data_science_evaluator_payload": data_science_payload,
             "model_evaluator_payload": model_payload,
             "biology_evaluator_payload": biology_payload,
@@ -972,7 +1067,8 @@ Use labels only for evaluation, never for training.
                 task_description=task_summary["task_description"],
                 background=consultant_background,
                 current_suggestion=suggestion,
-                current_prior_schema=task_summary["prior_schema"],
+                current_prior_plan=prior_suggestion,
+                current_prior_schema=config.current_prior_schema,
                 current_attempt=current_attempt,
                 why_current_fails=why_current_fails,
                 historical_failures=historical_failures,
@@ -982,8 +1078,7 @@ Use labels only for evaluation, never for training.
             )
             reconsult_output = consultant.generate(prompt=reconsult_query)
             print(f"consultant_output_step_{step}:\n{reconsult_output}")
-            task_summary = TextGradConsultant.parse_summary_tags(reconsult_output)
-            config.apply_prior_schema(task_summary["prior_schema"])
+            task_summary = TextGradConsultant.parse_main_summary_tags(reconsult_output)
             suggestion = task_summary["suggestion"]
             record_consultant_plan(
                 consultant_records=consultant_records,
@@ -993,11 +1088,12 @@ Use labels only for evaluation, never for training.
                     source="reconsult",
                     task_description=task_summary["task_description"],
                     suggestion=task_summary["suggestion"],
-                    prior_schema_json=task_summary["prior_schema"],
+                    prior_schema_json={},
                     raw_output=reconsult_output,
-                    plan_fingerprint=plan_fingerprint(task_summary["task_description"], task_summary["suggestion"], task_summary["prior_schema"]),
+                    plan_fingerprint=plan_fingerprint(task_summary["task_description"], task_summary["suggestion"], {}),
                 ),
             )
+            prior_evaluator = TextGradEvaluator(config=config, engine_name=args.engine, task_decrp=task_summary["task_description"], background=background, eval_type="prior")
             model_evaluator = TextGradEvaluator(config=config, engine_name=args.engine, task_decrp=task_summary["task_description"], background=background, eval_type="model")
             data_science_evaluator = TextGradEvaluator(config=config, engine_name=args.engine, task_decrp=task_summary["task_description"], background=background, eval_type="data_science")
             biology_evaluator = TextGradEvaluator(config=config, engine_name=args.engine, task_decrp=task_summary["task_description"], background=background, eval_type="biology")

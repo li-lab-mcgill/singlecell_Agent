@@ -13,7 +13,11 @@ import numpy as np
 from multieval_types import ConsultantPlanRecord
 
 from consultant_prompts import (
-    SYSTEM_PROMPT,
+    MAIN_INPUT_QUERY_SUPERVISED,
+    MAIN_INPUT_QUERY_UNSUPERVISED,
+    MAIN_INPUT_QUERY_UNSUPERVISED_LABEL,
+    MAIN_SYSTEM_PROMPT,
+    PRIOR_SYSTEM_PROMPT,
     INPUT_QUERY_SUPERVISED,
     INPUT_QUERY_UNSUPERVISED,
     INPUT_QUERY_UNSUPERVISED_LABEL,
@@ -99,6 +103,7 @@ def build_reconsult_query(
     task_description: str,
     background: str,
     current_suggestion: str,
+    current_prior_plan: str,
     current_prior_schema: Dict[str, Any],
     current_attempt: Dict[str, Any],
     why_current_fails: Dict[str, Any],
@@ -115,6 +120,7 @@ def build_reconsult_query(
         "[/TASK_BLOCK]\n\n"
         "[CURRENT_PLAN_BLOCK]\n"
         f"SUGGESTION={current_suggestion}\n"
+        f"PRIOR_PLAN={current_prior_plan}\n"
         f"PRIOR_SCHEMA_JSON={json.dumps(current_prior_schema, ensure_ascii=False)}\n"
         "[/CURRENT_PLAN_BLOCK]\n\n"
         "[CURRENT_ATTEMPT_BLOCK]\n"
@@ -134,53 +140,51 @@ def build_reconsult_query(
         "Instructions:\n"
         "1) Propose ONE concrete new plan that addresses why the current attempt fails.\n"
         "2) Do not repeat historically failed strategies unless you explicitly state what changed and why it should work now.\n"
-        "3) Keep the plan implementation-ready for three executable stage scripts named data_prior.py, model_training.py, and downstream_analysis.py.\n\n"
+        "3) Keep the plan implementation-ready for three downstream executable stage scripts named data_preprocess.py, model_training.py, and downstream_analysis.py.\n"
+        "4) Treat the current prior schema as fixed input and do not redesign it here.\n\n"
         "Return ONLY:\n"
         "<TASK_DESCRIPTION>...</TASK_DESCRIPTION>\n"
         "<SUGGESTION>...</SUGGESTION>\n"
-        "<PRIOR_SCHEMA_JSON>{...}</PRIOR_SCHEMA_JSON>\n"
     )
 
 
 def _validate_prior_schema(prior_schema: Dict[str, Any]) -> None:
     if not isinstance(prior_schema, dict):
         raise ValueError("Consultant PRIOR_SCHEMA_JSON must decode to a JSON object")
-    required_files = prior_schema.get("required_files")
-    if not isinstance(required_files, list) or not required_files:
-        raise ValueError("Consultant PRIOR_SCHEMA_JSON required_files must be a non-empty list")
     placeholder_pattern = re.compile(r"^(column_[a-z0-9]+|col\d+|field[_-]?\d+|artifact[_-]?\d+|file\d+\.[a-z0-9]+)$", re.IGNORECASE)
-    for item in required_files:
+    output_files = prior_schema.get("output_files")
+    if output_files is None:
+        output_files = prior_schema.get("required_files")
+    if output_files is None:
+        output_files = [prior_schema]
+    if not isinstance(output_files, list) or not output_files:
+        raise ValueError("Consultant PRIOR_SCHEMA_JSON must include a non-empty output_files list or a single file object")
+
+    for item in output_files:
         if not isinstance(item, dict):
-            raise ValueError("Each PRIOR_SCHEMA_JSON required_files entry must be an object")
-        artifact_key = str(item.get("artifact_key") or "").strip()
+            raise ValueError("Each PRIOR_SCHEMA_JSON output_files entry must be an object")
         file_name = str(item.get("file_name") or "").strip()
-        fmt = str(item.get("format") or "").strip().lower()
-        if not artifact_key or not file_name or not fmt:
-            raise ValueError("Each PRIOR_SCHEMA_JSON file must include artifact_key, file_name, and format")
-        if placeholder_pattern.match(artifact_key) or placeholder_pattern.match(file_name):
-            raise ValueError(f"Consultant PRIOR_SCHEMA_JSON uses placeholder artifact names: {artifact_key}, {file_name}")
-        if fmt == "csv":
-            required_columns = item.get("required_columns")
-            if not isinstance(required_columns, list) or not required_columns or not all(isinstance(col, str) and col.strip() for col in required_columns):
-                raise ValueError(f"CSV prior artifact {artifact_key} must declare non-empty required_columns")
-            placeholders = [col for col in required_columns if placeholder_pattern.match(col.strip())]
-            if placeholders:
-                raise ValueError(f"Consultant PRIOR_SCHEMA_JSON uses placeholder column names: {placeholders}")
-            column_descriptions = item.get("column_descriptions")
-            if not isinstance(column_descriptions, dict):
-                raise ValueError(f"CSV prior artifact {artifact_key} must define column_descriptions")
-            missing = [col for col in required_columns if not str(column_descriptions.get(col, "")).strip()]
-            if missing:
-                raise ValueError(f"Consultant PRIOR_SCHEMA_JSON missing descriptions for columns: {missing}")
-        if fmt == "json":
-            required_keys = item.get("required_keys", [])
-            if required_keys and (not isinstance(required_keys, list) or not all(isinstance(key, str) and key.strip() for key in required_keys)):
-                raise ValueError(f"JSON prior artifact {artifact_key} required_keys must be a list of non-empty strings")
+        description = str(item.get("description") or "").strip()
+        dtype = str(item.get("dtype") or "").strip()
+        if not file_name or not description or not dtype:
+            raise ValueError("Each PRIOR_SCHEMA_JSON file entry must include non-empty file_name, description, and dtype")
+        if placeholder_pattern.match(file_name):
+            raise ValueError(f"Consultant PRIOR_SCHEMA_JSON uses placeholder file name: {file_name}")
+        shape = item.get("shape")
+        if shape is not None:
+            if not isinstance(shape, list) or not shape or not all(isinstance(dim, str) and dim.strip() for dim in shape):
+                raise ValueError("Consultant PRIOR_SCHEMA_JSON shape must be a non-empty list of symbolic dimension strings when provided")
+
+def _validate_main_plan_text(suggestion: Any) -> None:
+    if not str(suggestion or "").strip():
+        raise ValueError("Consultant SUGGESTION must be a non-empty string")
+
 
 class TextGradConsultant:
-    def __init__(self, config: Config, engine_name: str):
+    def __init__(self, config: Config, engine_name: str, consultant_type: str = "main"):
         self.config = config
         self.engine_name = engine_name
+        self.consultant_type = consultant_type
         # self.engine = tg.get_engine(engine_name, max_completion_tokens=10000)
         self.engine = tg.get_engine(engine_name, max_tokens=5000)
         default_api_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "apis")
@@ -188,8 +192,9 @@ class TextGradConsultant:
         default_dataset_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "Datasets")
         dataset_dir = getattr(self.config, "dataset_dir", default_dataset_dir)
         api_examples_text = self._get_api_samples_text(api_dir=api_dir)
+        prompt_template = PRIOR_SYSTEM_PROMPT if consultant_type == "prior" else MAIN_SYSTEM_PROMPT
         system_prompt_text = (
-            SYSTEM_PROMPT.replace("{example_api_results}", api_examples_text)
+            prompt_template.replace("{example_api_results}", api_examples_text)
             .replace("{api_dir}", str(api_dir))
             .replace("{dataset_dir}", str(dataset_dir))
         )
@@ -215,9 +220,15 @@ class TextGradConsultant:
         max_cols: int = 200,
         random_seed: Optional[int] = 42,
         mcp_tools_text: str = "(unavailable)",
+        prior_plan: str = "<omitted>",
+        prior_output_summary: str = "<omitted>",
     ):
         api_dir_text = api_dir or "<not provided>"
         dataset_dir_text = dataset_dir or "<not provided>"
+        prior_resource_paths = ", ".join(
+            os.path.join(dataset_dir_text, name)
+            for name in ["MsigDB.csv", "NeST.tsv", "GO_terms.csv", "Cell_marker_Human.xlsx", "meta_info.csv"]
+        ) if dataset_dir_text and dataset_dir_text != "<not provided>" else "<omitted>"
 
         if not include_samples or samples is None:
             samples = "(omitted; see background/file path)"
@@ -238,27 +249,39 @@ class TextGradConsultant:
 
         if self.config.learning_type.lower() == 'unsupervised'.lower():
             if label_col != None:
-                query = INPUT_QUERY_UNSUPERVISED_LABEL.format(task_type=self.config.task_type, learning_type=self.config.learning_type,
-                                                              feat_stats=self.config.feat_stats if include_feat_stats else "<omitted>", label_col=label_col, id_col=id_col, 
-                                                              api_dir=api_dir_text, dataset_dir=dataset_dir_text,
-                                                              prior_resource_summary=getattr(self.config, "prior_resource_summary", "<omitted>"),
-                                                              mcp_tools=mcp_tools_text,
-                                                              metrics=self.config.metrics, samples=samples, background=background)
+                template = INPUT_QUERY_UNSUPERVISED_LABEL if self.consultant_type == "prior" else MAIN_INPUT_QUERY_UNSUPERVISED_LABEL
+                query = template.format(task_type=self.config.task_type, learning_type=self.config.learning_type,
+                                        feat_stats=self.config.feat_stats if include_feat_stats else "<omitted>", label_col=label_col, id_col=id_col,
+                                        api_dir=api_dir_text, dataset_dir=dataset_dir_text,
+                                        prior_resource_summary=getattr(self.config, "prior_resource_summary", "<omitted>"),
+                                        prior_resource_paths=prior_resource_paths,
+                                        prior_plan=prior_plan,
+                                        prior_output_summary=prior_output_summary,
+                                        mcp_tools=mcp_tools_text,
+                                        metrics=self.config.metrics, samples=samples, background=background)
             else:
-                query = INPUT_QUERY_UNSUPERVISED.format(task_type=self.config.task_type, learning_type=self.config.learning_type,
+                template = INPUT_QUERY_UNSUPERVISED if self.consultant_type == "prior" else MAIN_INPUT_QUERY_UNSUPERVISED
+                query = template.format(task_type=self.config.task_type, learning_type=self.config.learning_type,
                     feat_stats=self.config.feat_stats if include_feat_stats else "<omitted>", id_col=id_col, metrics=self.config.metrics,
                     api_dir=api_dir_text, dataset_dir=dataset_dir_text,
                     prior_resource_summary=getattr(self.config, "prior_resource_summary", "<omitted>"),
+                    prior_resource_paths=prior_resource_paths,
+                    prior_plan=prior_plan,
+                    prior_output_summary=prior_output_summary,
                     mcp_tools=mcp_tools_text,
-                                                        samples=samples, background=background)
+                    samples=samples, background=background)
 
         else:
-            query = INPUT_QUERY_SUPERVISED.format(task_type=self.config.task_type, learning_type=self.config.learning_type,
+            template = INPUT_QUERY_SUPERVISED if self.consultant_type == "prior" else MAIN_INPUT_QUERY_SUPERVISED
+            query = template.format(task_type=self.config.task_type, learning_type=self.config.learning_type,
                 feat_stats=self.config.feat_stats if include_feat_stats else "<omitted>", label_col=label_col, metrics=self.config.metrics,
                 api_dir=api_dir_text, dataset_dir=dataset_dir_text,
                 prior_resource_summary=getattr(self.config, "prior_resource_summary", "<omitted>"),
+                prior_resource_paths=prior_resource_paths,
+                prior_plan=prior_plan,
+                prior_output_summary=prior_output_summary,
                 mcp_tools=mcp_tools_text,
-                                                  id_col=id_col, samples=samples, background=background)
+                id_col=id_col, samples=samples, background=background)
 
         return query
 
@@ -274,7 +297,7 @@ class TextGradConsultant:
         return self.generate(prompt)
 
     @staticmethod
-    def parse_summary_tags(text: str) -> dict:
+    def parse_prior_summary_tags(text: str) -> dict:
         payloads = _extract_exact_tag_payloads(text, ["TASK_DESCRIPTION", "SUGGESTION", "PRIOR_SCHEMA_JSON"])
         prior_schema_raw = payloads["PRIOR_SCHEMA_JSON"]
         try:
@@ -287,6 +310,19 @@ class TextGradConsultant:
             "suggestion": payloads["SUGGESTION"],
             "prior_schema": prior_schema,
         }
+
+    @staticmethod
+    def parse_main_summary_tags(text: str) -> dict:
+        payloads = _extract_exact_tag_payloads(text, ["TASK_DESCRIPTION", "SUGGESTION"])
+        _validate_main_plan_text(payloads["SUGGESTION"])
+        return {
+            "task_description": payloads["TASK_DESCRIPTION"],
+            "suggestion": payloads["SUGGESTION"],
+        }
+
+    @staticmethod
+    def parse_summary_tags(text: str) -> dict:
+        return TextGradConsultant.parse_prior_summary_tags(text)
 
     @staticmethod
     def _get_api_samples_text(api_dir: Optional[str] = None, max_chars: int = 12000) -> str:

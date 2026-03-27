@@ -1,4 +1,4 @@
-"""Code generator for the three-stage scanpy agent."""
+"""Code generator for the multi-stage single-cell pipeline."""
 
 from __future__ import annotations
 
@@ -19,6 +19,8 @@ from generator_prompts import (
     FIX_QUERY,
     MODEL_FIX_SYSTEM_PROMPT,
     MODEL_SYSTEM_PROMPT,
+    PRIOR_FIX_SYSTEM_PROMPT,
+    PRIOR_SYSTEM_PROMPT,
     STAGE_QUERY,
 )
 from multieval_types import STAGE_FILES, STAGE_FILENAMES, STAGE_TAG_BY_FILE
@@ -99,7 +101,7 @@ class StageScriptGenerator:
         return json.dumps(self.config.stage_requirements(filename), ensure_ascii=False)
 
     def _prior_schema_context(self, filename: str) -> str:
-        if filename not in {"data_prior.py", "model_training.py"}:
+        if filename not in {"prior_construction.py", "data_preprocess.py", "model_training.py"}:
             return "<none>"
         return json.dumps(self.config.current_prior_schema, ensure_ascii=False)
 
@@ -141,7 +143,16 @@ class StageScriptGenerator:
     def _stage_context(self, filename: str) -> str:
         fields = self.path_prompt_fields
         lines: List[str] = []
-        if filename == "data_prior.py":
+        if filename == "prior_construction.py":
+            lines.extend([
+                f"{self._path_label('input_mod1_path')}: {fields['input_mod1_path']}",
+                f"{self._path_label('input_mod2_path')}: {fields['input_mod2_path']}",
+                f"{self._path_label('prior_output_dir_path')}: {fields['prior_output_dir_path']}",
+                "This script must only construct the prior bundle and write the fixed prior artifacts declared in the prior consultant schema.",
+            ])
+            lines.extend(self._prior_file_lines())
+            lines.extend(f"Dataset resource path: {path}" for path in self._prior_resource_lines())
+        elif filename == "data_preprocess.py":
             lines.extend([
                 f"{self._path_label('input_mod1_path')}: {fields['input_mod1_path']}",
                 f"{self._path_label('input_mod2_path')}: {fields['input_mod2_path']}",
@@ -150,12 +161,10 @@ class StageScriptGenerator:
                 f"Output validation split h5ad: {fields['preprocess_val_mod1_path']}",
                 f"Output test split h5ad: {fields['preprocess_test_mod1_path']}",
                 f"{self._path_label('prior_output_dir_path')}: {fields['prior_output_dir_path']}",
-                "This script must perform both preprocessing and prior construction.",
-                "Use raw prior resource tables during feature selection so prior information can influence the selected genes.",
-                "Write exactly the prior artifact files declared in Consultant PRIOR_SCHEMA_JSON at the specified paths below after final gene selection.",
+                "This script must perform preprocessing and consume the fixed prior bundle already written by prior_construction.py.",
+                "Do not rebuild raw prior artifacts from the resource tables in this stage.",
             ])
             lines.extend(self._prior_file_lines())
-            lines.extend(f"Dataset resource path: {path}" for path in self._prior_resource_lines())
         elif filename == "model_training.py":
             lines.extend([
                 f"{self._path_label('preprocess_metadata_path')}: {fields['preprocess_metadata_path']}",
@@ -189,13 +198,14 @@ class StageScriptGenerator:
             ])
         return "\n".join(line for line in lines if line.strip()) or "<none>"
 
-    def _stage_query(self, *, filename: str, task_description: str, background: str, suggestion: str, data_summary: str, prior_resource_summary: str, script_summaries: str, existing_code: str, mcp_tools_text: str, api_dir: str | None, dataset_dir: str | None) -> str:
+    def _stage_query(self, *, filename: str, task_description: str, background: str, main_plan: str, prior_plan: str, data_summary: str, prior_resource_summary: str, script_summaries: str, existing_code: str, mcp_tools_text: str, api_dir: str | None, dataset_dir: str | None) -> str:
         prompt_fields = {
             "target_file": filename,
             "target_tag": STAGE_TAG_BY_FILE[filename],
             "task_description": task_description,
             "background": background,
-            "suggestion": suggestion,
+            "main_plan": main_plan if filename != "prior_construction.py" else "<none>",
+            "prior_plan": prior_plan if filename in {"prior_construction.py", "data_preprocess.py", "model_training.py"} else "<none>",
             "prior_schema_json": self._prior_schema_context(filename),
             "stage_requirements_json": self._stage_requirements_json(filename),
             "stage_context": self._stage_context(filename),
@@ -203,7 +213,7 @@ class StageScriptGenerator:
             "dataset_dir": dataset_dir or "<not provided>",
             "mcp_tools": mcp_tools_text,
             "data_summary": data_summary,
-            "prior_resource_summary": prior_resource_summary if filename == "data_prior.py" else "<none>",
+            "prior_resource_summary": prior_resource_summary if filename == "prior_construction.py" else "<none>",
             "primary_metric": self._primary_metric(),
             "metrics": ", ".join(self.config.metrics) if isinstance(self.config.metrics, list) else str(self.config.metrics),
             "time_budget": self.config.timeout,
@@ -220,7 +230,9 @@ class StageScriptGenerator:
 
     def _stage_system_prompt(self, filename: str) -> str:
         fields = self.path_prompt_fields
-        if filename == "data_prior.py":
+        if filename == "prior_construction.py":
+            return PRIOR_SYSTEM_PROMPT
+        if filename == "data_preprocess.py":
             return DATA_SYSTEM_PROMPT.format(
                 raw_mod1_path=fields.get("input_mod1_path", ""),
                 raw_mod2_path=fields.get("input_mod2_path", ""),
@@ -261,7 +273,9 @@ class StageScriptGenerator:
 
     @staticmethod
     def _fix_system_prompt(filename: str) -> str:
-        if filename == "data_prior.py":
+        if filename == "prior_construction.py":
+            return PRIOR_FIX_SYSTEM_PROMPT
+        if filename == "data_preprocess.py":
             return DATA_FIX_SYSTEM_PROMPT
         if filename == "model_training.py":
             return MODEL_FIX_SYSTEM_PROMPT
@@ -269,7 +283,7 @@ class StageScriptGenerator:
             return ANALYSIS_FIX_SYSTEM_PROMPT
         return MODEL_FIX_SYSTEM_PROMPT
 
-    def generate_bundle(self, *, task_description: str, background: str, suggestion: str, data_summary: str, prior_resource_summary: str, script_summaries: str, mcp_tools_text: str, api_dir: str | None, dataset_dir: str | None, existing_bundle: Dict[str, tg.Variable] | None = None) -> Dict[str, tg.Variable]:
+    def generate_bundle(self, *, task_description: str, background: str, main_plan: str, prior_plan: str, data_summary: str, prior_resource_summary: str, script_summaries: str, mcp_tools_text: str, api_dir: str | None, dataset_dir: str | None, existing_bundle: Dict[str, tg.Variable] | None = None) -> Dict[str, tg.Variable]:
         bundle: Dict[str, tg.Variable] = {}
         for item in STAGE_FILES:
             filename = item["filename"]
@@ -278,7 +292,8 @@ class StageScriptGenerator:
                 filename=filename,
                 task_description=task_description,
                 background=background,
-                suggestion=suggestion,
+                main_plan=main_plan,
+                prior_plan=prior_plan,
                 data_summary=data_summary,
                 prior_resource_summary=prior_resource_summary,
                 script_summaries=script_summaries,
@@ -304,14 +319,25 @@ class StageScriptGenerator:
             )
         return bundle
 
-    def fix_target(self, *, code_bundle: Dict[str, tg.Variable], target: str, error: str, task_description: str, suggestion: str, max_fix_step: int = 1) -> bool:
+    def fix_target(
+        self,
+        *,
+        code_bundle: Dict[str, tg.Variable],
+        target: str,
+        error: str,
+        task_description: str,
+        main_plan: str,
+        prior_plan: str,
+        max_fix_step: int = 1,
+    ) -> bool:
         filename = target if target in STAGE_TAG_BY_FILE else STAGE_FILENAMES[0]
         target_var = code_bundle[filename]
         prompt_fields = {
             "target_file": filename,
             "target_tag": STAGE_TAG_BY_FILE[filename],
             "task_description": task_description,
-            "suggestion": suggestion,
+            "main_plan": main_plan if filename != "prior_construction.py" else "<none>",
+            "prior_plan": prior_plan if filename in {"prior_construction.py", "data_preprocess.py", "model_training.py"} else "<none>",
             "prior_schema_json": self._prior_schema_context(filename),
             "stage_requirements_json": self._stage_requirements_json(filename),
             "stage_context": self._stage_context(filename),

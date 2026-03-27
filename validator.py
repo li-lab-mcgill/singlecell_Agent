@@ -78,7 +78,7 @@ def _validate_prior_bundle(stage_schema: Dict[str, Any], target_file: str) -> Li
 
 
 def validate_stage_outputs(resolved_artifact_layout: Dict[str, Any], stage_schema: Dict[str, Any], target_file: str) -> List[ValidationFailure]:
-    if target_file == "data_prior.py":
+    if target_file == "prior_construction.py":
         failures = _validate_prior_bundle(stage_schema, target_file)
         if failures:
             return failures

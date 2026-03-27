@@ -6,7 +6,8 @@ from typing import Any, Dict, List
 
 
 STAGE_FILES: List[Dict[str, str]] = [
-    {"filename": "data_prior.py", "tag": "DATA_PRIOR_CODE"},
+    {"filename": "prior_construction.py", "tag": "PRIOR_CONSTRUCTION_CODE"},
+    {"filename": "data_preprocess.py", "tag": "DATA_PREPROCESS_CODE"},
     {"filename": "model_training.py", "tag": "MODEL_TRAINING_CODE"},
     {"filename": "downstream_analysis.py", "tag": "DOWNSTREAM_ANALYSIS_CODE"},
 ]

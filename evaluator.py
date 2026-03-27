@@ -15,13 +15,15 @@ from evaluator_prompts import (
     DATA_SCIENCE_FORMAT_STRING,
     MODEL_EVALUATOR_SYSTEM_PROMPT,
     MODEL_FORMAT_STRING,
+    PRIOR_EVALUATOR_SYSTEM_PROMPT,
+    PRIOR_FORMAT_STRING,
 )
 from multieval_types import STAGE_FILENAMES
 
 load_dotenv()
 
-EVALUATOR_ROLES = {"data_science", "model", "biology"}
-CRITIC_TARGETS = {"data_prior.py", "model_training.py", "downstream_analysis.py"}
+EVALUATOR_ROLES = {"prior", "data_science", "model", "biology"}
+CRITIC_TARGETS = {"prior_construction.py", "data_preprocess.py", "model_training.py", "downstream_analysis.py"}
 
 
 def _parse_json_object(text: str, label: str) -> Dict[str, Any]:
@@ -53,6 +55,9 @@ def parse_evaluator_message(text: str, expected_role: str) -> Dict[str, Any]:
     if role != expected_role:
         raise ValueError(f"{expected_role} evaluator role must be '{expected_role}', got: {role}")
     payload["feedback"] = _validate_feedback_text(payload.get("feedback"), f"{expected_role} evaluator")
+    if expected_role == "prior" and "has_change" in payload:
+        if not isinstance(payload.get("has_change"), bool):
+            raise ValueError("prior evaluator has_change must be a JSON boolean")
     return payload
 
 
@@ -169,7 +174,52 @@ class TextGradEvaluator:
         self.engine_name = engine_name
         self.engine = tg.get_engine(engine_name, max_tokens=7000)
         self.eval_type = eval_type
-        if eval_type == "model":
+        if eval_type == "prior":
+            format_string = PRIOR_FORMAT_STRING.format(
+                task=task_decrp,
+                step="{step}",
+                metrics=self.config.metrics,
+                time_budget=config.timeout,
+                suggestion="{suggestion}",
+                training_history="{training_history}",
+                stagnation_steps="{stagnation_steps}",
+                delta_min="{delta_min}",
+                current_performance="{current_performance}",
+                prior_construction_notes_history="{prior_construction_notes_history}",
+                prior_construction_current_diffs="{prior_construction_current_diffs}",
+                prior_construction_code="{prior_construction_code}",
+                prior_resource_summary="{prior_resource_summary}",
+                raw_data_summary="{raw_data_summary}",
+                cluster_summary="{cluster_summary}",
+                training_logs="{training_logs}",
+                paths="{paths}",
+                prior_schema="{prior_schema}",
+                pipeline_summary="{pipeline_summary}",
+                chat_history="{chat_history}",
+            )
+            self.fields = {
+                "step": None,
+                "suggestion": None,
+                "training_history": None,
+                "stagnation_steps": None,
+                "delta_min": None,
+                "current_performance": None,
+                "prior_construction_notes_history": None,
+                "prior_construction_current_diffs": None,
+                "prior_construction_code": None,
+                "prior_resource_summary": None,
+                "raw_data_summary": None,
+                "cluster_summary": None,
+                "training_logs": None,
+                "paths": None,
+                "prior_schema": None,
+                "pipeline_summary": None,
+                "chat_history": None,
+            }
+            system_prompt = PRIOR_EVALUATOR_SYSTEM_PROMPT
+            response_role = "prior deliberation message"
+            prompt_role = "system prompt for prior evaluator"
+        elif eval_type == "model":
             format_string = MODEL_FORMAT_STRING.format(
                 task=task_decrp,
                 step="{step}",
@@ -182,7 +232,7 @@ class TextGradEvaluator:
                 current_performance="{current_performance}",
                 model_training_notes_history="{model_training_notes_history}",
                 model_training_current_diffs="{model_training_current_diffs}",
-                data_prior_code="{data_prior_code}",
+                data_preprocess_code="{data_preprocess_code}",
                 model_training_code="{model_training_code}",
                 paths="{paths}",
                 model_schema="{model_schema}",
@@ -199,7 +249,7 @@ class TextGradEvaluator:
                 "current_performance": None,
                 "model_training_notes_history": None,
                 "model_training_current_diffs": None,
-                "data_prior_code": None,
+                "data_preprocess_code": None,
                 "model_training_code": None,
                 "paths": None,
                 "model_schema": None,
@@ -221,9 +271,9 @@ class TextGradEvaluator:
                 stagnation_steps="{stagnation_steps}",
                 delta_min="{delta_min}",
                 current_performance="{current_performance}",
-                data_prior_notes_history="{data_prior_notes_history}",
-                data_prior_current_diffs="{data_prior_current_diffs}",
-                data_prior_code="{data_prior_code}",
+                data_preprocess_notes_history="{data_preprocess_notes_history}",
+                data_preprocess_current_diffs="{data_preprocess_current_diffs}",
+                data_preprocess_code="{data_preprocess_code}",
                 preprocessing_summary="{preprocessing_summary}",
                 prior_resource_summary="{prior_resource_summary}",
                 paths="{paths}",
@@ -241,9 +291,9 @@ class TextGradEvaluator:
                 "stagnation_steps": None,
                 "delta_min": None,
                 "current_performance": None,
-                "data_prior_notes_history": None,
-                "data_prior_current_diffs": None,
-                "data_prior_code": None,
+                "data_preprocess_notes_history": None,
+                "data_preprocess_current_diffs": None,
+                "data_preprocess_code": None,
                 "preprocessing_summary": None,
                 "prior_resource_summary": None,
                 "paths": None,
@@ -302,7 +352,8 @@ class TextGradEvaluator:
                 current_performance="{current_performance}",
                 training_logs="{training_logs}",
                 pipeline_summary="{pipeline_summary}",
-                data_prior_notes_history="{data_prior_notes_history}",
+                prior_construction_notes_history="{prior_construction_notes_history}",
+                data_preprocess_notes_history="{data_preprocess_notes_history}",
                 model_training_notes_history="{model_training_notes_history}",
                 downstream_analysis_notes_history="{downstream_analysis_notes_history}",
                 script_summaries="{script_summaries}",
@@ -316,7 +367,8 @@ class TextGradEvaluator:
                 "current_performance": None,
                 "training_logs": None,
                 "pipeline_summary": None,
-                "data_prior_notes_history": None,
+                "prior_construction_notes_history": None,
+                "data_preprocess_notes_history": None,
                 "model_training_notes_history": None,
                 "downstream_analysis_notes_history": None,
                 "script_summaries": None,

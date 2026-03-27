@@ -13,13 +13,18 @@ import numpy as np
 import pandas as pd
 import textgrad as tg
 
-FIXED_DATA_PRIOR_REQUIREMENTS: Dict[str, Any] = {
+FIXED_DATA_PREPROCESS_REQUIREMENTS: Dict[str, Any] = {
     "required_outputs": [
         "preprocess_metadata",
         "preprocess_train_mod1",
         "preprocess_val_mod1",
         "preprocess_test_mod1",
     ],
+    "artifacts": {},
+}
+
+FIXED_PRIOR_CONSTRUCTION_REQUIREMENTS: Dict[str, Any] = {
+    "required_outputs": [],
     "artifacts": {},
 }
 
@@ -152,12 +157,19 @@ class Config:
         self.current_prior_schema = deepcopy(prior_schema)
 
     def stage_requirements(self, filename: str) -> Dict[str, Any]:
-        if filename == "data_prior.py":
+        if filename == "prior_construction.py":
             return {
-                "required_outputs": deepcopy(FIXED_DATA_PRIOR_REQUIREMENTS["required_outputs"]),
-                "artifacts": deepcopy(FIXED_DATA_PRIOR_REQUIREMENTS["artifacts"]),
+                "required_outputs": deepcopy(FIXED_PRIOR_CONSTRUCTION_REQUIREMENTS["required_outputs"]),
+                "artifacts": deepcopy(FIXED_PRIOR_CONSTRUCTION_REQUIREMENTS["artifacts"]),
                 "prior_output_dir": self.current_prior_dir_path,
                 "prior_files": self.resolved_prior_files(),
+                "prior_schema": deepcopy(self.current_prior_schema),
+            }
+        if filename == "data_preprocess.py":
+            return {
+                "required_outputs": deepcopy(FIXED_DATA_PREPROCESS_REQUIREMENTS["required_outputs"]),
+                "artifacts": deepcopy(FIXED_DATA_PREPROCESS_REQUIREMENTS["artifacts"]),
+                "prior_output_dir": self.current_prior_dir_path,
                 "prior_schema": deepcopy(self.current_prior_schema),
             }
         if filename == "model_training.py":
@@ -169,19 +181,34 @@ class Config:
     def downstream_requirements(self) -> Dict[str, Any]:
         return deepcopy(FIXED_DOWNSTREAM_REQUIREMENTS)
 
+    @staticmethod
+    def _infer_prior_format(file_name: str) -> str:
+        suffix = Path(str(file_name or "")).suffix.lower()
+        if suffix.startswith("."):
+            suffix = suffix[1:]
+        return suffix or "binary"
+
     def resolved_prior_files(self) -> List[Dict[str, Any]]:
         prior_schema = self.current_prior_schema if isinstance(self.current_prior_schema, dict) else {}
-        required_files = prior_schema.get("required_files", [])
-        if not isinstance(required_files, list):
+        if not prior_schema:
+            return []
+        output_files = prior_schema.get("output_files")
+        if output_files is None:
+            output_files = prior_schema.get("required_files")
+        if output_files is None:
+            output_files = [prior_schema]
+        if not isinstance(output_files, list):
             return []
         resolved: List[Dict[str, Any]] = []
-        for item in required_files:
+        for item in output_files:
             if not isinstance(item, dict):
                 continue
             file_name = str(item.get("file_name") or "").strip()
             if not file_name:
                 continue
             payload = deepcopy(item)
+            payload.setdefault("artifact_key", Path(file_name).stem or "prior_artifact")
+            payload.setdefault("format", self._infer_prior_format(file_name))
             payload["path"] = os.path.join(self.current_prior_dir_path, file_name) if self.current_prior_dir_path else file_name
             resolved.append(payload)
         return resolved
@@ -303,6 +330,49 @@ class Config:
             except Exception as exc:
                 entry["notes"] = f"failed to summarize: {exc}"
             summaries.append(entry)
+        gene_embedding_dir = os.path.join(dataset_dir, "gene_embedding")
+        gene_embedding_entry: Dict[str, Any] = {
+            "file_path": gene_embedding_dir,
+            "format": "directory",
+            "exists": os.path.exists(gene_embedding_dir),
+        }
+        if not os.path.exists(gene_embedding_dir):
+            gene_embedding_entry["notes"] = "directory not found"
+        else:
+            emb_path = os.path.join(gene_embedding_dir, "gene_embeddings.npy")
+            gene_names_path = os.path.join(gene_embedding_dir, "gene_names.txt")
+            missing_names_path = os.path.join(gene_embedding_dir, "missing_gene_names.txt")
+            gene_embedding_entry["resource_type"] = "gene_description_text_embedding"
+            gene_embedding_entry["files"] = {
+                "gene_embeddings": emb_path,
+                "gene_names": gene_names_path,
+                "missing_gene_names": missing_names_path,
+            }
+            try:
+                emb = np.load(emb_path, mmap_mode="r")
+                gene_embedding_entry["embedding_shape"] = [int(x) for x in emb.shape]
+                gene_embedding_entry["dtype"] = str(emb.dtype)
+            except Exception as exc:
+                gene_embedding_entry["embedding_notes"] = f"failed to inspect embeddings: {exc}"
+            try:
+                with open(gene_names_path, "r", encoding="utf-8") as f:
+                    gene_names = [line.strip() for line in f if line.strip()]
+                gene_embedding_entry["n_gene_names"] = len(gene_names)
+                gene_embedding_entry["sample_gene_names"] = gene_names[:sample_rows]
+            except Exception as exc:
+                gene_embedding_entry["gene_names_notes"] = f"failed to inspect gene_names.txt: {exc}"
+            try:
+                with open(missing_names_path, "r", encoding="utf-8") as f:
+                    missing_gene_names = [line.strip() for line in f if line.strip()]
+                gene_embedding_entry["n_missing_gene_names"] = len(missing_gene_names)
+                gene_embedding_entry["sample_missing_gene_names"] = missing_gene_names[:sample_rows]
+            except Exception as exc:
+                gene_embedding_entry["missing_gene_names_notes"] = f"failed to inspect missing_gene_names.txt: {exc}"
+            gene_embedding_entry["description"] = (
+                "Embeddings for gene description text. gene_names.txt lists genes with available embeddings "
+                "aligned to gene_embeddings.npy rows. missing_gene_names.txt lists genes without embeddings."
+            )
+        summaries.append(gene_embedding_entry)
         return json.dumps({"prior_resources": summaries}, indent=2, ensure_ascii=False)
 
 

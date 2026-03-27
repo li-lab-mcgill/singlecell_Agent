@@ -103,8 +103,10 @@ def _json_text(payload: Dict[str, Any]) -> str:
 
 
 def _role_for_script(script: str) -> str:
-    if script == "data_prior.py":
-        return "Data Prior Engineer"
+    if script == "prior_construction.py":
+        return "Prior Construction Engineer"
+    if script == "data_preprocess.py":
+        return "Data Preprocessing Engineer"
     if script == "model_training.py":
         return "Model Training Engineer"
     if script == "downstream_analysis.py":

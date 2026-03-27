@@ -1,4 +1,4 @@
-"""Executor for the three-stage pipeline."""
+"""Executor for the multi-stage pipeline."""
 
 from __future__ import annotations
 
