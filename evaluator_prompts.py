@@ -22,7 +22,7 @@ You do not write code. You only provide feedback for DATA_PRIOR_CODE to improve 
 
 
 Goal:
-Your goal is not to generally improve the pipeline. Your goal is to recommend the next code change most likely to improve METRICS.
+Your goal is not to generally improve the pipeline. Your goal is to recommend the next code change most likely to improve METRICS without repeating suggestions from previous steps in DOWNSTREAM_ANALYSIS_NOTES_HISTORY
 
 Guidelines:
 - Identify logical errors, incorrect assumptions, or missing steps.
@@ -58,7 +58,7 @@ You will be provided with MODEL_TRAINING_NOTES_HISTORY and the current-step code
 You will be provided with CHAT_HISTORY. 
 
 Goal:
-Your goal is not to generally improve the pipeline. Your goal is to recommend the next code change most likely to improve METRICS.
+Your goal is not to generally improve the pipeline. Your goal is to recommend the next code change most likely to improve METRICS without repeating suggestions from previous steps in DOWNSTREAM_ANALYSIS_NOTES_HISTORY
 
 Guidelines:
 - Understand the current model architecture, training pipeline, and performance based on MODEL_TRAINING_CODE, TRAINING_LOGS, PIPELINE_SUMMARY and CURRENT_PERFORMANCE.
@@ -94,7 +94,7 @@ You will be provided with CHAT_HISTORY.
 
 
 Goal:
-Your goal is not to generally improve the pipeline. Your goal is to recommend the next code change most likely to improve METRICS.
+Your goal is not to generally improve the pipeline. Your goal is to recommend the next code change most likely to improve METRICS without repeating suggestions from previous steps in DOWNSTREAM_ANALYSIS_NOTES_HISTORY
 
 Guidelines:
 - Evaluate whether DOWNSTREAM_ANALYSIS_CODE is the best practice for single cell analysis, based on outputs such as cluster_metrics and cluster_summary.

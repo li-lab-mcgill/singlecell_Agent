@@ -34,9 +34,9 @@ def _parse_json_object(text: str, label: str) -> Dict[str, Any]:
     return payload
 
 
-def _validate_feedback_text(feedback: Any, label: str) -> str:
+def _validate_feedback_text(feedback: Any, label: str, allow_empty: bool = False) -> str:
     text = str(feedback or "").strip()
-    if not text:
+    if not text and not allow_empty:
         raise ValueError(f"{label} feedback must be a non-empty string")
     return text
 
@@ -74,7 +74,7 @@ def parse_critic_output(text: str) -> Dict[str, Any]:
             raise ValueError(f"critic target payload for {target} must be a JSON object")
         if "feedback" not in target_payload:
             raise ValueError(f"critic target payload for {target} missing required key: feedback")
-        feedback = _validate_feedback_text(target_payload.get("feedback"), f"critic target {target}")
+        feedback = _validate_feedback_text(target_payload.get("feedback"), f"critic target {target}", allow_empty=True)
         normalized_targets[target] = {"feedback": feedback}
     payload["targets"] = normalized_targets
     return payload
