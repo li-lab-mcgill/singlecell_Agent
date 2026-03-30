@@ -1,10 +1,12 @@
+"""Agent loop for the single-cell pipeline optimizer."""
+from __future__ import annotations
 import argparse
 import json
 import os
 import re
 import time
 from pathlib import Path
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Tuple
 
 import textgrad as tg
 
@@ -47,6 +49,8 @@ from validator import (
 )
 
 
+# ── module-level helpers ──────────────────────────────────────────────────────
+
 def read_json_safe(path: str) -> Dict[str, Any]:
     if not path or not os.path.exists(path):
         return {}
@@ -78,15 +82,7 @@ def _coerce_perf_scalar(value: Any) -> float:
     if direct is not None:
         return direct
     if isinstance(value, dict):
-        for key in [
-            "metric",
-            "loss",
-            "reconstruction_mse",
-            "ari",
-            "ARI",
-            "score",
-            "value",
-        ]:
+        for key in ["metric", "loss", "reconstruction_mse", "ari", "ARI", "score", "value"]:
             nested = to_float(value.get(key))
             if nested is not None:
                 return nested
@@ -119,7 +115,9 @@ def metric_from_dict(d: Dict[str, Any], candidates: List[str]) -> float | None:
     return None
 
 
-def collect_eval_data(config: Config, run_result: Dict[str, Any]) -> tuple[Dict[str, Any], Dict[str, Any], Dict[str, Any], Dict[str, Any]]:
+def collect_eval_data(
+    config: Config, run_result: Dict[str, Any]
+) -> Tuple[Dict[str, Any], Dict[str, Any], Dict[str, Any], Dict[str, Any]]:
     return (
         run_result.get("cluster_metrics") if isinstance(run_result.get("cluster_metrics"), dict) else read_json_safe(config.cluster_metrics_path),
         run_result.get("cluster_summary") if isinstance(run_result.get("cluster_summary"), dict) else read_json_safe(config.cluster_summary_path),
@@ -128,32 +126,7 @@ def collect_eval_data(config: Config, run_result: Dict[str, Any]) -> tuple[Dict[
     )
 
 
-def maybe_update_global_best(*, global_best: GlobalBestState, run_success: bool, step: int, cluster_metrics: Dict[str, Any], perf: Dict[str, Any], bundle: PipelineBundle, generator: SingleScriptGenerator, final_out_dir: str) -> GlobalBestState:
-    if not run_success:
-        return global_best
-    cur_ari = metric_from_dict(cluster_metrics, ["ari", "ARI"])
-    if cur_ari is None:
-        return global_best
-    if global_best.best_ari is not None and cur_ari < global_best.best_ari:
-        return global_best
-    global_best.best_ari = cur_ari
-    global_best.best_step = step
-    global_best.best_script_path = generator.save_bundle(bundle, step_tag="best_ari")
-    global_best.best_perf = perf if isinstance(perf, dict) else {}
-    global_best.best_cluster_metrics = cluster_metrics if isinstance(cluster_metrics, dict) else {}
-    summary = {
-        "best_step": global_best.best_step,
-        "best_ari": global_best.best_ari,
-        "best_script_path": global_best.best_script_path,
-        "best_cluster_metrics": global_best.best_cluster_metrics,
-        "best_perf": global_best.best_perf,
-    }
-    with open(f"{final_out_dir}/global_best_ari.json", "w", encoding="utf-8") as f:
-        json.dump(summary, f, indent=2, ensure_ascii=False)
-    return global_best
-
-
-def raise_on_failures(failures, result_dir: str, step: int) -> None:
+def raise_on_failures(failures: Any, result_dir: str, step: int) -> None:
     if failures:
         failure = failures[0]
         write_failure_record(f"{result_dir}/feedback/failure_step_{step}.json", failure)
@@ -168,10 +141,7 @@ def fail_with_message(result_dir: str, step: int, stage: str, error_type: str, m
 
 def format_failure_message(*, stage: str, error_type: str, message: str, details: Dict[str, Any] | None = None) -> str:
     base = f"[{error_type}] {stage}: {message}"
-    if not details:
-        out = base
-    else:
-        out = f"{base}\nDetails: {json.dumps(details, ensure_ascii=False, sort_keys=True)}"
+    out = f"{base}\nDetails: {json.dumps(details, ensure_ascii=False, sort_keys=True)}" if details else base
     if stage == "prior" and "prior_manifest.json" in message:
         out += (
             "\nExpected runtime manifest schema: "
@@ -190,9 +160,7 @@ def format_failure_message(*, stage: str, error_type: str, message: str, details
 
 def validation_failure_target(failure: Dict[str, Any]) -> str:
     stage = str(failure.get("stage") or "").strip().lower()
-    if stage in SECTION_ORDER:
-        return stage
-    return "pipeline"
+    return stage if stage in SECTION_ORDER else "pipeline"
 
 
 def _normalize_label(text: str, max_len: int = 48) -> str:
@@ -200,7 +168,7 @@ def _normalize_label(text: str, max_len: int = 48) -> str:
     return (label or "unknown")[:max_len]
 
 
-def classify_run_failure(run_result: Dict[str, Any]) -> tuple[str | None, str | None, str]:
+def classify_run_failure(run_result: Dict[str, Any]) -> Tuple[str | None, str | None, str]:
     if run_result.get("success", False):
         return None, None, ""
     failure = run_result.get("validation_failure")
@@ -208,12 +176,10 @@ def classify_run_failure(run_result: Dict[str, Any]) -> tuple[str | None, str | 
         stage = str(failure.get("stage") or "unknown")
         error_type = str(failure.get("error_type") or "ValidationFailure")
         message = str(failure.get("message") or run_result.get("error") or "Unknown validation error")
-        fingerprint = f"post_run_validate:{stage}:{error_type}:{_normalize_label(message)}"
-        return "post_run_validate", fingerprint, message
+        return "post_run_validate", f"post_run_validate:{stage}:{error_type}:{_normalize_label(message)}", message
     stage = str(run_result.get("failed_stage") or "unknown")
     message = str(run_result.get("error") or "Unknown runtime error")
-    fingerprint = f"execute:{stage}:{_normalize_label(message)}"
-    return "execute", fingerprint, message
+    return "execute", f"execute:{stage}:{_normalize_label(message)}", message
 
 
 def classify_decision_result(*, run_success: bool, primary_gain: float | None, metric_value: float | None) -> str:
@@ -231,9 +197,7 @@ def classify_decision_result(*, run_success: bool, primary_gain: float | None, m
 def summarize_fix_outcome(attempts_used: int, run_success: bool) -> str:
     if attempts_used <= 0:
         return "no_fix_needed"
-    if run_success:
-        return f"resolved_after_{attempts_used}_fix_attempts"
-    return f"unresolved_after_{attempts_used}_fix_attempts"
+    return f"resolved_after_{attempts_used}_fix_attempts" if run_success else f"unresolved_after_{attempts_used}_fix_attempts"
 
 
 def previous_exploit_context(records: List[HistoryNoteRecord]) -> Dict[str, Any]:
@@ -253,79 +217,517 @@ def previous_exploit_context(records: List[HistoryNoteRecord]) -> Dict[str, Any]
     }
 
 
-def infer_exploit_change_type(*, instructions: List[str], diagnosis: str, strategy: str) -> str:
-    text = " ".join([diagnosis, strategy, *instructions]).lower()
-    structural_keywords = ["architecture", "encoder", "decoder", "latent", "rewrite", "refactor", "new function", "loss term", "pipeline"]
-    return "structural" if any(keyword in text for keyword in structural_keywords) else "tuning"
 
+# ── agent loop ────────────────────────────────────────────────────────────────
 
-def _sanitize_exploit_instruction(text: str) -> str:
-    cleaned = str(text or "").strip()
-    if not cleaned:
-        return ""
-    cleaned = re.sub(r"^\s*in\s+[A-Za-z_][A-Za-z0-9_]*\s*\([^)]*\)\s*[:,]\s*", "", cleaned, flags=re.IGNORECASE)
-    cleaned = re.sub(r"^\s*in\s+[A-Za-z_][A-Za-z0-9_]*\s*[:,]\s*", "", cleaned, flags=re.IGNORECASE)
-    cleaned = re.sub(r"^\s*(dataloader|prior|model|train|clustering)\s*:\s*", "", cleaned, flags=re.IGNORECASE)
-    return cleaned.strip()
-
-
-def _build_prior_resource_instructions(dataset_dir: str | None) -> List[str]:
-    if not dataset_dir:
-        return []
-    return [
-        f"Prior data resources are available under {dataset_dir}.",
-        f"MsigDB.csv is available at {os.path.join(dataset_dir, 'MsigDB.csv')} with columns ID, Name, Count, Genes.",
-        f"NeST.tsv is available at {os.path.join(dataset_dir, 'NeST.tsv')} with columns NEST ID, name_new, Genes.",
-        f"GO_terms.csv is available at {os.path.join(dataset_dir, 'GO_terms.csv')} with columns GO, Genes, Gene_Count, Term_Description.",
-        f"Cell_marker_Human.xlsx is available at {os.path.join(dataset_dir, 'Cell_marker_Human.xlsx')}.",
-        f"meta_info.csv is available at {os.path.join(dataset_dir, 'meta_info.csv')}.",
+class AgentLoop:
+    OPTIMIZER_CONSTRAINTS = [
+        "Return ONLY one end-to-end valid, executable Python code named pipeline.py.",
     ]
 
+    def __init__(self, config: Config, args: argparse.Namespace, background: str, mcp_tools_text: str) -> None:
+        self.config = config
+        self.args = args
+        self.background = background
+        self.mcp_tools_text = mcp_tools_text
 
-def build_exploit_gradient_text(*, instructions: List[str], diagnosis: str, strategy: str, expected_effect: str, current_performance: str, focus_areas: List[str] | None = None, bottleneck_reason: str = "", dataset_dir: str | None = None) -> str:
-    flat_instructions = _build_prior_resource_instructions(dataset_dir)
-    flat_instructions.extend(_sanitize_exploit_instruction(item) for item in instructions if str(item).strip())
-    flat_instructions = [item for item in flat_instructions if item]
-    if not flat_instructions:
-        flat_instructions = ["No change needed"]
-    lines = ["Optimize instructions:"]
-    for item in flat_instructions:
-        lines.append(f"- {item}")
-    return "\n".join(lines)
+        # log paths
+        notes_dir = config.notes_dir
+        self.note_path = f"{notes_dir}/note_history.txt"
+        self.history_notes_path = f"{notes_dir}/history_notes.jsonl"
+        self.history_digest_path = f"{notes_dir}/history_digest.txt"
+        self.decision_ledger_path = f"{notes_dir}/decision_ledger.jsonl"
+        self.history_notes_result_path = f"{config.result_dir}/feedback/history_notes.jsonl"
+        self.decision_ledger_result_path = f"{config.result_dir}/feedback/decision_ledger.jsonl"
+        self.consultant_history_path = f"{config.result_dir}/feedback/consultant_history.jsonl"
+
+        # components (created once)
+        self.global_engine = tg.get_engine(args.engine)
+        self.consultant = TextGradConsultant(config=config, engine_name=args.engine)
+        self.executor = CodeExecutor(config)
+
+        # mutable state
+        self.outer_state = OuterLoopState()
+        self.global_note_records: List[HistoryNoteRecord] = []
+        self.decision_records: List[DecisionLedgerRecord] = []
+        self.global_best = GlobalBestState()
+        self.consultant_records: List[ConsultantPlanRecord] = []
+
+        # set during run
+        self.task_summary: Dict[str, Any] = {}
+        self.suggestion: str = ""
+        self.evaluator: TextGradEvaluator | None = None
+        self.bundle: PipelineBundle | None = None
+        self.optimizer: tg.TextualGradientDescent | None = None
+        self.last_cluster_metrics: Dict[str, Any] = {}
+        self.last_cluster_summary: Dict[str, Any] = {}
+
+    # ── setup ──────────────────────────────────────────────────────────────
+
+    def _init_logs(self) -> None:
+        for path in [
+            self.note_path, self.history_notes_path, self.decision_ledger_path,
+            self.history_notes_result_path, self.decision_ledger_result_path,
+            self.consultant_history_path,
+        ]:
+            with open(path, "w", encoding="utf-8"):
+                pass
+        with open(self.history_digest_path, "w", encoding="utf-8") as f:
+            f.write("<empty>\n")
+
+    def _initial_consult(self) -> None:
+        query = self.consultant.create_query(
+            samples=None, id_col=None, background=self.background, label_col=None,
+            include_feat_stats=True, background_only=False, include_samples=False,
+            mcp_tools_text=self.mcp_tools_text,
+            api_dir=self.config.api_dir, dataset_dir=self.config.dataset_dir,
+        )
+        output = self.consultant.generate(prompt=query)
+        print("\n=== Consultant Output ===\n")
+        print(output)
+        print("\n=== End Consultant Output ===\n")
+
+        self.task_summary = TextGradConsultant.parse_summary_tags(output)
+        self.suggestion = self.task_summary["suggestion"]
+        self._record_consultant_plan(step=-1, source="initial", output=output)
+        self._reset_evaluator()
+
+    # ── step execution ─────────────────────────────────────────────────────
+
+    def _generate_and_run(
+        self, step: int, step_contract: Any, component_contract: Dict[str, Any]
+    ) -> Tuple[PipelineBundle, Dict[str, Any], str, int]:
+        """Generate (or reuse) bundle, fix errors, and execute.
+
+        Returns (bundle, run_result, script_path, attempts_used).
+        """
+        generator = SingleScriptGenerator(
+            config=self.config, engine_name=self.args.engine,
+            results_path=self.config.model_perf_path,
+        )
+        query = generator.create_query(
+            task_descrp=self.task_summary["task_description"],
+            data_summary=self.config.feat_stats,
+            suggestion=self.suggestion,
+            interface_contract=json.dumps(component_contract, ensure_ascii=False),
+            script_summaries=generator.summarize_bundle(self.bundle) if self.bundle is not None else "<none>",
+            background=self.background,
+            mcp_tools_text=self.mcp_tools_text,
+            api_dir=self.config.api_dir,
+            dataset_dir=self.config.dataset_dir,
+            preprocess_output_summary=step_contract.contract_path,
+            cluster_metrics=json.dumps(self.last_cluster_metrics, ensure_ascii=False),
+            cluster_summary=json.dumps(self.last_cluster_summary, ensure_ascii=False),
+        )
+
+        bundle = self.bundle
+        run_result: Dict[str, Any] = {}
+        script_path = ""
+        last_error = ""
+
+        for attempt in range(self.config.max_fix_step + 1):
+            # generation phase
+            if bundle is None:
+                try:
+                    bundle = (
+                        generator.generate_bundle(prompt=query)
+                        if attempt == 0
+                        else generator.regenerate_bundle(prompt=query, error=last_error or "Unknown generation error")
+                    )
+                except BundleFormatError as exc:
+                    last_error = str(exc)
+                    if attempt == self.config.max_fix_step:
+                        fail_with_message(self.config.result_dir, step, "generator", "InvalidSchema", str(exc), {"raw_response": exc.raw_response[:4000]})
+                    print(f"fix_{attempt} (generator): {last_error}")
+                    bundle = None
+                    continue
+
+            # pre-run contract validation
+            pre_run_failures = validate_bundle_contract(bundle, step_contract)
+            if pre_run_failures:
+                failure = pre_run_failures[0]
+                last_error = format_failure_message(stage=failure.stage, error_type=failure.error_type, message=failure.message, details=failure.details)
+                if attempt == self.config.max_fix_step:
+                    raise_on_failures(pre_run_failures, self.config.result_dir, step)
+                target = validation_failure_target(failure.to_dict())
+                print(f"fix_{attempt} ({target}): {last_error}")
+                generator.fix_stage(bundle=bundle, failed_stage=target, error=last_error, max_fix_step=1)
+                continue
+
+            # save and path-validate
+            script_path = generator.save_bundle(bundle, step_tag=f"step_{step}" if attempt == 0 else f"step_{step}_fix{attempt - 1}")
+            path_failures = validate_script_path(script_path, step_contract)
+            if path_failures:
+                failure = path_failures[0]
+                last_error = format_failure_message(stage=failure.stage, error_type=failure.error_type, message=failure.message, details=failure.details)
+                if attempt == self.config.max_fix_step:
+                    raise_on_failures(path_failures, self.config.result_dir, step)
+                target = validation_failure_target(failure.to_dict())
+                print(f"fix_{attempt} ({target}): {last_error}")
+                generator.fix_stage(bundle=bundle, failed_stage=target, error=last_error, max_fix_step=1)
+                continue
+
+            # execute
+            run_result = self.executor.run_bundle(script_path, contract=step_contract)
+            if run_result.get("success", False):
+                break
+
+            # handle execution failure
+            failure_record = run_result.get("validation_failure")
+            if failure_record:
+                last_error = format_failure_message(
+                    stage=str(failure_record.get("stage", "unknown")),
+                    error_type=str(failure_record.get("error_type", "ValidationFailure")),
+                    message=str(run_result.get("error", "Unknown error")),
+                    details=failure_record.get("details", {}),
+                )
+                target = validation_failure_target(failure_record)
+            else:
+                target = str(run_result.get("failed_stage") or "pipeline")
+                last_error = run_result.get("error", "Unknown error")
+
+            if attempt == self.config.max_fix_step:
+                if failure_record:
+                    write_failure_record(f"{self.config.result_dir}/feedback/failure_step_{step}.json", failure_record)
+                    raise RuntimeError(
+                        f"[{failure_record.get('error_type', 'ValidationFailure')}] "
+                        f"{failure_record.get('stage', 'unknown')}: {run_result.get('error', 'Unknown error')}"
+                    )
+                fail_with_message(self.config.result_dir, step, target, "RuntimeError", last_error)
+
+            print(f"fix_{attempt} ({target}): {last_error}")
+            generator.fix_stage(bundle=bundle, failed_stage=target, error=last_error, max_fix_step=1)
+
+        self.bundle = bundle
+        return bundle, run_result, script_path, attempt
+
+    def _ensure_optimizer(self) -> None:
+        if self.optimizer is None:
+            self.optimizer = tg.TextualGradientDescent(
+                engine=self.global_engine,
+                parameters=[self.bundle.pipeline_code],
+                constraints=self.OPTIMIZER_CONSTRAINTS,
+            )
+
+    def _exploit(self, eval_out: tg.Variable) -> bool:
+        """Apply one TextGrad step using eval_out as the loss signal."""
+        self.optimizer.zero_grad()
+        eval_out.backward()
+        self.optimizer.step()
+        return True
+
+    def _reconsult(
+        self,
+        step: int,
+        payload: Dict[str, Any],
+        feedback: Dict[str, Any],
+        open_issues: List[str],
+        cluster_metrics: Dict[str, Any],
+        cluster_summary: Dict[str, Any],
+        training_logs: Dict[str, Any],
+        pipeline_summary: Dict[str, Any],
+        notes_text: str,
+    ) -> None:
+        """Trigger reconsultation, update plan/suggestion/evaluator, reset outer state."""
+        exploit_plan = exploit_plan_from_feedback(feedback)
+        current_attempt = {
+            "exploit_plan": exploit_plan,
+            "instruction_text": build_instruction_text(feedback),
+            "cluster_metrics": cluster_metrics,
+            "cluster_summary": cluster_summary,
+            "training_logs": training_logs,
+            "pipeline_summary": pipeline_summary,
+        }
+        why_current_fails = {
+            "payload": payload,
+            "feedback": feedback,
+            "open_issues": open_issues,
+            "history_digest": notes_text,
+        }
+        reconsult_query = build_reconsult_query(
+            task_description=self.task_summary["task_description"],
+            background=self.background,
+            current_suggestion=self.suggestion,
+            current_prior_plan=self.task_summary["prior_plan"],
+            current_attempt=current_attempt,
+            why_current_fails=why_current_fails,
+            historical_failures="\n".join(open_issues[-10:]) if open_issues else "<none>",
+            hard_constraints=self.OPTIMIZER_CONSTRAINTS,
+            history_digest=notes_text,
+            consultant_history_context=build_consultant_history_context(self.consultant_records),
+        )
+        output = self.consultant.generate(prompt=reconsult_query)
+        print(f"\n=== Reconsult Consultant Output (Step {step}) ===\n")
+        print(output)
+        print(f"\n=== End Reconsult Consultant Output (Step {step}) ===\n")
+
+        self.task_summary = TextGradConsultant.parse_summary_tags(output)
+        self.suggestion = self.task_summary["suggestion"]
+        self._record_consultant_plan(step=step, source="reconsult", output=output)
+        self._reset_evaluator()
+        self.outer_state.reset()
+        self.optimizer = None
+        self.bundle = None
+
+    # ── per-step orchestration ─────────────────────────────────────────────
+
+    def _run_step(self, step: int) -> None:
+        step_start = time.perf_counter()
+        self.config.set_step_output_paths(step)
+
+        step_contract = build_step_run_contract(self.config, step, self.task_summary["prior_plan"])
+        step_contract.write()
+        component_contract = build_component_contract(self.config, self.task_summary["prior_plan"], step_contract)
+        with open(step_contract.component_contract_path, "w", encoding="utf-8") as f:
+            json.dump(component_contract, f, indent=2, ensure_ascii=False)
+
+        bundle, run_result, script_path, attempts_used = self._generate_and_run(step, step_contract, component_contract)
+        self._ensure_optimizer()
+
+        perf = read_perf(self.config.model_perf_path)
+        cluster_metrics, cluster_summary, training_logs, pipeline_summary = collect_eval_data(self.config, run_result)
+        self.last_cluster_metrics = cluster_metrics
+        self.last_cluster_summary = cluster_summary
+
+        self.outer_state.best_ari, self.outer_state.best_sil, self.outer_state.stagnation_steps, primary_state = update_primary_metric_state(
+            cluster_metrics=cluster_metrics,
+            best_ari=self.outer_state.best_ari,
+            best_sil=self.outer_state.best_sil,
+            delta_min=self.args.delta_min,
+            stagnation_steps=self.outer_state.stagnation_steps,
+        )
+
+        notes_text = build_history_digest(
+            outer_notes=self.outer_state.note_records,
+            global_notes=self.global_note_records,
+            decision_records=self.decision_records,
+            keep_last=20,
+        )
+        with open(self.history_digest_path, "w", encoding="utf-8") as f:
+            f.write(notes_text + "\n")
+
+        eval_out = self.evaluator.loss_fn(
+            notes=tg.Variable(notes_text or "<empty>", requires_grad=False, role_description="multi-step notes"),
+            step=step,
+            pipeline_code=bundle.pipeline_code,
+            suggestion=tg.Variable(self.suggestion, requires_grad=False, role_description="current consultant suggestion"),
+            training_history=tg.Variable(
+                json.dumps(perf.get("training_history", []), ensure_ascii=False),
+                requires_grad=False, role_description="epoch-level training history",
+            ),
+            stagnation_steps=tg.Variable(  # current count, not the limit
+                str(self.outer_state.stagnation_steps),
+                requires_grad=False, role_description="current consecutive steps without meaningful gain",
+            ),
+            delta_min=tg.Variable(str(self.args.delta_min), requires_grad=False, role_description="minimum meaningful validation gain"),
+            current_performance=tg.Variable(
+                json.dumps({"perf_summary": perf_summary(perf), "primary_state": primary_state}, ensure_ascii=False),
+                requires_grad=False, role_description="current performance summary",
+            ),
+            interface_contract=tg.Variable(json.dumps(component_contract, ensure_ascii=False), requires_grad=False, role_description="single-script interface contract"),
+            context_mode=tg.Variable("full", requires_grad=False, role_description="context packet mode"),
+            cluster_metrics=tg.Variable(json.dumps(cluster_metrics, ensure_ascii=False), requires_grad=False, role_description="cluster metrics"),
+            cluster_summary=tg.Variable(json.dumps(cluster_summary, ensure_ascii=False), requires_grad=False, role_description="cluster summary"),
+            training_logs=tg.Variable(json.dumps(training_logs, ensure_ascii=False), requires_grad=False, role_description="training logs"),
+            pipeline_summary=tg.Variable(json.dumps(pipeline_summary, ensure_ascii=False), requires_grad=False, role_description="pipeline summary"),
+        )
+
+        print(f"\n=== Evaluator Output (Step {step}) ===\n")
+        print(eval_out.value)
+        print(f"\n=== End Evaluator Output (Step {step}) ===\n")
+
+        action, payload, feedback = parse_eval_action(eval_out.value)
+        print(f"Evaluator action at step {step}: {action}")
+
+        exploit_applied = False
+
+        if action == "exploit":
+            exploit_applied = self._exploit(eval_out)
+            if exploit_applied:
+                print(f"\n=== Exploit applied (Step {step}) ===\n")
+
+        open_issues = build_open_issues(run_result=run_result, primary_state=primary_state, payload=payload, feedback=feedback)
+
+        self._log_step(
+            step=step, action=action, payload=payload, feedback=feedback,
+            run_result=run_result, perf=perf,
+            cluster_metrics=cluster_metrics, cluster_summary=cluster_summary,
+            training_logs=training_logs, pipeline_summary=pipeline_summary,
+            script_path=script_path, primary_state=primary_state,
+            attempts_used=attempts_used, open_issues=open_issues,
+            exploit_applied=exploit_applied,
+        )
+        self._update_global_best(step=step, run_result=run_result, cluster_metrics=cluster_metrics, perf=perf)
+
+        if action == "reconsult":
+            self._reconsult(step, payload, feedback, open_issues, cluster_metrics, cluster_summary, training_logs, pipeline_summary, notes_text)
+
+        print(f"Step {step} elapsed: {time.perf_counter() - step_start:.2f}s")
+
+    # ── logging ────────────────────────────────────────────────────────────
+
+    def _log_step(
+        self, *, step: int, action: str, payload: Dict[str, Any], feedback: Dict[str, Any],
+        run_result: Dict[str, Any], perf: Dict[str, Any],
+        cluster_metrics: Dict[str, Any], cluster_summary: Dict[str, Any],
+        training_logs: Dict[str, Any], pipeline_summary: Dict[str, Any],
+        script_path: str, primary_state: Dict[str, Any], attempts_used: int,
+        open_issues: List[str], exploit_applied: bool,
+    ) -> None:
+        exploit_plan = exploit_plan_from_feedback(feedback)
+        optimized_scripts = ["pipeline"] if exploit_applied else []
+
+        with open(f"{self.config.result_dir}/feedback/single_feedback_step_{step}.json", "w", encoding="utf-8") as f:
+            json.dump({
+                "step": step, "context_mode": "full", "action": action,
+                "payload": payload, "feedback": feedback, "exploit_plan": exploit_plan,
+                "run_success": run_result.get("success", False),
+                "failed_stage": run_result.get("failed_stage"),
+                "validation_failure": run_result.get("validation_failure"),
+                "performance": perf,
+                "cluster_metrics": cluster_metrics, "cluster_summary": cluster_summary,
+                "training_logs": training_logs, "pipeline_summary": pipeline_summary,
+                "script_path": script_path, "primary_state": primary_state,
+                "exploit_applied": exploit_applied, "optimized_targets": optimized_scripts,
+            }, f, indent=2, ensure_ascii=False)
+
+        current_metric_value = metric_from_dict(cluster_metrics, ["ari", "ARI"])
+        primary_gain = to_float(primary_state.get("primary_metric_gain"))
+        architecture_fingerprint, design_summary = infer_design_identity(
+            bundle_text=self.bundle.as_text_dict(), payload=payload, cluster_summary=cluster_summary,
+        )
+        failure_phase, failure_fingerprint, root_cause = classify_run_failure(run_result)
+
+        architecture_info = payload.get("architecture", {}) if isinstance(payload, dict) else {}
+        repetition_reason = str(architecture_info.get("repetition_penalty_reason") or "").strip() if isinstance(architecture_info, dict) else ""
+        do_not_repeat = bool(action == "reconsult" or repetition_reason)
+        do_not_repeat_reason = (
+            repetition_reason
+            or str(payload.get("primary_reason") or feedback.get("strategy") or "").strip()
+            or "Current architecture was ruled out after evaluation"
+        )
+        decision_rationale = str(payload.get("primary_reason") or feedback.get("strategy") or "").strip() or "No explicit rationale provided"
+        decision_result = classify_decision_result(
+            run_success=bool(run_result.get("success", False)),
+            primary_gain=primary_gain, metric_value=current_metric_value,
+        )
+        failed_architectures = feedback.get("failed_architectures", []) if isinstance(feedback, dict) else []
+        if isinstance(failed_architectures, str):
+            failed_architectures = [failed_architectures]
+        elif not isinstance(failed_architectures, list):
+            failed_architectures = []
+
+        note_record = HistoryNoteRecord(
+            step=step, action=action, context_mode="full",
+            attempts_used=attempts_used,
+            run_success=bool(run_result.get("success", False)),
+            failed_stage=run_result.get("failed_stage"),
+            architecture_fingerprint=architecture_fingerprint, design_summary=design_summary,
+            decision_rationale=decision_rationale, primary_metric="ari",
+            metric_value=current_metric_value, gain=primary_gain,
+            stagnation=self.outer_state.stagnation_steps,
+            failure_phase=failure_phase, failure_fingerprint=failure_fingerprint,
+            root_cause=root_cause,
+            fix_outcome=summarize_fix_outcome(attempts_used, bool(run_result.get("success", False))),
+            evaluator_diagnosis=exploit_plan.get("diagnosis", ""),
+            script_plan=exploit_plan, open_issues=open_issues,
+            exploit_applied=exploit_applied, optimized_scripts=optimized_scripts,
+            previous_exploit_context=previous_exploit_context(self.global_note_records),
+            do_not_repeat=do_not_repeat, do_not_repeat_reason=do_not_repeat_reason,
+        )
+        append_history_note(
+            note_record,
+            outer_notes=self.outer_state.note_records,
+            global_notes=self.global_note_records,
+            note_text_path=self.note_path,
+            note_jsonl_path=self.history_notes_path,
+            mirror_jsonl_path=self.history_notes_result_path,
+        )
+        append_decision_record(
+            DecisionLedgerRecord(
+                step=step, architecture_fingerprint=architecture_fingerprint,
+                design_summary=design_summary, decision_rationale=decision_rationale,
+                primary_metric="ari", metric_value=current_metric_value,
+                metric_gain=primary_gain, result=decision_result, action=action,
+                failed_stage=run_result.get("failed_stage"),
+                failure_fingerprint=failure_fingerprint,
+                do_not_repeat=do_not_repeat, do_not_repeat_reason=do_not_repeat_reason,
+                exploit_applied=exploit_applied, optimized_scripts=optimized_scripts,
+                rejected_design_labels=[str(item) for item in failed_architectures if str(item).strip()],
+            ),
+            decision_records=self.decision_records,
+            decision_jsonl_path=self.decision_ledger_path,
+            mirror_jsonl_path=self.decision_ledger_result_path,
+        )
+
+    def _update_global_best(self, *, step: int, run_result: Dict[str, Any], cluster_metrics: Dict[str, Any], perf: Dict[str, Any]) -> None:
+        if not run_result.get("success", False):
+            return
+        cur_ari = metric_from_dict(cluster_metrics, ["ari", "ARI"])
+        if cur_ari is None:
+            return
+        if self.global_best.best_ari is not None and cur_ari < self.global_best.best_ari:
+            return
+        self.global_best.best_ari = cur_ari
+        self.global_best.best_step = step
+        self.global_best.best_perf = perf if isinstance(perf, dict) else {}
+        self.global_best.best_cluster_metrics = cluster_metrics if isinstance(cluster_metrics, dict) else {}
+
+        step_dir = os.path.join(self.config.code_dir, "code_best_ari")
+        os.makedirs(step_dir, exist_ok=True)
+        best_script_path = os.path.join(step_dir, "pipeline.py")
+        with open(best_script_path, "w", encoding="utf-8") as f:
+            f.write(self.bundle.pipeline_code.value)
+        self.global_best.best_script_path = best_script_path
+
+        with open(f"{self.config.final_out_dir}/global_best_ari.json", "w", encoding="utf-8") as f:
+            json.dump({
+                "best_step": self.global_best.best_step,
+                "best_ari": self.global_best.best_ari,
+                "best_script_path": self.global_best.best_script_path,
+                "best_cluster_metrics": self.global_best.best_cluster_metrics,
+                "best_perf": self.global_best.best_perf,
+            }, f, indent=2, ensure_ascii=False)
+
+    # ── internal helpers ───────────────────────────────────────────────────
+
+    def _record_consultant_plan(self, *, step: int, source: str, output: str) -> None:
+        record_consultant_plan(
+            consultant_records=self.consultant_records,
+            path=self.consultant_history_path,
+            record=ConsultantPlanRecord(
+                step=step, source=source,
+                task_description=self.task_summary["task_description"],
+                suggestion=self.task_summary["suggestion"],
+                prior_plan_json=self.task_summary["prior_plan"],
+                raw_output=output,
+                plan_fingerprint=plan_fingerprint(
+                    self.task_summary["task_description"],
+                    self.task_summary["suggestion"],
+                    self.task_summary["prior_plan"],
+                ),
+            ),
+        )
+
+    def _reset_evaluator(self) -> None:
+        self.evaluator = TextGradEvaluator(
+            config=self.config,
+            engine_name=self.args.engine,
+            task_decrp=self.task_summary["task_description"],
+            background=self.background,
+            eval_type="joint",
+        )
+
+    # ── entry point ────────────────────────────────────────────────────────
+
+    def run(self) -> None:
+        self._init_logs()
+        self._initial_consult()
+        for step in range(self.config.opt_step + 1):
+            self._run_step(step)
 
 
-def attach_exploit_signal_and_metadata(*, pipeline_var: tg.Variable, keep_fixed: List[str], change_next: List[str], diagnosis: str, strategy: str, expected_effect: str, current_performance_text: str, focus_areas: List[str], bottleneck_reason: str, dataset_dir: str | None = None) -> tuple[Dict[str, str], Dict[str, str], Dict[str, Dict[str, Any]]]:
-    instructions = [str(item).strip() for item in [*keep_fixed, *change_next] if str(item).strip()]
-    change_type = infer_exploit_change_type(instructions=instructions, diagnosis=diagnosis, strategy=strategy)
-    gradient_text = build_exploit_gradient_text(
-        instructions=instructions,
-        diagnosis=diagnosis,
-        strategy=strategy,
-        expected_effect=expected_effect,
-        current_performance=current_performance_text,
-        focus_areas=focus_areas,
-        bottleneck_reason=bottleneck_reason,
-        dataset_dir=dataset_dir,
-    )
-    grad_var = tg.Variable(
-        gradient_text,
-        requires_grad=False,
-        role_description="gradient for pipeline",
-    )
-    pipeline_var.gradients.add(grad_var)
-    pipeline_var.gradients_context[grad_var] = None
-    summary = instructions[0] if instructions else "No change needed"
-    payload = {
-        "change_type": change_type,
-        "summary": summary,
-        "focus_areas": [str(item).strip() for item in focus_areas if str(item).strip()],
-        "bottleneck_reason": bottleneck_reason,
-        "keep_fixed": [str(item).strip() for item in keep_fixed if str(item).strip()],
-        "change_next": [str(item).strip() for item in change_next if str(item).strip()],
-        "gradient_text": gradient_text,
-    }
-    return {"pipeline": change_type}, {"pipeline": f"{change_type}: {summary}"}, {"pipeline": payload}
-
+# ── CLI ───────────────────────────────────────────────────────────────────────
 
 def main() -> None:
     cur_path = os.path.dirname(os.path.abspath(__file__))
@@ -348,6 +750,7 @@ def main() -> None:
 
     file_path = args.input_mod1 or f"{cur_path}/data/h5ad/pbmc3k_annotated.h5ad"
     mod2_path = args.input_mod2
+
     background = f"""
 Data file: Modality 1: {file_path}
 Data file: Modality 2: {mod2_path if mod2_path else "None"}
@@ -386,501 +789,17 @@ The pipeline MUST:
     config.notes_dir = f"{cur_path}/{args.notes_dir}"
     config.code_dir = config.single_code_dir
 
-    Path(config.notes_dir).mkdir(parents=True, exist_ok=True)
-    Path(config.code_dir).mkdir(parents=True, exist_ok=True)
-    Path(config.result_dir).mkdir(parents=True, exist_ok=True)
-    Path(f"{config.result_dir}/feedback").mkdir(parents=True, exist_ok=True)
-    Path(f"{config.result_dir}/metadata&perf").mkdir(parents=True, exist_ok=True)
-
-    note_path = f"{config.notes_dir}/note_history.txt"
-    history_notes_path = f"{config.notes_dir}/history_notes.jsonl"
-    history_digest_path = f"{config.notes_dir}/history_digest.txt"
-    decision_ledger_path = f"{config.notes_dir}/decision_ledger.jsonl"
-    history_notes_result_path = f"{config.result_dir}/feedback/history_notes.jsonl"
-    decision_ledger_result_path = f"{config.result_dir}/feedback/decision_ledger.jsonl"
-    consultant_history_path = f"{config.result_dir}/feedback/consultant_history.jsonl"
-    for path in [
-        note_path,
-        history_notes_path,
-        decision_ledger_path,
-        history_notes_result_path,
-        decision_ledger_result_path,
-        consultant_history_path,
+    for d in [
+        config.notes_dir,
+        config.code_dir,
+        config.result_dir,
+        f"{config.result_dir}/feedback",
+        f"{config.result_dir}/metadata&perf",
     ]:
-        with open(path, "w", encoding="utf-8"):
-            pass
-    with open(history_digest_path, "w", encoding="utf-8") as f:
-        f.write("<empty>\n")
+        Path(d).mkdir(parents=True, exist_ok=True)
 
-    consultant = TextGradConsultant(config=config, engine_name=args.engine)
     mcp_tools_text = fetch_mcp_tools_text()
-    consultant_query = consultant.create_query(
-        samples=None,
-        id_col=None,
-        background=background,
-        label_col=None,
-        include_feat_stats=True,
-        background_only=False,
-        include_samples=False,
-        mcp_tools_text=mcp_tools_text,
-        api_dir=config.api_dir,
-        dataset_dir=config.dataset_dir,
-    )
-    consultant_output = consultant.generate(prompt=consultant_query)
-    print("\n=== Consultant Output ===\n")
-    print(consultant_output)
-    print("\n=== End Consultant Output ===\n")
-    task_summary = TextGradConsultant.parse_summary_tags(consultant_output)
-
-    consultant_records: List[ConsultantPlanRecord] = []
-    record_consultant_plan(
-        consultant_records=consultant_records,
-        path=consultant_history_path,
-        record=ConsultantPlanRecord(
-            step=-1,
-            source="initial",
-            task_description=task_summary["task_description"],
-            suggestion=task_summary["suggestion"],
-            prior_plan_json=task_summary["prior_plan"],
-            raw_output=consultant_output,
-            plan_fingerprint=plan_fingerprint(
-                task_summary["task_description"],
-                task_summary["suggestion"],
-                task_summary["prior_plan"],
-            ),
-        ),
-    )
-
-    evaluator = TextGradEvaluator(
-        config=config,
-        engine_name=args.engine,
-        task_decrp=task_summary["task_description"],
-        background=background,
-        eval_type="joint",
-    )
-    executor = CodeExecutor(config)
-
-    outer_state = OuterLoopState()
-    global_note_records: List[HistoryNoteRecord] = []
-    decision_records: List[DecisionLedgerRecord] = []
-    global_best = GlobalBestState()
-    last_cluster_metrics: Dict[str, Any] = {}
-    last_cluster_summary: Dict[str, Any] = {}
-    suggestion = task_summary["suggestion"]
-    bundle: PipelineBundle | None = None
-
-    optimizer_constraints = [
-        "Return ONLY one end-to-end valid, executable Python code named pipeline.py.",
-    ]
-
-    for step in range(config.opt_step + 1):
-        step_start = time.perf_counter()
-        config.set_step_output_paths(step)
-        step_contract = build_step_run_contract(config, step, task_summary["prior_plan"])
-        step_contract.write()
-        component_contract = build_component_contract(config, task_summary["prior_plan"], step_contract)
-        with open(step_contract.component_contract_path, "w", encoding="utf-8") as f:
-            json.dump(component_contract, f, indent=2, ensure_ascii=False)
-
-        generator = SingleScriptGenerator(config=config, engine_name=args.engine, results_path=config.model_perf_path)
-        query = generator.create_query(
-            task_descrp=task_summary["task_description"],
-            data_summary=config.feat_stats,
-            suggestion=suggestion,
-            interface_contract=json.dumps(component_contract, ensure_ascii=False),
-            script_summaries=generator.summarize_bundle(bundle) if bundle is not None else "<none>",
-            background=background,
-            mcp_tools_text=mcp_tools_text,
-            api_dir=config.api_dir,
-            dataset_dir=config.dataset_dir,
-            preprocess_output_summary=step_contract.contract_path,
-            cluster_metrics=json.dumps(last_cluster_metrics, ensure_ascii=False),
-            cluster_summary=json.dumps(last_cluster_summary, ensure_ascii=False),
-        )
-
-        run_result: Dict[str, Any] = {}
-        script_path = ""
-        last_error_message = ""
-        for attempt in range(config.max_fix_step + 1):
-            if bundle is None:
-                try:
-                    if attempt == 0:
-                        bundle = generator.generate_bundle(prompt=query)
-                    else:
-                        bundle = generator.regenerate_bundle(prompt=query, error=last_error_message or "Unknown bundle generation error")
-                except BundleFormatError as exc:
-                    last_error_message = str(exc)
-                    if attempt == config.max_fix_step:
-                        fail_with_message(config.result_dir, step, "generator", "InvalidSchema", str(exc), {"raw_response": exc.raw_response[:4000]})
-                    print(f"fix_{attempt} (generator): {last_error_message}")
-                    bundle = None
-                    continue
-
-            pre_run_failures = validate_bundle_contract(bundle, step_contract)
-            if pre_run_failures:
-                failure = pre_run_failures[0]
-                last_error_message = format_failure_message(
-                    stage=failure.stage,
-                    error_type=failure.error_type,
-                    message=failure.message,
-                    details=failure.details,
-                )
-                if attempt == config.max_fix_step:
-                    raise_on_failures(pre_run_failures, config.result_dir, step)
-                target_stage = validation_failure_target(failure.to_dict())
-                print(f"fix_{attempt} ({target_stage}): {last_error_message}")
-                generator.fix_stage(bundle=bundle, failed_stage=target_stage, error=last_error_message, max_fix_step=1)
-                continue
-
-            script_path = generator.save_bundle(bundle, step_tag=f"step_{step}" if attempt == 0 else f"step_{step}_fix{attempt-1}")
-            path_failures = validate_script_path(script_path, step_contract)
-            if path_failures:
-                failure = path_failures[0]
-                last_error_message = format_failure_message(
-                    stage=failure.stage,
-                    error_type=failure.error_type,
-                    message=failure.message,
-                    details=failure.details,
-                )
-                if attempt == config.max_fix_step:
-                    raise_on_failures(path_failures, config.result_dir, step)
-                target_stage = validation_failure_target(failure.to_dict())
-                print(f"fix_{attempt} ({target_stage}): {last_error_message}")
-                generator.fix_stage(bundle=bundle, failed_stage=target_stage, error=last_error_message, max_fix_step=1)
-                continue
-
-            run_result = executor.run_bundle(script_path, contract=step_contract)
-            if run_result.get("success", False):
-                break
-
-            failure_record = run_result.get("validation_failure")
-            if failure_record:
-                last_error_message = format_failure_message(
-                    stage=str(failure_record.get("stage", "unknown")),
-                    error_type=str(failure_record.get("error_type", "ValidationFailure")),
-                    message=str(run_result.get("error", "Unknown error")),
-                    details=failure_record.get("details", {}),
-                )
-                target_stage = validation_failure_target(failure_record)
-            else:
-                target_stage = str(run_result.get("failed_stage") or "pipeline")
-                last_error_message = run_result.get("error", "Unknown error")
-
-            if attempt == config.max_fix_step:
-                if failure_record:
-                    write_failure_record(f"{config.result_dir}/feedback/failure_step_{step}.json", failure_record)
-                    raise RuntimeError(
-                        f"[{failure_record.get('error_type', 'ValidationFailure')}] "
-                        f"{failure_record.get('stage', 'unknown')}: {run_result.get('error', 'Unknown error')}"
-                    )
-                fail_with_message(config.result_dir, step, target_stage, "RuntimeError", last_error_message)
-
-            print(f"fix_{attempt} ({target_stage}): {last_error_message}")
-            generator.fix_stage(bundle=bundle, failed_stage=target_stage, error=last_error_message, max_fix_step=1)
-
-        perf = read_perf(config.model_perf_path)
-        pstat = perf_summary(perf)
-        cluster_metrics, cluster_summary, training_logs, pipeline_summary = collect_eval_data(config, run_result)
-        last_cluster_metrics = cluster_metrics
-        last_cluster_summary = cluster_summary
-
-        outer_state.best_ari, outer_state.best_sil, outer_state.stagnation_steps, primary_state = update_primary_metric_state(
-            cluster_metrics=cluster_metrics,
-            best_ari=outer_state.best_ari,
-            best_sil=outer_state.best_sil,
-            delta_min=args.delta_min,
-            stagnation_steps=outer_state.stagnation_steps,
-        )
-
-        notes_text = build_history_digest(
-            outer_notes=outer_state.note_records,
-            global_notes=global_note_records,
-            decision_records=decision_records,
-            keep_last=20,
-        )
-        with open(history_digest_path, "w", encoding="utf-8") as f:
-            f.write(notes_text + "\n")
-
-        notes_var = tg.Variable(notes_text or "<empty>", requires_grad=False, role_description="multi-step notes")
-        suggestion_var = tg.Variable(suggestion, requires_grad=False, role_description="current consultant suggestion")
-        training_history_var = tg.Variable(
-            json.dumps(perf.get("training_history", []), ensure_ascii=False),
-            requires_grad=False,
-            role_description="epoch-level training history",
-        )
-        stagnation_steps_var = tg.Variable(args.stagnation_steps_limit, requires_grad=False, role_description="stagnation step limit")
-        delta_min_var = tg.Variable(str(args.delta_min), requires_grad=False, role_description="minimum meaningful validation gain")
-        current_performance_var = tg.Variable(
-            json.dumps({"perf_summary": pstat, "primary_state": primary_state}, ensure_ascii=False),
-            requires_grad=False,
-            role_description="current performance summary",
-        )
-        interface_contract_var = tg.Variable(
-            json.dumps(component_contract, ensure_ascii=False),
-            requires_grad=False,
-            role_description="single-script interface contract",
-        )
-        context_mode_var = tg.Variable("full", requires_grad=False, role_description="context packet mode")
-        cluster_metrics_var = tg.Variable(json.dumps(cluster_metrics, ensure_ascii=False), requires_grad=False, role_description="cluster metrics")
-        cluster_summary_var = tg.Variable(json.dumps(cluster_summary, ensure_ascii=False), requires_grad=False, role_description="cluster summary")
-        training_logs_var = tg.Variable(json.dumps(training_logs, ensure_ascii=False), requires_grad=False, role_description="training logs")
-        pipeline_summary_var = tg.Variable(json.dumps(pipeline_summary, ensure_ascii=False), requires_grad=False, role_description="pipeline summary")
-
-        eval_out = evaluator.loss_fn(
-            notes=notes_var,
-            step=step,
-            pipeline_code=bundle.pipeline_code,
-            suggestion=suggestion_var,
-            training_history=training_history_var,
-            stagnation_steps=stagnation_steps_var,
-            delta_min=delta_min_var,
-            current_performance=current_performance_var,
-            interface_contract=interface_contract_var,
-            context_mode=context_mode_var,
-            cluster_metrics=cluster_metrics_var,
-            cluster_summary=cluster_summary_var,
-            training_logs=training_logs_var,
-            pipeline_summary=pipeline_summary_var,
-        )
-
-        print(f"\n=== Evaluator Output (Step {step}) ===\n")
-        print(eval_out.value)
-        print(f"\n=== End Evaluator Output (Step {step}) ===\n")
-        action, payload, feedback = parse_eval_action(eval_out.value)
-        print(f"Evaluator action at step {step}: {action}")
-        exploit_plan = exploit_plan_from_feedback(feedback)
-        diagnosis = exploit_plan.get("diagnosis", "")
-        strategy = exploit_plan.get("strategy", "")
-        expected_effect = exploit_plan.get("expected_metric_effect", "")
-        focus_areas = exploit_plan.get("focus_areas", []) if action == "exploit" else []
-        bottleneck_reason = exploit_plan.get("bottleneck_reason", "") if action == "exploit" else ""
-        keep_fixed = exploit_plan.get("keep_fixed", []) if action == "exploit" else []
-        change_next = exploit_plan.get("change_next", []) if action == "exploit" else []
-        optimized_sections = ["pipeline"] if action == "exploit" and (keep_fixed or change_next) else []
-        exploit_applied = False
-        exploit_change_types: Dict[str, str] = {}
-        exploit_summary: Dict[str, str] = {}
-        critique_payloads: Dict[str, Dict[str, Any]] = {}
-
-        if action == "exploit" and optimized_sections:
-            exploit_optimizer = tg.TextualGradientDescent(
-                engine=global_engine,
-                parameters=[bundle.pipeline_code],
-                constraints=optimizer_constraints,
-            )
-            exploit_optimizer.zero_grad()
-            exploit_change_types, exploit_summary, critique_payloads = attach_exploit_signal_and_metadata(
-                pipeline_var=bundle.pipeline_code,
-                keep_fixed=keep_fixed,
-                change_next=change_next,
-                diagnosis=diagnosis,
-                strategy=strategy,
-                expected_effect=expected_effect,
-                current_performance_text=current_performance_var.value,
-                focus_areas=focus_areas,
-                bottleneck_reason=bottleneck_reason,
-                dataset_dir=config.dataset_dir,
-            )
-            exploit_optimizer.step()
-            exploit_applied = True
-            gradient_text = critique_payloads.get("pipeline", {}).get("gradient_text", "")
-            if gradient_text:
-                print(f"\n=== Code Gradient (Step {step}) ===\n")
-                print(gradient_text)
-                print(f"\n=== End Code Gradient (Step {step}) ===\n")
-
-        step_log = {
-            "step": step,
-            "context_mode": "full",
-            "action": action,
-            "payload": payload,
-            "feedback": feedback,
-            "exploit_plan": exploit_plan,
-            "run_success": run_result.get("success", False),
-            "failed_stage": run_result.get("failed_stage"),
-            "validation_failure": run_result.get("validation_failure"),
-            "performance": perf,
-            "cluster_metrics": cluster_metrics,
-            "cluster_summary": cluster_summary,
-            "training_logs": training_logs,
-            "pipeline_summary": pipeline_summary,
-            "script_path": script_path,
-            "primary_state": primary_state,
-            "exploit_applied": exploit_applied,
-            "optimized_targets": optimized_sections,
-            "exploit_change_types": exploit_change_types,
-            "critique_payloads": critique_payloads,
-        }
-        with open(f"{config.result_dir}/feedback/single_feedback_step_{step}.json", "w", encoding="utf-8") as f:
-            json.dump(step_log, f, indent=2, ensure_ascii=False)
-
-        open_issues = build_open_issues(run_result=run_result, primary_state=primary_state, payload=payload, feedback=feedback)
-        attempts_used = attempt
-        current_metric_value = metric_from_dict(cluster_metrics, ["ari", "ARI"])
-        primary_gain = to_float(primary_state.get("primary_metric_gain"))
-        architecture_fingerprint, design_summary = infer_design_identity(
-            bundle_text=bundle.as_text_dict(),
-            payload=payload,
-            cluster_summary=cluster_summary,
-        )
-        failure_phase, failure_fingerprint, root_cause = classify_run_failure(run_result)
-        architecture_info = payload.get("architecture", {}) if isinstance(payload, dict) else {}
-        repetition_reason = ""
-        if isinstance(architecture_info, dict):
-            repetition_reason = str(architecture_info.get("repetition_penalty_reason") or "").strip()
-        do_not_repeat = bool(action == "reconsult" or repetition_reason)
-        do_not_repeat_reason = repetition_reason or str(payload.get("primary_reason") or diagnosis or "").strip() or "Current architecture was ruled out after evaluation"
-        decision_rationale = str(payload.get("primary_reason") or feedback.get("strategy") or diagnosis or "").strip() or "No explicit rationale provided"
-        decision_result = classify_decision_result(
-            run_success=bool(run_result.get("success", False)),
-            primary_gain=primary_gain,
-            metric_value=current_metric_value,
-        )
-        failed_architectures = feedback.get("failed_architectures", []) if isinstance(feedback, dict) else []
-        if isinstance(failed_architectures, str):
-            failed_architectures = [failed_architectures]
-        elif not isinstance(failed_architectures, list):
-            failed_architectures = []
-        prev_exploit_context = previous_exploit_context(global_note_records)
-        note_record = HistoryNoteRecord(
-            step=step,
-            action=action,
-            context_mode="full",
-            attempts_used=attempts_used,
-            run_success=bool(run_result.get("success", False)),
-            failed_stage=run_result.get("failed_stage"),
-            architecture_fingerprint=architecture_fingerprint,
-            design_summary=design_summary,
-            decision_rationale=decision_rationale,
-            primary_metric="ari",
-            metric_value=current_metric_value,
-            gain=primary_gain,
-            stagnation=outer_state.stagnation_steps,
-            failure_phase=failure_phase,
-            failure_fingerprint=failure_fingerprint,
-            root_cause=root_cause,
-            fix_outcome=summarize_fix_outcome(attempts_used, bool(run_result.get("success", False))),
-            evaluator_diagnosis=diagnosis,
-            script_plan=exploit_plan,
-            open_issues=open_issues,
-            exploit_applied=exploit_applied,
-            optimized_scripts=optimized_sections,
-            exploit_change_types=exploit_change_types,
-            exploit_summary=exploit_summary,
-            previous_exploit_context=prev_exploit_context,
-            do_not_repeat=do_not_repeat,
-            do_not_repeat_reason=do_not_repeat_reason,
-        )
-        append_history_note(
-            note_record,
-            outer_notes=outer_state.note_records,
-            global_notes=global_note_records,
-            note_text_path=note_path,
-            note_jsonl_path=history_notes_path,
-            mirror_jsonl_path=history_notes_result_path,
-        )
-        append_decision_record(
-            DecisionLedgerRecord(
-                step=step,
-                architecture_fingerprint=architecture_fingerprint,
-                design_summary=design_summary,
-                decision_rationale=decision_rationale,
-                primary_metric="ari",
-                metric_value=current_metric_value,
-                metric_gain=primary_gain,
-                result=decision_result,
-                action=action,
-                failed_stage=run_result.get("failed_stage"),
-                failure_fingerprint=failure_fingerprint,
-                do_not_repeat=do_not_repeat,
-                do_not_repeat_reason=do_not_repeat_reason,
-                exploit_applied=exploit_applied,
-                optimized_scripts=optimized_sections,
-                exploit_change_types=exploit_change_types,
-                exploit_summary=exploit_summary,
-                rejected_design_labels=[str(item) for item in failed_architectures if str(item).strip()],
-            ),
-            decision_records=decision_records,
-            decision_jsonl_path=decision_ledger_path,
-            mirror_jsonl_path=decision_ledger_result_path,
-        )
-
-        maybe_update_global_best(
-            global_best=global_best,
-            run_success=bool(run_result.get("success", False)),
-            step=step,
-            cluster_metrics=cluster_metrics,
-            perf=perf,
-            bundle=bundle,
-            generator=generator,
-            final_out_dir=config.final_out_dir,
-        )
-
-        if action == "reconsult":
-            current_attempt = {
-                "exploit_plan": exploit_plan,
-                "instruction_text": build_instruction_text(feedback),
-                "cluster_metrics": cluster_metrics,
-                "cluster_summary": cluster_summary,
-                "training_logs": training_logs,
-                "pipeline_summary": pipeline_summary,
-            }
-            why_current_fails = {
-                "payload": payload,
-                "feedback": feedback,
-                "open_issues": open_issues,
-                "failure_fingerprint": failure_fingerprint,
-                "history_digest": notes_text,
-            }
-            historical_failures = "\n".join(open_issues[-10:]) if open_issues else "<none>"
-            consultant_history_context = build_consultant_history_context(consultant_records)
-            reconsult_query = build_reconsult_query(
-                task_description=task_summary["task_description"],
-                background=background,
-                current_suggestion=suggestion,
-                current_prior_plan=task_summary["prior_plan"],
-                current_attempt=current_attempt,
-                why_current_fails=why_current_fails,
-                historical_failures=historical_failures,
-                hard_constraints=optimizer_constraints,
-                history_digest=notes_text,
-                consultant_history_context=consultant_history_context,
-            )
-            reconsult_output = consultant.generate(prompt=reconsult_query)
-            print(f"\n=== Reconsult Consultant Output (Step {step}) ===\n")
-            print(reconsult_output)
-            print(f"\n=== End Reconsult Consultant Output (Step {step}) ===\n")
-            task_summary = TextGradConsultant.parse_summary_tags(reconsult_output)
-            suggestion = task_summary["suggestion"]
-            record_consultant_plan(
-                consultant_records=consultant_records,
-                path=consultant_history_path,
-                record=ConsultantPlanRecord(
-                    step=step,
-                    source="reconsult",
-                    task_description=task_summary["task_description"],
-                    suggestion=task_summary["suggestion"],
-                    prior_plan_json=task_summary["prior_plan"],
-                    raw_output=reconsult_output,
-                    plan_fingerprint=plan_fingerprint(
-                        task_summary["task_description"],
-                        task_summary["suggestion"],
-                        task_summary["prior_plan"],
-                    ),
-                ),
-            )
-            evaluator = TextGradEvaluator(
-                config=config,
-                engine_name=args.engine,
-                task_decrp=task_summary["task_description"],
-                background=background,
-                eval_type="joint",
-            )
-            outer_state.reset()
-            bundle = None
-
-        elapsed = time.perf_counter() - step_start
-        print(f"Step {step} elapsed: {elapsed:.2f}s")
+    AgentLoop(config=config, args=args, background=background, mcp_tools_text=mcp_tools_text).run()
 
 
 if __name__ == "__main__":
