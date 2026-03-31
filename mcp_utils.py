@@ -1,3 +1,4 @@
+"""MCP tool discovery for Scanpy MCP server."""
 import json
 from typing import Any, Dict, List, Optional
 
@@ -5,9 +6,6 @@ import requests
 
 
 def _parse_mcp_response_text(text: str) -> Optional[Dict[str, Any]]:
-    """
-    MCP server may return SSE-like text. Try to extract JSON payload.
-    """
     if not text:
         return None
     if text.lstrip().startswith("{"):
@@ -15,7 +13,6 @@ def _parse_mcp_response_text(text: str) -> Optional[Dict[str, Any]]:
             return json.loads(text)
         except Exception:
             return None
-    # SSE format: lines with "data: {json}"
     data_lines = [line[len("data: "):] for line in text.splitlines() if line.startswith("data: ")]
     if not data_lines:
         return None
@@ -31,19 +28,12 @@ def fetch_mcp_tools_text(
     max_tools: int = 50,
     max_chars: int = 4000,
 ) -> str:
-    """
-    Initialize MCP session, list tools, and return a concise text summary.
-    Returns '(unavailable)' on any failure.
-    """
     try:
         headers = {"Accept": "application/json, text/event-stream"}
         init_payload = {
-            "jsonrpc": "2.0",
-            "id": 1,
-            "method": "initialize",
+            "jsonrpc": "2.0", "id": 1, "method": "initialize",
             "params": {
-                "protocolVersion": "2024-11-05",
-                "capabilities": {},
+                "protocolVersion": "2024-11-05", "capabilities": {},
                 "clientInfo": {"name": "mcp-client", "version": "0.1"},
             },
         }
@@ -63,18 +53,13 @@ def fetch_mcp_tools_text(
         if not tools:
             return "(unavailable)"
 
-        lines: List[str] = []
+        lines = []
         for t in tools[:max_tools]:
             name = t.get("name") if isinstance(t, dict) else getattr(t, "name", "")
             desc = t.get("description") if isinstance(t, dict) else getattr(t, "description", "")
-            if desc:
-                lines.append(f"- {name}: {desc}")
-            else:
-                lines.append(f"- {name}")
+            lines.append(f"- {name}: {desc}" if desc else f"- {name}")
 
         out = "MCP Tools:\n" + "\n".join(lines)
-        if len(out) > max_chars:
-            out = out[: max_chars - 3] + "..."
-        return out
+        return out[:max_chars] if len(out) > max_chars else out
     except Exception:
         return "(unavailable)"

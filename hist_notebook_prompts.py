@@ -1,40 +1,28 @@
+"""Notebook prompt templates."""
+
 NOTEBOOK_PROMPT = """
-You are an expert deep learning engineer and code reviewer.
-Your task is to produce a technical, implementation-focused summary of the provided code.
-
-Goal
-- Generate a clear, structured analysis describing how the current pipeline works, focusing on actual design choices and implementation details.
-- Summarize on the differences between the current code and the previous code, and how those differences impact the pipeline's behavior.
-Output format:
-Return plain text only with these exact section headers:
-Current Behavior:
-- ...
-
-Step Change:
-- ...
-
-Observed Outputs:
-- ...
+You are an expert deep learning engineer. Produce a concise technical summary.
+Return plain text with headers: Current Behavior, Step Change, Observed Outputs.
 """
-
 
 NOTEBOOK_QUERY = """
-TASK:
-{task_description}
-
-Role of the code:
-{code_role}
-
+TASK: {task_description}
+Role: {code_role}
 Code at Step {cur_step}:
-<START_CODE>
 {cur_code}
-</END_CODE>
-
 Code at Previous Step {prev_step}:
-<START_CODE>
 {prev_code}
-</END_CODE>
-
-Output format:
-- Use the required section headers from the system prompt.
 """
+
+NOTE_SUMMARIZE_SYS_PROMPT = (
+    "Compress the given note into one concise sentence preserving "
+    "the most important technical and outcome information. "
+    "Do NOT add information not present in the note."
+)
+
+NOTE_CLEAN_SYS_PROMPT = (
+    "You are an Optimization Notes Curator. Reduce note explosion by "
+    "keeping high-impact info (performance changes, failure modes, "
+    "strategy shifts) and compressing the rest. "
+    "Output only curated notes. Do NOT introduce new information."
+)

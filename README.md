@@ -12,3 +12,15 @@ python default.py \
   --max-fix-step 10 \
   --time-budget 3600
 ```
+```bash
+python default.py \
+  --input_mod1 /home/mcb/users/ekourb/singlecell_Agent/Datasets/RNA_count.h5ad \
+  --dataset-dir /home/mcb/users/ekourb/singlecell_Agent/Datasets \
+  --engine gpt-5 \
+  --opt-step 10 \
+  --max-fix-step 10 \
+  --time-budget 3600 \
+  --stagnation_steps_limit 5 \
+  --delta-min 0.005
+```
+

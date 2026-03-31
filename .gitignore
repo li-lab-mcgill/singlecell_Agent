@@ -1,0 +1,43 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+*.egg
+dist/
+build/
+.eggs/
+
+# Environment
+.env
+.venv/
+venv/
+myenv/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Run outputs
+results/
+saved_code/
+notes/
+
+# Data (too large for git)
+Datasets/
+data/
+*.h5ad
+*.npy
+*.npz
+
+# Logs and checkpoints
+*.pt
+*.pth
+*.ckpt
+slurm-*.out
