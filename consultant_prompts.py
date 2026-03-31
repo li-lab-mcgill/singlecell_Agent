@@ -161,9 +161,7 @@ One sentence summarizing the primary analysis objective from a single-cell persp
 </TASK_DESCRIPTION>
 
 <SUGGESTION>
-
 The complete plan.
-
 </SUGGESTION>
 
 ---

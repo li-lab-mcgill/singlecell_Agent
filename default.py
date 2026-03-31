@@ -181,34 +181,27 @@ def previous_exploit_context(records: List[HistoryNoteRecord]) -> Dict[str, Any]
     }
 
 
-def build_exploit_gradient_text(*, target: str, feedback: str) -> str:
-    return "\n".join(
-        [
-            "Parsed critic feedback for optimization:",
-            f"[Target]\n- {target}",
-            "[Feedback]",
-            str(feedback or "").strip() or "No change needed",
-        ]
-    )
+def _graph_text_var(text: str, predecessors: List[tg.Variable], role_description: str) -> tg.Variable:
+    var = tg.Variable(text, requires_grad=False, role_description=role_description)
+    for predecessor in predecessors:
+        var.predecessors.add(predecessor)
+    return var
 
 
-def attach_exploit_signal_and_metadata(*, code_bundle: Dict[str, tg.Variable], optimize_targets: List[str], feedback: str) -> tuple[Dict[str, str], Dict[str, str], Dict[str, Dict[str, Any]]]:
-    change_types: Dict[str, str] = {}
-    summaries: Dict[str, str] = {}
-    payloads: Dict[str, Dict[str, Any]] = {}
-    for target in optimize_targets:
-        code_var = code_bundle.get(target)
-        if code_var is None:
-            continue
-        gradient_text = build_exploit_gradient_text(target=target, feedback=feedback)
-        grad_var = tg.Variable(gradient_text, requires_grad=False, role_description=f"gradient for {target}")
-        code_var.gradients.add(grad_var)
-        code_var.gradients_context[grad_var] = None
-        summary = str(feedback or "").strip() or "No change needed"
-        change_types[target] = "structural" if summary and summary != "No change needed" else "tuning"
-        summaries[target] = summary
-        payloads[target] = {"gradient_text": gradient_text}
-    return change_types, summaries, payloads
+def _wire_stage_dependencies(code_bundle: Dict[str, tg.Variable]) -> None:
+    prior_code = code_bundle["prior_construction.py"]
+    data_code = code_bundle["data_preprocess.py"]
+    model_code = code_bundle["model_training.py"]
+    downstream_code = code_bundle["downstream_analysis.py"]
+
+    data_code.predecessors.add(prior_code)
+
+    model_code.predecessors.add(prior_code)
+    model_code.predecessors.add(data_code)
+
+    downstream_code.predecessors.add(prior_code)
+    downstream_code.predecessors.add(data_code)
+    downstream_code.predecessors.add(model_code)
 
 
 def _non_negotiable_constraints() -> List[str]:
@@ -583,6 +576,7 @@ Use labels only for evaluation, never for training.
                 api_dir=config.api_dir,
                 dataset_dir=config.dataset_dir,
             )
+            _wire_stage_dependencies(code_bundle)
             optimizer_constraints = {
                 filename: _build_optimizer_constraints_for_file(filename, generator.path_prompt_fields, stage_schemas.get(filename, {}), config)
                 for filename in STAGE_FILENAMES
@@ -755,61 +749,9 @@ Use labels only for evaluation, never for training.
         with open(history_digest_path, "w", encoding="utf-8") as f:
             f.write(notes_text + "\n")
 
-        evaluator_conversation: List[Dict[str, str]] = []
+        evaluator_conversation: List[Dict[str, Any]] = []
+        evaluator_message_vars: List[tg.Variable] = []
         evaluator_errors: Dict[str, str] = {}
-        data_science_eval_out = data_science_evaluator.loss_fn(
-            step=step,
-            metrics=tg.Variable(config.metrics, requires_grad=False, role_description="primary metric name"),
-            time_budget=tg.Variable(str(config.timeout), requires_grad=False, role_description="time budget seconds"),
-            data_preprocess_code=code_bundle["data_preprocess.py"],
-            suggestion=tg.Variable(suggestion, requires_grad=False, role_description="current consultant suggestion"),
-            training_history=tg.Variable(json.dumps(perf.get("training_history", []), ensure_ascii=False), requires_grad=False, role_description="training history"),
-            stagnation_steps=tg.Variable(str(outer_state.stagnation_steps), requires_grad=False, role_description="current stagnation steps"),
-            delta_min=tg.Variable(str(args.delta_min), requires_grad=False, role_description="minimum meaningful validation gain"),
-            current_performance=tg.Variable(json.dumps({"perf_summary": pstat, "primary_state": primary_state}, ensure_ascii=False), requires_grad=False, role_description="current performance summary"),
-            data_preprocess_notes_history=tg.Variable(script_notes_history["data_preprocess.py"], requires_grad=False, role_description="data preprocessing note history"),
-            data_preprocess_current_diffs=tg.Variable(script_current_diffs["data_preprocess.py"], requires_grad=False, role_description="current data preprocessing raw diffs"),
-            preprocessing_summary=tg.Variable(json.dumps(preprocess_metadata, ensure_ascii=False), requires_grad=False, role_description="preprocess metadata json"),
-            prior_resource_summary=tg.Variable(config.prior_resource_summary, requires_grad=False, role_description="structured summary of prior resource files"),
-            paths=tg.Variable(json.dumps(generator.path_prompt_fields, ensure_ascii=False), requires_grad=False, role_description="fixed artifact paths"),
-            data_schema=tg.Variable(json.dumps(config.stage_requirements("data_preprocess.py"), ensure_ascii=False), requires_grad=False, role_description="data preprocessing requirements"),
-            prior_schema=tg.Variable(json.dumps(config.current_prior_schema, ensure_ascii=False), requires_grad=False, role_description="prior schema"),
-            pipeline_summary=tg.Variable(json.dumps(pipeline_summary, ensure_ascii=False), requires_grad=False, role_description="pipeline summary"),
-            chat_history=tg.Variable(json.dumps(evaluator_conversation, ensure_ascii=False), requires_grad=False, role_description="current step evaluator chat history"),
-        )
-        print(f"data_science_evaluator_output_step_{step}:\n{data_science_eval_out.value}")
-        data_science_payload: Dict[str, Any] | None = None
-        try:
-            data_science_payload = parse_evaluator_message(data_science_eval_out.value, "data_science")
-            evaluator_conversation.append(data_science_payload)
-        except Exception as exc:
-            evaluator_errors["data_science"] = str(exc)
-
-        model_eval_out = model_evaluator.loss_fn(
-            step=step,
-            data_preprocess_code=code_bundle["data_preprocess.py"],
-            model_training_code=code_bundle["model_training.py"],
-            suggestion=tg.Variable(suggestion, requires_grad=False, role_description="current consultant suggestion"),
-            training_history=tg.Variable(json.dumps(perf.get("training_history", []), ensure_ascii=False), requires_grad=False, role_description="training history"),
-            stagnation_steps=tg.Variable(str(outer_state.stagnation_steps), requires_grad=False, role_description="current stagnation steps"),
-            delta_min=tg.Variable(str(args.delta_min), requires_grad=False, role_description="minimum meaningful validation gain"),
-            current_performance=tg.Variable(json.dumps({"perf_summary": pstat, "primary_state": primary_state}, ensure_ascii=False), requires_grad=False, role_description="current performance summary"),
-            model_training_notes_history=tg.Variable(script_notes_history["model_training.py"], requires_grad=False, role_description="model training note history"),
-            model_training_current_diffs=tg.Variable(script_current_diffs["model_training.py"], requires_grad=False, role_description="current model training raw diffs"),
-            paths=tg.Variable(json.dumps(generator.path_prompt_fields, ensure_ascii=False), requires_grad=False, role_description="fixed artifact paths"),
-            model_schema=tg.Variable(json.dumps(config.stage_requirements("model_training.py"), ensure_ascii=False), requires_grad=False, role_description="model requirements"),
-            training_logs=tg.Variable(json.dumps(training_logs, ensure_ascii=False), requires_grad=False, role_description="training logs"),
-            pipeline_summary=tg.Variable(json.dumps(pipeline_summary, ensure_ascii=False), requires_grad=False, role_description="pipeline summary"),
-            chat_history=tg.Variable(json.dumps(evaluator_conversation, ensure_ascii=False), requires_grad=False, role_description="current step evaluator chat history"),
-        )
-        print(f"model_evaluator_output_step_{step}:\n{model_eval_out.value}")
-        model_payload: Dict[str, Any] | None = None
-        try:
-            model_payload = parse_evaluator_message(model_eval_out.value, "model")
-            evaluator_conversation.append(model_payload)
-        except Exception as exc:
-            evaluator_errors["model"] = str(exc)
-
         prior_payload: Dict[str, Any] | None = None
         prior_eval_out = prior_evaluator.loss_fn(
             step=step,
@@ -828,14 +770,70 @@ Use labels only for evaluation, never for training.
             paths=tg.Variable(json.dumps(generator.path_prompt_fields, ensure_ascii=False), requires_grad=False, role_description="fixed artifact paths"),
             prior_schema=tg.Variable(json.dumps(config.current_prior_schema, ensure_ascii=False), requires_grad=False, role_description="prior schema"),
             pipeline_summary=tg.Variable(json.dumps(pipeline_summary, ensure_ascii=False), requires_grad=False, role_description="pipeline summary"),
-            chat_history=tg.Variable(json.dumps(evaluator_conversation, ensure_ascii=False), requires_grad=False, role_description="current step evaluator chat history"),
+            chat_history=_graph_text_var("[]", [], "current step evaluator chat history"),
         )
         print(f"prior_evaluator_output_step_{step}:\n{prior_eval_out.value}")
         try:
             prior_payload = parse_evaluator_message(prior_eval_out.value, "prior")
             evaluator_conversation.append(prior_payload)
+            evaluator_message_vars.append(prior_eval_out)
         except Exception as exc:
             evaluator_errors["prior"] = str(exc)
+
+        data_science_eval_out = data_science_evaluator.loss_fn(
+            step=step,
+            metrics=tg.Variable(config.metrics, requires_grad=False, role_description="primary metric name"),
+            time_budget=tg.Variable(str(config.timeout), requires_grad=False, role_description="time budget seconds"),
+            data_preprocess_code=code_bundle["data_preprocess.py"],
+            suggestion=tg.Variable(suggestion, requires_grad=False, role_description="current consultant suggestion"),
+            training_history=tg.Variable(json.dumps(perf.get("training_history", []), ensure_ascii=False), requires_grad=False, role_description="training history"),
+            stagnation_steps=tg.Variable(str(outer_state.stagnation_steps), requires_grad=False, role_description="current stagnation steps"),
+            delta_min=tg.Variable(str(args.delta_min), requires_grad=False, role_description="minimum meaningful validation gain"),
+            current_performance=tg.Variable(json.dumps({"perf_summary": pstat, "primary_state": primary_state}, ensure_ascii=False), requires_grad=False, role_description="current performance summary"),
+            data_preprocess_notes_history=tg.Variable(script_notes_history["data_preprocess.py"], requires_grad=False, role_description="data preprocessing note history"),
+            data_preprocess_current_diffs=tg.Variable(script_current_diffs["data_preprocess.py"], requires_grad=False, role_description="current data preprocessing raw diffs"),
+            preprocessing_summary=tg.Variable(json.dumps(preprocess_metadata, ensure_ascii=False), requires_grad=False, role_description="preprocess metadata json"),
+            prior_resource_summary=tg.Variable(config.prior_resource_summary, requires_grad=False, role_description="structured summary of prior resource files"),
+            paths=tg.Variable(json.dumps(generator.path_prompt_fields, ensure_ascii=False), requires_grad=False, role_description="fixed artifact paths"),
+            data_schema=tg.Variable(json.dumps(config.stage_requirements("data_preprocess.py"), ensure_ascii=False), requires_grad=False, role_description="data preprocessing requirements"),
+            prior_schema=tg.Variable(json.dumps(config.current_prior_schema, ensure_ascii=False), requires_grad=False, role_description="prior schema"),
+            pipeline_summary=tg.Variable(json.dumps(pipeline_summary, ensure_ascii=False), requires_grad=False, role_description="pipeline summary"),
+            chat_history=_graph_text_var(json.dumps(evaluator_conversation, ensure_ascii=False), evaluator_message_vars, "current step evaluator chat history"),
+        )
+        print(f"data_science_evaluator_output_step_{step}:\n{data_science_eval_out.value}")
+        data_science_payload: Dict[str, Any] | None = None
+        try:
+            data_science_payload = parse_evaluator_message(data_science_eval_out.value, "data_science")
+            evaluator_conversation.append(data_science_payload)
+            evaluator_message_vars.append(data_science_eval_out)
+        except Exception as exc:
+            evaluator_errors["data_science"] = str(exc)
+
+        model_eval_out = model_evaluator.loss_fn(
+            step=step,
+            data_preprocess_code=code_bundle["data_preprocess.py"],
+            model_training_code=code_bundle["model_training.py"],
+            suggestion=tg.Variable(suggestion, requires_grad=False, role_description="current consultant suggestion"),
+            training_history=tg.Variable(json.dumps(perf.get("training_history", []), ensure_ascii=False), requires_grad=False, role_description="training history"),
+            stagnation_steps=tg.Variable(str(outer_state.stagnation_steps), requires_grad=False, role_description="current stagnation steps"),
+            delta_min=tg.Variable(str(args.delta_min), requires_grad=False, role_description="minimum meaningful validation gain"),
+            current_performance=tg.Variable(json.dumps({"perf_summary": pstat, "primary_state": primary_state}, ensure_ascii=False), requires_grad=False, role_description="current performance summary"),
+            model_training_notes_history=tg.Variable(script_notes_history["model_training.py"], requires_grad=False, role_description="model training note history"),
+            model_training_current_diffs=tg.Variable(script_current_diffs["model_training.py"], requires_grad=False, role_description="current model training raw diffs"),
+            paths=tg.Variable(json.dumps(generator.path_prompt_fields, ensure_ascii=False), requires_grad=False, role_description="fixed artifact paths"),
+            model_schema=tg.Variable(json.dumps(config.stage_requirements("model_training.py"), ensure_ascii=False), requires_grad=False, role_description="model requirements"),
+            training_logs=tg.Variable(json.dumps(training_logs, ensure_ascii=False), requires_grad=False, role_description="training logs"),
+            pipeline_summary=tg.Variable(json.dumps(pipeline_summary, ensure_ascii=False), requires_grad=False, role_description="pipeline summary"),
+            chat_history=_graph_text_var(json.dumps(evaluator_conversation, ensure_ascii=False), evaluator_message_vars, "current step evaluator chat history"),
+        )
+        print(f"model_evaluator_output_step_{step}:\n{model_eval_out.value}")
+        model_payload: Dict[str, Any] | None = None
+        try:
+            model_payload = parse_evaluator_message(model_eval_out.value, "model")
+            evaluator_conversation.append(model_payload)
+            evaluator_message_vars.append(model_eval_out)
+        except Exception as exc:
+            evaluator_errors["model"] = str(exc)
 
         biology_eval_out = biology_evaluator.loss_fn(
             step=step,
@@ -851,13 +849,14 @@ Use labels only for evaluation, never for training.
             downstream_analysis_current_diffs=tg.Variable(script_current_diffs["downstream_analysis.py"], requires_grad=False, role_description="current downstream raw diffs"),
             cluster_summary=tg.Variable(json.dumps(cluster_summary, ensure_ascii=False), requires_grad=False, role_description="cluster summary"),
             downstream_schema=tg.Variable(json.dumps(config.stage_requirements("downstream_analysis.py"), ensure_ascii=False), requires_grad=False, role_description="downstream requirements"),
-            chat_history=tg.Variable(json.dumps(evaluator_conversation, ensure_ascii=False), requires_grad=False, role_description="current step evaluator chat history"),
+            chat_history=_graph_text_var(json.dumps(evaluator_conversation, ensure_ascii=False), evaluator_message_vars, "current step evaluator chat history"),
         )
         print(f"biology_evaluator_output_step_{step}:\n{biology_eval_out.value}")
         biology_payload: Dict[str, Any] | None = None
         try:
             biology_payload = parse_evaluator_message(biology_eval_out.value, "biology")
             evaluator_conversation.append(biology_payload)
+            evaluator_message_vars.append(biology_eval_out)
         except Exception as exc:
             evaluator_errors["biology"] = str(exc)
 
@@ -873,8 +872,8 @@ Use labels only for evaluation, never for training.
             data_preprocess_notes_history=tg.Variable(script_notes_history["data_preprocess.py"], requires_grad=False, role_description="data preprocessing note history"),
             model_training_notes_history=tg.Variable(script_notes_history["model_training.py"], requires_grad=False, role_description="model training note history"),
             downstream_analysis_notes_history=tg.Variable(script_notes_history["downstream_analysis.py"], requires_grad=False, role_description="downstream analysis note history"),
-            script_summaries=tg.Variable(StageScriptGenerator.summarize_bundle(code_bundle), requires_grad=False, role_description="current script summaries"),
-            chat_history=tg.Variable(json.dumps(evaluator_conversation, ensure_ascii=False), requires_grad=False, role_description="current step evaluator chat history"),
+            script_summaries=_graph_text_var(StageScriptGenerator.summarize_bundle(code_bundle), list(code_bundle.values()), "current script summaries"),
+            chat_history=_graph_text_var(json.dumps(evaluator_conversation, ensure_ascii=False), evaluator_message_vars, "current step evaluator chat history"),
         )
         print(f"critic_output_step_{step}:\n{critic_out.value}")
         critic_payload = parse_critic_output(critic_out.value)
@@ -887,30 +886,21 @@ Use labels only for evaluation, never for training.
         }
         optimize_targets = _dedupe_preserve_order(list(feedback_by_target.keys())) if action == "exploit" else []
         exploit_applied = False
-        exploit_change_types: Dict[str, str] = {}
-        exploit_summary: Dict[str, str] = {}
-        critique_payloads: Dict[str, Dict[str, Any]] = {}
+        exploit_summary = {
+            filename: str((feedback_by_target.get(filename) or {}).get("feedback", "")).strip()
+            for filename in optimize_targets
+        }
+        exploit_change_types = {
+            filename: "structural" if exploit_summary.get(filename) else "tuning"
+            for filename in optimize_targets
+        }
 
         if action == "exploit" and optimize_targets:
-            for filename in optimize_targets:
-                optimizers[filename].zero_grad()
-            for filename in optimize_targets:
-                target_feedback = str((feedback_by_target.get(filename) or {}).get("feedback", "")).strip()
-                target_change_types, target_summary, target_payloads = attach_exploit_signal_and_metadata(
-                    code_bundle=code_bundle,
-                    optimize_targets=[filename],
-                    feedback=target_feedback,
-                )
-                exploit_change_types.update(target_change_types)
-                exploit_summary.update(target_summary)
-                critique_payloads.update(target_payloads)
+            for optimizer in optimizers.values():
+                optimizer.zero_grad()
+            critic_out.backward()
             for filename in optimize_targets:
                 optimizers[filename].step()
-                gradient_text = critique_payloads.get(filename, {}).get("gradient_text", "")
-                if gradient_text:
-                    print(f"\n=== Code Gradient ({filename}, Step {step}) ===\n")
-                    print(gradient_text)
-                    print(f"\n=== End Code Gradient ({filename}, Step {step}) ===\n")
             exploit_applied = True
 
         open_issues = build_open_issues(run_result=run_result, primary_state=primary_state, critic_payload=critic_payload)

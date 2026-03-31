@@ -73,9 +73,9 @@ Implementation steps:
 5. Write a metadata JSON to `{stats_json_path}` containing:
    - Number of cells per split
    - Number of features after selection
-   - Gene list (ordered, as used by the model and aligned prior)
-   - Preprocessing parameters applied (e.g., normalization method, HVG count)
+   - Preprocessing parameters and choices
    - Prior alignment summary (number of prior genes retained, coverage percentage)
+   - Must be compact
 
 Scope boundaries:
 - You may subset, reindex, and filter prior artifacts to align with the final gene set — but do not change the prior's design (do not pick different resources, change thresholds, or rebuild the prior from scratch).

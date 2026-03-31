@@ -34,13 +34,34 @@ def _short(text: str, max_chars: int) -> str:
 
 
 def _extract_exact_tag_payloads(text: str, tags: List[str]) -> Dict[str, str]:
-    pattern = "".join(fr"\s*<{tag}>(.*?)</{tag}>" for tag in tags)
-    match = re.fullmatch(pattern, (text or "").strip(), flags=re.DOTALL | re.IGNORECASE)
-    if not match:
-        raise ValueError(f"Consultant output must contain exactly these tags in order: {tags}")
+    stripped = (text or "").strip()
     payloads: Dict[str, str] = {}
-    for tag, value in zip(tags, match.groups()):
-        payloads[tag] = value.strip()
+    cursor = 0
+
+    for i, tag in enumerate(tags):
+        start_match = re.search(fr"\s*<{tag}>", stripped[cursor:], flags=re.DOTALL | re.IGNORECASE)
+        if not start_match:
+            raise ValueError(f"Consultant output must contain exactly these tags in order: {tags}")
+        absolute_start = cursor + start_match.start()
+        if stripped[cursor:absolute_start].strip():
+            raise ValueError(f"Consultant output must contain exactly these tags in order: {tags}")
+        content_start = cursor + start_match.end()
+
+        end_match = re.search(fr"</{tag}>", stripped[content_start:], flags=re.DOTALL | re.IGNORECASE)
+        if end_match:
+            content_end = content_start + end_match.start()
+            cursor = content_start + end_match.end()
+            payloads[tag] = stripped[content_start:content_end].strip()
+            continue
+
+        if i != len(tags) - 1:
+            raise ValueError(f"Consultant output must contain exactly these tags in order: {tags}")
+
+        payloads[tag] = stripped[content_start:].strip()
+        cursor = len(stripped)
+
+    if stripped[cursor:].strip():
+        raise ValueError(f"Consultant output must contain exactly these tags in order: {tags}")
     return payloads
 
 
