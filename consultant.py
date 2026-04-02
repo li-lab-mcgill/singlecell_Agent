@@ -243,6 +243,8 @@ class TextGradConsultant:
         mcp_tools_text: str = "(unavailable)",
         prior_plan: str = "<omitted>",
         prior_output_summary: str = "<omitted>",
+        rag_general_context: str = "RAG_GENERAL_CONTEXT\n<none>",
+        rag_core_context: str = "RAG_CORE_CONTEXT\n<none>",
     ):
         api_dir_text = api_dir or "<not provided>"
         dataset_dir_text = dataset_dir or "<not provided>"
@@ -278,6 +280,8 @@ class TextGradConsultant:
                                         prior_resource_paths=prior_resource_paths,
                                         prior_plan=prior_plan,
                                         prior_output_summary=prior_output_summary,
+                                        rag_general_context=rag_general_context,
+                                        rag_core_context=rag_core_context,
                                         mcp_tools=mcp_tools_text,
                                         metrics=self.config.metrics, samples=samples, background=background)
             else:
@@ -289,6 +293,8 @@ class TextGradConsultant:
                     prior_resource_paths=prior_resource_paths,
                     prior_plan=prior_plan,
                     prior_output_summary=prior_output_summary,
+                    rag_general_context=rag_general_context,
+                    rag_core_context=rag_core_context,
                     mcp_tools=mcp_tools_text,
                     samples=samples, background=background)
 
@@ -301,6 +307,8 @@ class TextGradConsultant:
                 prior_resource_paths=prior_resource_paths,
                 prior_plan=prior_plan,
                 prior_output_summary=prior_output_summary,
+                rag_general_context=rag_general_context,
+                rag_core_context=rag_core_context,
                 mcp_tools=mcp_tools_text,
                 id_col=id_col, samples=samples, background=background)
 

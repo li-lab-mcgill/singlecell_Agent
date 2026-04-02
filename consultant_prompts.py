@@ -32,14 +32,16 @@ Your job is to bridge this gap: given a task, a dataset, and a set of available 
 
 You will receive:
 - `TASK`: The single-cell analysis objective.
-- `DATA_SUMMARY`: Description of the single-cell dataset.
-- `PRIOR_RESOURCES`: A list of available prior knowledge sources with brief descriptions.
-- `METRICS`: The evaluation metrics used to assess the model.
+- `DATA_SUMMARY`: Description of the single-cell dataset (species, tissue, assay, number of cells, number of genes/features, available annotations).
+- `PRIOR_RESOURCES`: A list of available prior knowledge sources with brief descriptions. This list may be incomplete — you may suggest additional public resources if they would meaningfully improve the prior.
+- `METRICS`: The evaluation metrics used to assess the model (e.g., Silhouette, ARI, NMI for clustering; AUROC, AUPRC for classification).
+- `EXTERNAL_KNOWLEDGE`: Excerpts from research papers, method documentation, or technical references relevant to the task. These are provided as reference material. Use them as a source of inspiration for prior design choices, to identify proven strategies for similar tasks, or to justify your decisions. Do not follow them blindly: adapt ideas to the specific dataset and task rather than copying an approach wholesale. If the external knowledge describes a method that assumes a different data modality, species, or task type, note the mismatch and adjust accordingly.
+ 
 
 You MUST produce your response strictly inside the following tags:
 
 <TASK_DESCRIPTION>
-One sentence summarizing the primary analysis objective from a single-cell perspective.
+One sentence summarizing the primary analysis objective and how does your prior design helps.
 </TASK_DESCRIPTION>
 
 <SUGGESTION>
@@ -51,6 +53,7 @@ Provide one concrete implementation plan for prior design covering:
 Be precise about:
 - selected and excluded resources
 - prior output specification
+- external knowledge references that inspired your design
 - preprocessing and identifier mapping
 - integration method into the downstream model
 - expected effect on target metrics
@@ -89,12 +92,17 @@ You will receive:
 - `PRIOR_RESOURCES`: Available prior resource files and their paths.
 - `AVAILABLE_TOOLS`: API directory, dataset directory, and MCP tools available to the code agent.
 - `OUTPUT_PATHS`: Fixed file paths where the pipeline must write its final outputs.
+- `EXTERNAL_KNOWLEDGE`: Excerpts from research papers, method documentation, or technical references relevant to the task. These are provided as reference material. Use them as a source of inspiration for prior design choices, to identify proven strategies for similar tasks, or to justify your decisions. Do not follow them blindly: adapt ideas to the specific dataset and task rather than copying an approach wholesale. If the external knowledge describes a method that assumes a different data modality, species, or task type, note the mismatch and adjust accordingly.
+ 
 
 ---
 
 ## Your Task
 
-Produce a single concrete implementation plan. Do not propose alternatives — commit to one strategy with clear justification at each decision point. The plan must cover three parts:
+Produce a single concrete implementation plan. Do not propose alternatives, commit to one strategy with clear justification at each decision point. 
+Be precise about external knowledge references that inspired your design.
+
+The plan must cover three parts:
 
 ### Part 1 — Data Preprocessing 
 
@@ -188,6 +196,8 @@ INPUT_QUERY_SUPERVISED = (
   "Available MCP tools: {mcp_tools}\n"
   "The data statistics: {feat_stats}\n"
   "The prior resource summary: {prior_resource_summary}\n"
+  "Helpful papers abstracts: {rag_general_context}\n"
+  "Helpful methods to reference: {rag_core_context}\n"
   "The following are sample data: \n{samples}\n"
   "Background of the dataset: {background}\n"
 )
@@ -205,6 +215,8 @@ MAIN_INPUT_QUERY_SUPERVISED = (
   "The prior resource paths: {prior_resource_paths}\n"
   "The prior specialist plan: {prior_plan}\n"
   "The prior specialist output summary: {prior_output_summary}\n"
+  "Helpful papers abstracts: {rag_general_context}\n"
+  "Helpful methods to reference: {rag_core_context}\n"
   "The following are sample data: \n{samples}\n"
   "Background of the dataset: {background}\n"
 )
@@ -218,6 +230,8 @@ INPUT_QUERY_UNSUPERVISED = (
   "Available MCP tools: {mcp_tools}\n"
   "The data statistics: {feat_stats}\n"
   "The prior resource summary: {prior_resource_summary}\n"
+  "Helpful papers abstracts: {rag_general_context}\n"
+  "Helpful methods to reference: {rag_core_context}\n"
   "Sample data: {samples}\n"
   "Background of the dataset: {background}\n"
 )
@@ -234,6 +248,8 @@ MAIN_INPUT_QUERY_UNSUPERVISED = (
   "The prior resource paths: {prior_resource_paths}\n"
   "The prior specialist plan: {prior_plan}\n"
   "The prior specialist output summary: {prior_output_summary}\n"
+  "External papers abstracts: {rag_general_context}\n"
+  "External helpful methods to reference: {rag_core_context}\n"
   "Sample data: {samples}\n"
   "Background of the dataset: {background}\n"
 )
@@ -248,6 +264,8 @@ INPUT_QUERY_UNSUPERVISED_LABEL = (
   "Available MCP tools: {mcp_tools}\n"
   "The data statistics: {feat_stats}\n"
   "The prior resource summary: {prior_resource_summary}\n"
+  "Helpful papers abstracts: {rag_general_context}\n"
+  "Helpful methods to reference: {rag_core_context}\n"
   "Sample data: {samples}\n"
   "Background of the dataset: {background}\n"
 )
@@ -265,6 +283,8 @@ MAIN_INPUT_QUERY_UNSUPERVISED_LABEL = (
   "The prior resource paths: {prior_resource_paths}\n"
   "The prior specialist plan: {prior_plan}\n"
   "The prior specialist output summary: {prior_output_summary}\n"
+  "Helpful papers abstracts: {rag_general_context}\n"
+  "Helpful methods to reference: {rag_core_context}\n"
   "Sample data: {samples}\n"
   "Background of the dataset: {background}\n"
 )

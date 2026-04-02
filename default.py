@@ -50,6 +50,7 @@ from multieval_types import (
     ScriptNoteRecord,
     STAGE_FILENAMES,
 )
+from rag_agent import ConsultantRAGAgent
 from validator import write_failure_record
 
 
@@ -373,6 +374,9 @@ def main() -> None:
     parser.add_argument("--api-dir", default=None)
     parser.add_argument("--dataset-dir", default=None)
     parser.add_argument("--artifact-layout", default="artifact_layout.json")
+    parser.add_argument("--rag-root", default="rag_data")
+    parser.add_argument("--embedding-backend", choices=["local", "openai"], default="local")
+    parser.add_argument("--embedding-model", default=None)
     parser.add_argument("--opt-step", type=int, default=5)
     parser.add_argument("--max-fix-step", type=int, default=3)
     parser.add_argument("--time-budget", type=int, default=3600)
@@ -469,9 +473,18 @@ Use labels only for evaluation, never for training.
 
     prior_consultant = TextGradConsultant(config=config, engine_name=args.engine, consultant_type="prior")
     consultant = TextGradConsultant(config=config, engine_name=args.engine, consultant_type="main")
+    rag_root = args.rag_root if os.path.isabs(args.rag_root) else f"{cur_path}/{args.rag_root}"
+    rag_agent = ConsultantRAGAgent(
+        root_dir=rag_root,
+        engine_name=args.engine,
+        embedding_backend=args.embedding_backend,
+        embedding_model=args.embedding_model,
+    )
     mcp_tools_text = fetch_mcp_tools_text()
     print(f"data_summary:\n{config.feat_stats}")
     print(f"prior_resource_summary:\n{config.prior_resource_summary}")
+    prior_rag_context = rag_agent.build_prior_context(config=config, background=consultant_background)
+    print(f"Prior RAG CONTEXT:\n{prior_rag_context.general_context}\n\nCore context:\n{prior_rag_context.core_context}\n")
     prior_consultant_query = prior_consultant.create_query(
         samples=None,
         id_col=None,
@@ -483,6 +496,8 @@ Use labels only for evaluation, never for training.
         mcp_tools_text=mcp_tools_text,
         api_dir=config.api_dir,
         dataset_dir=config.dataset_dir,
+        rag_general_context=prior_rag_context.general_context,
+        rag_core_context=prior_rag_context.core_context,
     )
     prior_consultant_output = prior_consultant.generate(prompt=prior_consultant_query)
     print(f"prior_consultant_output:\n{prior_consultant_output}")
@@ -504,6 +519,12 @@ Use labels only for evaluation, never for training.
         ),
     )
 
+    main_rag_context = rag_agent.build_main_context(
+        config=config,
+        background=consultant_background,
+        prior_plan=prior_task_summary["suggestion"],
+        prior_schema_json=json.dumps(prior_task_summary["prior_schema"], ensure_ascii=False),
+    )
     consultant_query = consultant.create_query(
         samples=None,
         id_col=None,
@@ -517,6 +538,8 @@ Use labels only for evaluation, never for training.
         dataset_dir=config.dataset_dir,
         prior_plan=prior_task_summary["suggestion"],
         prior_output_summary=json.dumps(prior_task_summary["prior_schema"], ensure_ascii=False),
+        rag_general_context=main_rag_context.general_context,
+        rag_core_context=main_rag_context.core_context,
     )
     consultant_output = consultant.generate(prompt=consultant_query)
     print(f"consultant_output:\n{consultant_output}")
