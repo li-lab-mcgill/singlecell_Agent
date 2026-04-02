@@ -308,6 +308,32 @@ def _ncbi_get(url: str, **params: object) -> requests.Response:
     raise last_error
 
 
+def _biorxiv_get(session: requests.Session, url: str) -> requests.Response:
+    last_error: Optional[Exception] = None
+    for attempt in range(4):
+        try:
+            response = session.get(url, timeout=60)
+            if response.status_code in {429, 500, 502, 503, 504}:
+                raise requests.HTTPError(
+                    f"bioRxiv request failed with status {response.status_code}",
+                    response=response,
+                )
+            response.raise_for_status()
+            _sleep(1.0)
+            return response
+        except (requests.ConnectionError, requests.Timeout, requests.HTTPError) as exc:
+            response = getattr(exc, "response", None)
+            status_code = response.status_code if response is not None else None
+            retryable = status_code in {None, 429, 500, 502, 503, 504}
+            last_error = exc
+            if attempt == 3 or not retryable:
+                break
+            backoff = 1.0 * (2**attempt) + random.uniform(0.0, 0.5)
+            _sleep(backoff)
+    assert last_error is not None
+    raise last_error
+
+
 def _pubmed_article_to_document(article: ET.Element) -> Optional[RAGDocument]:
     medline_citation = article.find("./MedlineCitation")
     pubmed_data = article.find("./PubmedData")
@@ -402,15 +428,13 @@ def fetch_biorxiv_documents(categories: Optional[Iterable[str]] = None, days: in
     start_date = time.strftime("%Y-%m-%d", time.localtime(time.time() - days * 86400))
     end_date = time.strftime("%Y-%m-%d")
     while len(all_papers) < max_papers:
-        response = session.get(f"https://api.biorxiv.org/details/biorxiv/{start_date}/{end_date}/{cursor}", timeout=30)
-        response.raise_for_status()
+        response = _biorxiv_get(session, f"https://api.biorxiv.org/details/biorxiv/{start_date}/{end_date}/{cursor}")
         payload = response.json()
         collection = payload.get("collection", [])
         if not collection:
             break
         all_papers.extend(collection)
         cursor += len(collection)
-        _sleep(1.0)
     documents: List[RAGDocument] = []
     for paper in all_papers:
         paper_category = str(paper.get("category", "")).strip().lower()
