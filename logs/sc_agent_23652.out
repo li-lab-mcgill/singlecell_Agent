@@ -1,0 +1,15 @@
+Copying env to /tmp/myenv_23652 ...
+Done copying env.
+=== Prior Consultation ===
+=== Main Consultation ===
+
+============================================================
+Step 0
+============================================================
+  Fix 1/30: data_preprocess.py
+  Fix 2/30: data_preprocess.py
+  Fix 3/30: model_training.py
+  Fix 4/30: downstream_analysis.py
+ARI=0.49604853975878627  gain=None  stagnation=0/5
+Evaluating...
+Optimizing: ['prior_construction.py', 'data_preprocess.py', 'model_training.py', 'downstream_analysis.py']

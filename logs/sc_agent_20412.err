@@ -1,0 +1,35 @@
+Traceback (most recent call last):
+  File "/home/mcb/users/ekourb/textgrad_agent/myenv/lib/python3.9/site-packages/tenacity/__init__.py", line 480, in __call__
+    result = fn(*args, **kwargs)
+  File "/home/mcb/users/ekourb/textgrad_agent/myenv/lib/python3.9/site-packages/textgrad/engine/openai.py", line 109, in generate
+    return self._generate_from_single_prompt(content, system_prompt=system_prompt, **kwargs)
+  File "/home/mcb/users/ekourb/textgrad_agent/myenv/lib/python3.9/site-packages/textgrad/engine/openai.py", line 129, in _generate_from_single_prompt
+    response = self.client.responses.create(
+  File "/home/mcb/users/ekourb/textgrad_agent/myenv/lib/python3.9/site-packages/openai/resources/responses/responses.py", line 828, in create
+    return self._post(
+  File "/home/mcb/users/ekourb/textgrad_agent/myenv/lib/python3.9/site-packages/openai/_base_client.py", line 1259, in post
+    return cast(ResponseT, self.request(cast_to, opts, stream=stream, stream_cls=stream_cls))
+  File "/home/mcb/users/ekourb/textgrad_agent/myenv/lib/python3.9/site-packages/openai/_base_client.py", line 1047, in request
+    raise self._make_status_error_from_response(err.response) from None
+openai.BadRequestError: Error code: 400 - {'error': {'message': 'Your input exceeds the context window of this model. Please adjust your input and try again.', 'type': 'invalid_request_error', 'param': 'input', 'code': 'context_length_exceeded'}}
+
+The above exception was the direct cause of the following exception:
+
+Traceback (most recent call last):
+  File "/home/mcb/users/ekourb/singlecell_Agent/default.py", line 317, in <module>
+    main()
+  File "/home/mcb/users/ekourb/singlecell_Agent/default.py", line 272, in main
+    optimizers[fn].step()
+  File "/home/mcb/users/ekourb/textgrad_agent/myenv/lib/python3.9/site-packages/textgrad/optimizer/optimizer.py", line 213, in step
+    new_text = self.engine(prompt_update_parameter, system_prompt=self.optimizer_system_prompt)
+  File "/home/mcb/users/ekourb/textgrad_agent/myenv/lib/python3.9/site-packages/textgrad/engine/openai.py", line 184, in __call__
+    return self.generate(prompt, **kwargs)
+  File "/home/mcb/users/ekourb/textgrad_agent/myenv/lib/python3.9/site-packages/tenacity/__init__.py", line 338, in wrapped_f
+    return copy(f, *args, **kw)
+  File "/home/mcb/users/ekourb/textgrad_agent/myenv/lib/python3.9/site-packages/tenacity/__init__.py", line 477, in __call__
+    do = self.iter(retry_state=retry_state)
+  File "/home/mcb/users/ekourb/textgrad_agent/myenv/lib/python3.9/site-packages/tenacity/__init__.py", line 378, in iter
+    result = action(retry_state)
+  File "/home/mcb/users/ekourb/textgrad_agent/myenv/lib/python3.9/site-packages/tenacity/__init__.py", line 421, in exc_check
+    raise retry_exc from fut.exception()
+tenacity.RetryError: RetryError[<Future at 0x7fc292cd65e0 state=finished raised BadRequestError>]

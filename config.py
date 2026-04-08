@@ -35,7 +35,7 @@ STAGE_SCHEMAS: Dict[str, Dict[str, Any]] = {
     },
     "downstream_analysis.py": {
         "required_outputs": [
-            "cluster_assignments", "cluster_metrics", "cluster_summary",
+            "cluster_assignments", "cluster_metrics", "cluster_summary", "umap_plot",
         ],
         "artifacts": {
             "cluster_assignments": {
@@ -43,6 +43,7 @@ STAGE_SCHEMAS: Dict[str, Dict[str, Any]] = {
                 "required_columns": ["cell_id", "predicted_cluster", "split"],
             },
             "cluster_metrics": {"format": "json", "required_keys": ["ari"]},
+            "umap_plot": {"format": "png"},
         },
     },
 }
@@ -83,11 +84,12 @@ class Config:
         self.metrics = "ARI"
 
         # Directory layout
-        self.code_dir = os.path.join(self.cur_path, "saved_code", "singleeval")
-        self.result_dir = os.path.join(self.cur_path, "results")
+        run_root = self.api_dir 
+        self.code_dir = os.path.join(run_root, "saved_code")
+        self.result_dir = os.path.join(run_root, "results")
         self.intermediate_dir = os.path.join(self.result_dir, "intermediate_output")
         self.final_dir = os.path.join(self.result_dir, "final_output")
-        self.notes_dir = os.path.join(self.cur_path, "notes")
+        self.notes_dir = os.path.join(run_root, "notes")
         self.feedback_dir = os.path.join(self.result_dir, "feedback")
         for d in [self.code_dir, self.result_dir, self.intermediate_dir,
                   self.final_dir, self.notes_dir, self.feedback_dir]:

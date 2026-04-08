@@ -15,6 +15,7 @@ from executor import Executor
 from generator import Generator
 from hist_notebook import NoteBook
 from mcp_utils import fetch_mcp_tools_text
+from visual_analyzer import VisualAnalyzer
 from multieval_types import (
     STAGE_FILENAMES,
     SCRIPT_TO_ROLE,
@@ -80,8 +81,9 @@ def _execute_with_fixes(
         error = result.get("error", "Unknown error")
         if attempt == config.max_fix_steps:
             return result, start_from
+        stdout = result.get("stage_results", {}).get(failed, {}).get("stdout", "")
         print(f"  Fix {attempt+1}/{config.max_fix_steps}: {failed}")
-        generator.fix(code_bundle[failed], failed, error, task)
+        generator.fix(code_bundle[failed], failed, error, task, bundle=code_bundle, stdout=stdout)
         script_dir = generator.save_bundle(code_bundle, step)
         start_from = failed
     return result, start_from
@@ -140,6 +142,7 @@ def main():
     panel = EvaluatorPanel(config, task)
     notebook = NoteBook(args.engine, task, config.notes_dir)
     executor = Executor(config)
+    visual_analyzer = VisualAnalyzer(args.engine)
 
     global_best = GlobalBestState()
     best_ari: Optional[float] = None
@@ -169,6 +172,7 @@ def main():
                         f"Return ONLY valid executable Python for {fn}.",
                         "No argparse, sys.argv, or environment variables.",
                         "Use only fixed config-owned artifact paths.",
+                        "downstream_analysis.py MUST save a UMAP plot as a PNG file to the path specified in the config."
                     ],
                 )
                 for fn in STAGE_FILENAMES
@@ -230,6 +234,9 @@ def main():
             "pipeline_summary": json.dumps(run_result.get("pipeline_summary", {})),
             "script_summaries": Generator.summarize_bundle(code_bundle),
             "notes": notebook.get_context(),
+            "umap_analysis": visual_analyzer.analyze(
+                layout["generated_outputs"].get("umap_plot", "")
+            ),
         }
 
         # 7. Evaluator meeting: 4 specialists → critic
@@ -245,10 +252,14 @@ def main():
         targets: List[str] = []
 
         if action == "exploit":
-            targets = [
-                fn for fn, payload in critic.get("targets", {}).items()
-                if str(payload.get("feedback", "")).strip()
-            ]
+            targets = []
+            for fn, payload in critic.get("targets", {}).items():
+                if isinstance(payload, dict):
+                    fb = str(payload.get("feedback", "")).strip()
+                else:
+                    fb = str(payload).strip()
+                if fb:
+                    targets.append(fn)
             if targets:
                 print(f"Optimizing: {targets}")
 

@@ -58,14 +58,30 @@ class Generator:
 
         return bundle
 
-    def fix(self, code_var: tg.Variable, filename: str, error: str, task: str) -> None:
+    def fix(
+        self, code_var: tg.Variable, filename: str, error: str, task: str,
+        bundle: Optional[Dict[str, tg.Variable]] = None,
+        stdout: str = "",
+    ) -> None:
         """Fix a broken script in-place."""
+        upstream_code = "<none>"
+        idx = STAGE_FILENAMES.index(filename)
+        if bundle and idx > 0:
+            prev_fn = STAGE_FILENAMES[idx - 1]
+            if prev_fn in bundle:
+                upstream_code = bundle[prev_fn].value
+
+        full_error = error.strip()
+        if stdout.strip():
+            full_error = f"stdout (last 500 chars):\n{stdout.strip()[-500:]}\n\nstderr:\n{full_error}"
+
         query = FIX_QUERY.format(
             target_file=filename, target_tag=STAGE_TAG_BY_FILE[filename],
             task_description=task, stage_context=self._stage_context(filename),
-            target_code=code_var.value, error=error,
+            upstream_code=upstream_code,
+            target_code=code_var.value, error=full_error,
         )
-        response = self.engine.generate(content=query, system_prompt=FIX_SYSTEM_PROMPT, temperature=0.2)
+        response = self.engine.generate(content=query, system_prompt=FIX_SYSTEM_PROMPT, temperature=0.4)
         code_var.set_value(self._extract_tag(response, STAGE_TAG_BY_FILE[filename]))
 
     def save_bundle(self, bundle: Dict[str, tg.Variable], step: int) -> str:

@@ -51,7 +51,9 @@ Existing code: {existing_code}
 
 FIX_SYSTEM_PROMPT = (
     "Fix exactly one Python stage script. Return only the corrected file "
-    "wrapped in the required tag. Preserve artifact paths and schema."
+    "wrapped in the required tag. Preserve artifact paths and schema. "
+    "Focus on the root cause of the error — do not patch symptoms. "
+    "If the error is a data format mismatch with an upstream script, align to that script's output."
 )
 
 FIX_QUERY = """
@@ -61,9 +63,13 @@ Tag: <{target_tag}>...</{target_tag}>
 Task: {task_description}
 Stage paths:
 {stage_context}
+
+Upstream script (reads artifacts this script must produce / produced artifacts this script reads):
+{upstream_code}
+
 Current code:
 {target_code}
 
-Error:
+Error (stderr + last stdout):
 {error}
 """
