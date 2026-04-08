@@ -62,12 +62,16 @@ class CodeExecutor:
                 "success": False,
                 "error": str(exc),
                 "stage_results": {},
-                "failed_script": STAGE_FILENAMES[0],
+                "failed_script": self.config.active_stage_filenames()[0],
             }
 
-        start_index = STAGE_ORDER_INDEX.get(start_from or STAGE_FILENAMES[0], 0)
+        active_stage_filenames = self.config.active_stage_filenames()
+        start_stage = start_from or active_stage_filenames[0]
+        if start_stage not in active_stage_filenames:
+            start_stage = active_stage_filenames[0]
+        start_index = active_stage_filenames.index(start_stage)
         stage_results: Dict[str, Dict[str, Any]] = {}
-        for filename in STAGE_FILENAMES[start_index:]:
+        for filename in active_stage_filenames[start_index:]:
             filepath = os.path.join(script_dir, filename)
             if not os.path.exists(filepath):
                 return {

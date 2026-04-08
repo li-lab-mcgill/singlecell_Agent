@@ -6,7 +6,7 @@ import re
 from pathlib import Path
 from typing import Dict, Iterable, List, Optional
 
-from rag_types import RAGChunk, RAGDocument, RAGHit
+from rag_types import RAGChunk, RAGDocument, RAGHit, dedup_key
 
 try:
     import chromadb
@@ -26,13 +26,9 @@ except ImportError:  # pragma: no cover - runtime dependency guard
 
 GENERAL_COLLECTION = "general_knowledge_base"
 CORE_COLLECTION = "core_knowledge_base"
+SESSION_GENERAL_COLLECTION = "runtime_session_knowledge_base"
 DEFAULT_LOCAL_EMBEDDING_MODEL = "all-MiniLM-L6-v2"
 DEFAULT_OPENAI_EMBEDDING_MODEL = "text-embedding-3-large"
-
-
-def _normalize_title(text: str) -> str:
-    return re.sub(r"\W+", " ", str(text or "").lower()).strip()
-
 
 def _to_chroma_metadata(payload: Dict[str, object]) -> Dict[str, object]:
     converted: Dict[str, object] = {}
@@ -58,13 +54,14 @@ class RAGStore:
         embedding_backend: str = "local",
     ):
         if chromadb is None:
-            raise RuntimeError("RAG support requires chromadb. Install it before running rag_prepare.py or default.py.")
+            raise RuntimeError("RAG support requires chromadb. Install it before running default.py.")
         self.root_dir = Path(root_dir)
         self.raw_dir = self.root_dir / "raw"
         self.processed_dir = self.root_dir / "processed"
+        self.sessions_dir = self.root_dir / "sessions"
         self.cache_dir = self.root_dir / "cache"
         self.chroma_dir = self.root_dir / "chroma"
-        for directory in [self.raw_dir, self.processed_dir, self.cache_dir, self.chroma_dir]:
+        for directory in [self.raw_dir, self.processed_dir, self.sessions_dir, self.cache_dir, self.chroma_dir]:
             directory.mkdir(parents=True, exist_ok=True)
         self.embedding_backend = str(embedding_backend or "local").strip().lower()
         if self.embedding_backend not in {"local", "openai"}:
@@ -104,6 +101,28 @@ class RAGStore:
         safe_name = re.sub(r"[^a-zA-Z0-9_.:-]+", "_", cache_key)
         return self.cache_dir / f"{safe_name}.json"
 
+    def session_dir(self, session_key: str) -> Path:
+        safe_name = re.sub(r"[^a-zA-Z0-9_.:-]+", "_", session_key)
+        path = self.sessions_dir / safe_name
+        path.mkdir(parents=True, exist_ok=True)
+        return path
+
+    def session_documents_path(self, session_key: str) -> Path:
+        return self.session_dir(session_key) / "documents.json"
+
+    def channel_documents_path(self, session_key: str, channel_name: str) -> Path:
+        safe_channel = re.sub(r"[^a-zA-Z0-9_.:-]+", "_", channel_name)
+        return self.session_dir(session_key) / safe_channel / "documents.json"
+
+    def channel_keywords_path(self, session_key: str, channel_name: str) -> Path:
+        safe_channel = re.sub(r"[^a-zA-Z0-9_.:-]+", "_", channel_name)
+        return self.session_dir(session_key) / safe_channel / "keywords.json"
+
+    def runtime_collection_name(self, session_key: str, channel_name: str) -> str:
+        safe_channel = re.sub(r"[^a-zA-Z0-9_.:-]+", "_", channel_name).lower()
+        safe_session = re.sub(r"[^a-zA-Z0-9_.:-]+", "_", session_key).lower()
+        return f"runtime_{safe_session}_{safe_channel}"[:63]
+
     def save_documents(self, path: Path, documents: Iterable[RAGDocument]) -> None:
         payload = [document.to_dict() for document in documents]
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -135,24 +154,12 @@ class RAGStore:
 
     def deduplicate_documents(self, documents: Iterable[RAGDocument]) -> List[RAGDocument]:
         deduped: List[RAGDocument] = []
-        seen_source_ids = set()
-        seen_dois = set()
-        seen_titles = set()
+        seen_keys = set()
         for document in documents:
-            source_key = (document.source, document.source_id)
-            title_key = _normalize_title(document.title)
-            doi_key = document.doi.lower().strip()
-            if source_key in seen_source_ids:
+            key = dedup_key(document.doc_id, document.doi, document.title)
+            if key in seen_keys:
                 continue
-            if doi_key and doi_key in seen_dois:
-                continue
-            if title_key and title_key in seen_titles:
-                continue
-            seen_source_ids.add(source_key)
-            if doi_key:
-                seen_dois.add(doi_key)
-            if title_key:
-                seen_titles.add(title_key)
+            seen_keys.add(key)
             deduped.append(document)
         return deduped
 
@@ -166,6 +173,22 @@ class RAGStore:
             pass
 
     def _chunk_text(self, text: str, chunk_size: int, overlap: int) -> List[str]:
+        def split_long_paragraph(paragraph: str) -> List[str]:
+            pieces: List[str] = []
+            remaining = paragraph.strip()
+            while len(remaining) > chunk_size:
+                cut = remaining[:chunk_size].rfind(" ")
+                if cut <= chunk_size // 2:
+                    cut = chunk_size
+                pieces.append(remaining[:cut].strip())
+                start = cut
+                if overlap > 0 and cut > overlap:
+                    start = cut - overlap
+                remaining = remaining[start:].strip()
+            if remaining:
+                pieces.append(remaining)
+            return pieces
+
         paragraphs = [part.strip() for part in re.split(r"\n{2,}", text or "") if part.strip()]
         if not paragraphs:
             cleaned = re.sub(r"\s+", " ", text or "").strip()
@@ -173,20 +196,26 @@ class RAGStore:
         chunks: List[str] = []
         current = ""
         for paragraph in paragraphs:
-            candidate = paragraph if not current else f"{current}\n\n{paragraph}"
-            if len(candidate) <= chunk_size:
-                current = candidate
-                continue
-            if current:
-                chunks.append(current)
-                tail = current[-overlap:] if overlap > 0 else ""
-                current = f"{tail}\n\n{paragraph}".strip() if tail else paragraph
-            else:
-                chunks.append(paragraph[:chunk_size])
-                current = paragraph[chunk_size - overlap :].strip() if overlap > 0 else ""
+            for part in split_long_paragraph(paragraph):
+                candidate = part if not current else f"{current}\n\n{part}"
+                if len(candidate) <= chunk_size:
+                    current = candidate
+                    continue
+                if current:
+                    chunks.append(current)
+                    tail = current[-overlap:] if overlap > 0 else ""
+                    merged = f"{tail}\n\n{part}".strip() if tail else part
+                    current = merged if len(merged) <= chunk_size else part
+                else:
+                    current = part
         if current:
             chunks.append(current)
         return chunks
+
+    def _upsert_batches(self, collection, *, ids: List[str], documents: List[str], metadatas: List[Dict[str, object]], batch_size: int = 500) -> None:
+        for start in range(0, len(ids), batch_size):
+            end = start + batch_size
+            collection.upsert(ids=ids[start:end], documents=documents[start:end], metadatas=metadatas[start:end])
 
     def _chunk_document(self, document: RAGDocument) -> List[RAGChunk]:
         base_text = document.searchable_text()
@@ -233,8 +262,41 @@ class RAGStore:
                     )
                 )
         if chunk_ids:
-            collection.upsert(ids=chunk_ids, documents=chunk_texts, metadatas=metadatas)
+            self._upsert_batches(collection, ids=chunk_ids, documents=chunk_texts, metadatas=metadatas)
         return len(chunk_ids)
+
+    def build_runtime_index(self, collection_name: str, documents: Iterable[RAGDocument], rebuild: bool = True) -> int:
+        if rebuild:
+            self._reset_collection(collection_name)
+        collection = self._get_or_create_collection(collection_name)
+        chunk_ids: List[str] = []
+        chunk_texts: List[str] = []
+        metadatas: List[Dict[str, object]] = []
+        for document in documents:
+            for chunk in self._chunk_document(document):
+                chunk_ids.append(chunk.chunk_id)
+                chunk_texts.append(chunk.text)
+                metadatas.append(
+                    _to_chroma_metadata(
+                        {
+                            "doc_id": chunk.doc_id,
+                            "source": chunk.source,
+                            "source_id": document.source_id,
+                            "title": chunk.title,
+                            "url": document.url,
+                            "doc_type": chunk.doc_type,
+                            "published": document.published,
+                            "doi": document.doi,
+                            **chunk.metadata,
+                        }
+                    )
+                )
+        if chunk_ids:
+            self._upsert_batches(collection, ids=chunk_ids, documents=chunk_texts, metadatas=metadatas)
+        return len(chunk_ids)
+
+    def build_session_index(self, documents: Iterable[RAGDocument], rebuild: bool = True) -> int:
+        return self.build_runtime_index(SESSION_GENERAL_COLLECTION, documents, rebuild=rebuild)
 
     def upsert_core_documents(self, documents: Iterable[RAGDocument], consultant_type: str, query_hash: str) -> int:
         collection = self._get_or_create_collection(CORE_COLLECTION)
@@ -263,7 +325,7 @@ class RAGStore:
                     )
                 )
         if chunk_ids:
-            collection.upsert(ids=chunk_ids, documents=chunk_texts, metadatas=metadatas)
+            self._upsert_batches(collection, ids=chunk_ids, documents=chunk_texts, metadatas=metadatas)
         return len(chunk_ids)
 
     def _collection_exists(self, name: str) -> bool:
@@ -277,7 +339,7 @@ class RAGStore:
         if not self._collection_exists(GENERAL_COLLECTION) or not self.general_corpus_path.exists():
             raise FileNotFoundError(
                 f"General RAG index is missing under {self.root_dir}. "
-                "Run rag_prepare.py before default.py."
+                "The offline general index path is deprecated; use ConsultantRAGAgent.ensure_index(...) for runtime retrieval."
             )
         manifest = self.load_manifest()
         expected_backend = str(manifest.get("embedding_backend", "")).strip().lower()
@@ -315,6 +377,7 @@ class RAGStore:
                     source_id=str(metadata.get("source_id", "")),
                     published=str(metadata.get("published", "")),
                     doi=str(metadata.get("doi", "")),
+                    is_runtime_fallback=bool(metadata.get("is_runtime_fallback", False)),
                     metadata=dict(metadata),
                 )
             )
@@ -324,6 +387,18 @@ class RAGStore:
         self.require_general_index()
         collection = self._get_or_create_collection(GENERAL_COLLECTION)
         return self._build_hits(collection.query(query_texts=[query_text], n_results=n_results))
+
+    def search_runtime(self, collection_name: str, query_text: str, n_results: int = 12) -> List[RAGHit]:
+        if not self._collection_exists(collection_name):
+            raise FileNotFoundError(
+                f"Runtime RAG index '{collection_name}' is missing under {self.root_dir}. "
+                "Call ConsultantRAGAgent.ensure_index(...) before retrieval."
+            )
+        collection = self._get_or_create_collection(collection_name)
+        return self._build_hits(collection.query(query_texts=[query_text], n_results=n_results))
+
+    def search_session(self, query_text: str, n_results: int = 12) -> List[RAGHit]:
+        return self.search_runtime(SESSION_GENERAL_COLLECTION, query_text, n_results=n_results)
 
     def search_core(self, query_text: str, consultant_type: str, query_hash: str, n_results: int = 8) -> List[RAGHit]:
         if not self._collection_exists(CORE_COLLECTION):

@@ -24,6 +24,12 @@ load_dotenv()
 
 EVALUATOR_ROLES = {"prior", "data_science", "model", "biology"}
 CRITIC_TARGETS = {"prior_construction.py", "data_preprocess.py", "model_training.py", "downstream_analysis.py"}
+EVALUATOR_TARGET_BY_ROLE = {
+    "prior": "prior_construction.py",
+    "data_science": "data_preprocess.py",
+    "model": "model_training.py",
+    "biology": "downstream_analysis.py",
+}
 
 
 def _parse_json_object(text: str, label: str) -> Dict[str, Any]:
@@ -98,6 +104,28 @@ def critic_plan_from_payload(payload: Dict[str, Any]) -> Dict[str, Any]:
             for target, target_payload in targets.items()
             if str(target).strip()
         },
+    }
+
+
+def synthesize_critic_payload_from_evaluators(*, step: int, evaluator_payloads: Dict[str, Dict[str, Any] | None]) -> Dict[str, Any]:
+    targets: Dict[str, Dict[str, str]] = {}
+    rationale_parts: List[str] = []
+    for role in ("prior", "data_science", "model", "biology"):
+        payload = evaluator_payloads.get(role)
+        if not isinstance(payload, dict):
+            continue
+        feedback = str(payload.get("feedback") or "").strip()
+        if not feedback:
+            continue
+        target = EVALUATOR_TARGET_BY_ROLE.get(role)
+        if target:
+            targets[target] = {"feedback": feedback}
+        rationale_parts.append(f"[{role}] {feedback}")
+    return {
+        "step": step,
+        "global_rationale": "\n\n".join(rationale_parts) or "Critic disabled; no valid evaluator feedback was available.",
+        "targets": targets,
+        "source": "evaluators",
     }
 
 

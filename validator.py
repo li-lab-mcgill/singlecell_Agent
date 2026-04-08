@@ -54,7 +54,9 @@ def _validate_json_file(path: str, required_keys: List[str], target_file: str, o
 
 def _validate_prior_bundle(stage_schema: Dict[str, Any], target_file: str) -> List[ValidationFailure]:
     prior_files = stage_schema.get("prior_files", []) if isinstance(stage_schema, dict) else []
-    if not isinstance(prior_files, list) or not prior_files:
+    if prior_files == []:
+        return []
+    if not isinstance(prior_files, list):
         return [_failure(target_file, "InvalidSchema", "Prior stage is missing resolved prior file requirements")]
     for item in prior_files:
         if not isinstance(item, dict):

@@ -1,7 +1,16 @@
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
 from typing import Any, Dict, List
+
+
+def normalize_title(text: str) -> str:
+    return re.sub(r"\W+", " ", str(text or "").lower()).strip()
+
+
+def dedup_key(doc_id: str, doi: str, title: str) -> tuple[str, str, str]:
+    return (str(doc_id or "").strip(), str(doi or "").lower().strip(), normalize_title(title))
 
 
 @dataclass
@@ -83,6 +92,7 @@ class RAGHit:
     source_id: str = ""
     published: str = ""
     doi: str = ""
+    is_runtime_fallback: bool = False
     metadata: Dict[str, Any] = field(default_factory=dict)
 
 
@@ -106,8 +116,11 @@ class CoreFetchResult:
 @dataclass
 class ConsultantRAGContext:
     query_text: str
-    general_context: str
-    core_context: str
-    general_hits: List[RAGHit] = field(default_factory=list)
-    core_hits: List[RAGHit] = field(default_factory=list)
-    promoted_papers: List[PromotedPaper] = field(default_factory=list)
+    dataset_context: str
+    prior_resource_context: str
+    prior_method_context: str
+    model_design_context: str
+    dataset_hits: List[RAGHit] = field(default_factory=list)
+    prior_resource_hits: List[RAGHit] = field(default_factory=list)
+    prior_method_hits: List[RAGHit] = field(default_factory=list)
+    model_design_hits: List[RAGHit] = field(default_factory=list)

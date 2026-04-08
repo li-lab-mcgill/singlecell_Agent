@@ -13,146 +13,6 @@ import requests
 
 from rag_types import CoreFetchResult, RAGDocument
 
-
-PUBMED_QUERIES = [
-    "single-cell RNA-seq AND unsupervised learning AND clustering",
-    "scRNA-seq AND dimensionality reduction AND cell type discovery",
-    "single-cell AND deep learning AND representation learning AND latent space",
-    "single-cell AND variational autoencoder AND generative model",
-    "scRNA-seq AND graph neural network AND cell embedding",
-    "single-cell AND contrastive learning AND self-supervised",
-    "single-cell AND cell type annotation AND automated AND benchmark",
-    "scRNA-seq AND de novo cell type AND novel cell type AND discovery",
-    "single-cell AND cell type classification AND marker gene AND reference",
-    "scRNA-seq AND rare cell type AND detection AND unsupervised",
-    "single-cell AND cell state AND continuous trajectory AND pseudotime",
-    "scRNA-seq AND cell identity AND transcriptional program AND heterogeneity",
-    "single-cell AND prior knowledge AND gene regulatory network AND unsupervised",
-    "scRNA-seq AND biological prior AND deep learning AND regularization",
-    "single-cell AND pathway activity AND gene set AND latent factor",
-    "scRNA-seq AND knowledge graph AND gene ontology AND embedding",
-    "single-cell AND informed clustering AND biological constraint AND interpretable",
-    "gene regulatory prior AND single-cell AND representation learning AND disentangled",
-    "single-cell AND gene regulatory network inference AND transcription factor",
-    "scRNA-seq AND GRN AND unsupervised AND cell type specific",
-    "single-cell AND regulatory network AND deep learning AND prediction",
-    "gene regulatory network AND single-cell AND SCENIC AND regulon",
-    "scRNA-seq AND transcription factor activity AND network-based AND clustering",
-    "single-cell AND causal gene network AND perturbation AND inference",
-    "single-cell AND multiomics AND ATAC-seq AND RNA-seq AND integration",
-    "single-cell AND chromatin accessibility AND regulatory element AND cell type",
-    "scRNA-seq AND enhancer AND cell-type-specific AND gene regulation",
-    "single-cell AND epigenomic prior AND gene expression AND prediction",
-    "single-cell multiome AND cis-regulatory AND unsupervised AND joint embedding",
-    "single-cell AND peak-to-gene AND regulatory linkage AND multimodal",
-    "single-cell AND foundation model AND pre-trained AND gene expression",
-    "scRNA-seq AND transfer learning AND cross-dataset AND generalization",
-    "single-cell AND large language model AND transformer AND cell representation",
-    "scRNA-seq AND zero-shot AND few-shot AND cell type AND annotation",
-    "single-cell AND self-supervised pretraining AND masked gene AND prediction",
-    "single-cell AND interpretable deep learning AND gene program AND module",
-    "scRNA-seq AND latent factor AND biological interpretation AND pathway",
-    "single-cell AND disentangled representation AND gene regulatory AND mechanism",
-    "scRNA-seq AND attention mechanism AND gene importance AND cell type",
-    "single-cell AND explainable AI AND feature attribution AND marker discovery",
-    "single-cell AND clustering benchmark AND evaluation metric AND ARI NMI",
-    "scRNA-seq AND cell type annotation AND benchmark AND ground truth",
-    "single-cell AND batch effect AND integration AND unsupervised AND benchmark",
-    "scRNA-seq AND simulation AND synthetic data AND ground truth AND evaluation",
-    "single-cell AND spatial transcriptomics AND unsupervised AND domain identification",
-    "single-cell AND perturbation prediction AND unsupervised AND causal",
-    "scRNA-seq AND disease AND cell type AND prior-guided AND patient stratification",
-    "single-cell AND developmental biology AND lineage AND unsupervised AND trajectory",
-    "single-cell AND cell communication AND ligand receptor AND network prior",
-]
-
-BIORXIV_CATEGORIES = ["bioinformatics", "computational biology", "genomics", "systems biology"]
-
-GITHUB_SEARCH_TOPICS = [
-    {"query": "single cell unsupervised learning", "language": "python", "min_stars": 10, "category": "general"},
-    {"query": "scRNA-seq clustering", "language": "python", "min_stars": 15, "category": "general"},
-    {"query": "single cell deep learning", "language": "python", "min_stars": 20, "category": "general"},
-    {"query": "single cell analysis tool", "language": "python", "min_stars": 30, "category": "general"},
-    {"query": "cell type annotation", "language": "python", "min_stars": 20, "category": "cell_type"},
-    {"query": "automatic cell type", "language": "python", "min_stars": 15, "category": "cell_type"},
-    {"query": "cell type classification single cell", "language": "python", "min_stars": 10, "category": "cell_type"},
-    {"query": "novel cell type discovery", "language": None, "min_stars": 5, "category": "cell_type"},
-    {"query": "rare cell type detection", "language": "python", "min_stars": 10, "category": "cell_type"},
-    {"query": "marker gene cell type", "language": "python", "min_stars": 15, "category": "cell_type"},
-    {"query": "prior knowledge single cell", "language": "python", "min_stars": 5, "category": "prior_guided"},
-    {"query": "biologically informed neural network", "language": "python", "min_stars": 10, "category": "prior_guided"},
-    {"query": "pathway informed deep learning", "language": "python", "min_stars": 5, "category": "prior_guided"},
-    {"query": "knowledge guided representation learning", "language": "python", "min_stars": 5, "category": "prior_guided"},
-    {"query": "gene set activity score single cell", "language": "python", "min_stars": 10, "category": "prior_guided"},
-    {"query": "gene ontology embedding", "language": "python", "min_stars": 10, "category": "prior_guided"},
-    {"query": "biological constraint deep learning", "language": None, "min_stars": 5, "category": "prior_guided"},
-    {"query": "gene regulatory network single cell", "language": "python", "min_stars": 20, "category": "grn"},
-    {"query": "GRN inference scRNA", "language": "python", "min_stars": 15, "category": "grn"},
-    {"query": "SCENIC regulon", "language": None, "min_stars": 20, "category": "grn"},
-    {"query": "transcription factor activity single cell", "language": "python", "min_stars": 15, "category": "grn"},
-    {"query": "network-based clustering single cell", "language": "python", "min_stars": 5, "category": "grn"},
-    {"query": "causal gene network", "language": "python", "min_stars": 10, "category": "grn"},
-    {"query": "variational autoencoder single cell", "language": "python", "min_stars": 20, "category": "dl_autoencoder"},
-    {"query": "autoencoder scRNA-seq", "language": "python", "min_stars": 15, "category": "dl_autoencoder"},
-    {"query": "deep generative model single cell", "language": "python", "min_stars": 15, "category": "dl_autoencoder"},
-    {"query": "conditional VAE single cell", "language": "python", "min_stars": 10, "category": "dl_autoencoder"},
-    {"query": "beta-VAE disentangled single cell", "language": "python", "min_stars": 5, "category": "dl_autoencoder"},
-    {"query": "adversarial autoencoder single cell", "language": "python", "min_stars": 5, "category": "dl_autoencoder"},
-    {"query": "denoising autoencoder scRNA", "language": "python", "min_stars": 10, "category": "dl_autoencoder"},
-    {"query": "normalizing flow single cell", "language": "python", "min_stars": 5, "category": "dl_autoencoder"},
-    {"query": "diffusion model single cell gene expression", "language": "python", "min_stars": 5, "category": "dl_autoencoder"},
-    {"query": "graph neural network single cell", "language": "python", "min_stars": 15, "category": "dl_graph"},
-    {"query": "graph attention network scRNA", "language": "python", "min_stars": 10, "category": "dl_graph"},
-    {"query": "graph convolutional network cell", "language": "python", "min_stars": 10, "category": "dl_graph"},
-    {"query": "cell graph network clustering", "language": "python", "min_stars": 5, "category": "dl_graph"},
-    {"query": "gene gene graph neural network", "language": "python", "min_stars": 5, "category": "dl_graph"},
-    {"query": "spatial graph neural network cell", "language": "python", "min_stars": 10, "category": "dl_graph"},
-    {"query": "heterogeneous graph single cell", "language": "python", "min_stars": 5, "category": "dl_graph"},
-    {"query": "graph variational autoencoder single cell", "language": "python", "min_stars": 5, "category": "dl_graph"},
-    {"query": "contrastive learning single cell", "language": "python", "min_stars": 10, "category": "dl_contrastive"},
-    {"query": "self-supervised single cell", "language": "python", "min_stars": 10, "category": "dl_contrastive"},
-    {"query": "SimCLR BYOL single cell", "language": None, "min_stars": 5, "category": "dl_contrastive"},
-    {"query": "data augmentation scRNA-seq contrastive", "language": "python", "min_stars": 5, "category": "dl_contrastive"},
-    {"query": "masked autoencoder single cell gene", "language": "python", "min_stars": 5, "category": "dl_contrastive"},
-    {"query": "multi-view learning single cell", "language": "python", "min_stars": 5, "category": "dl_contrastive"},
-    {"query": "transformer single cell RNA", "language": "python", "min_stars": 15, "category": "dl_attention"},
-    {"query": "attention mechanism gene expression", "language": "python", "min_stars": 10, "category": "dl_attention"},
-    {"query": "self-attention scRNA-seq", "language": "python", "min_stars": 5, "category": "dl_attention"},
-    {"query": "cross-attention single cell multimodal", "language": "python", "min_stars": 5, "category": "dl_attention"},
-    {"query": "gene transformer embedding", "language": "python", "min_stars": 10, "category": "dl_attention"},
-    {"query": "disentangled representation single cell", "language": "python", "min_stars": 5, "category": "dl_interpret"},
-    {"query": "interpretable deep learning single cell", "language": "python", "min_stars": 10, "category": "dl_interpret"},
-    {"query": "gene program discovery deep learning", "language": "python", "min_stars": 10, "category": "dl_interpret"},
-    {"query": "latent factor gene module single cell", "language": "python", "min_stars": 5, "category": "dl_interpret"},
-    {"query": "sparse autoencoder gene program", "language": "python", "min_stars": 5, "category": "dl_interpret"},
-    {"query": "feature attribution single cell neural network", "language": "python", "min_stars": 5, "category": "dl_interpret"},
-    {"query": "neural network explainability scRNA", "language": "python", "min_stars": 5, "category": "dl_interpret"},
-    {"query": "GAN single cell generation", "language": "python", "min_stars": 10, "category": "dl_hybrid"},
-    {"query": "Wasserstein GAN scRNA-seq", "language": "python", "min_stars": 5, "category": "dl_hybrid"},
-    {"query": "VAE GAN single cell", "language": "python", "min_stars": 5, "category": "dl_hybrid"},
-    {"query": "neural ODE single cell trajectory", "language": "python", "min_stars": 10, "category": "dl_hybrid"},
-    {"query": "optimal transport single cell", "language": "python", "min_stars": 10, "category": "dl_hybrid"},
-    {"query": "capsule network single cell", "language": "python", "min_stars": 5, "category": "dl_hybrid"},
-    {"query": "single cell multiome", "language": "python", "min_stars": 15, "category": "multiomics"},
-    {"query": "scATAC-seq scRNA-seq integration", "language": "python", "min_stars": 15, "category": "multiomics"},
-    {"query": "peak to gene linkage", "language": "python", "min_stars": 10, "category": "multiomics"},
-    {"query": "chromatin accessibility single cell", "language": "python", "min_stars": 20, "category": "multiomics"},
-    {"query": "regulatory element single cell multimodal", "language": None, "min_stars": 5, "category": "multiomics"},
-    {"query": "epigenomic prior gene expression", "language": None, "min_stars": 5, "category": "multiomics"},
-    {"query": "batch correction single cell", "language": "python", "min_stars": 20, "category": "integration"},
-    {"query": "scRNA-seq data integration", "language": "python", "min_stars": 20, "category": "integration"},
-    {"query": "harmony scanorama scVI", "language": None, "min_stars": 20, "category": "integration"},
-    {"query": "single cell benchmark clustering", "language": "python", "min_stars": 15, "category": "benchmark"},
-    {"query": "cell type annotation benchmark", "language": "python", "min_stars": 10, "category": "benchmark"},
-    {"query": "scRNA-seq simulation synthetic", "language": "python", "min_stars": 15, "category": "benchmark"},
-    {"query": "scvi-tools", "language": "python", "min_stars": 50, "category": "tools"},
-    {"query": "scanpy", "language": "python", "min_stars": 50, "category": "tools"},
-    {"query": "CellTypist", "language": "python", "min_stars": 20, "category": "tools"},
-    {"query": "scANVI annotation", "language": "python", "min_stars": 10, "category": "tools"},
-    {"query": "TOSICA", "language": "python", "min_stars": 5, "category": "tools"},
-    {"query": "scETM", "language": None, "min_stars": 5, "category": "topic_model"},
-]
-
 METHOD_TITLE_RE = re.compile(
     r"(?i)^(?:[0-9IVXLCDM]+[.)]?\s+)?(?:methods?|methodology|materials\s+and\s+methods?|methods\s+and\s+materials|approach|experimental\s+methods?)\s*:?\s*$"
 )
@@ -199,6 +59,41 @@ def _ncbi_params() -> Dict[str, str]:
 def _sleep(delay: float) -> None:
     if delay > 0:
         time.sleep(delay)
+
+
+def _retry_get(
+    session: requests.Session,
+    url: str,
+    *,
+    params: Optional[Dict[str, object]] = None,
+    timeout: int = 30,
+    base_delay: float = 0.5,
+    max_attempts: int = 4,
+    **kwargs: object,
+) -> requests.Response:
+    last_error: Optional[Exception] = None
+    for attempt in range(max_attempts):
+        try:
+            response = session.get(url, params=params, timeout=timeout, **kwargs)
+            if response.status_code in {429, 500, 502, 503, 504}:
+                raise requests.HTTPError(
+                    f"request failed with status {response.status_code}",
+                    response=response,
+                )
+            response.raise_for_status()
+            _sleep(base_delay)
+            return response
+        except (requests.ConnectionError, requests.Timeout, requests.HTTPError) as exc:
+            response = getattr(exc, "response", None)
+            status_code = response.status_code if response is not None else None
+            retryable = status_code in {None, 429, 500, 502, 503, 504}
+            last_error = exc
+            if attempt == max_attempts - 1 or not retryable:
+                break
+            backoff = max(base_delay, base_delay * (2**attempt)) + random.uniform(0.0, base_delay / 2)
+            _sleep(backoff)
+    assert last_error is not None
+    raise last_error
 
 
 def _extract_text_recursive(elem: Optional[ET.Element]) -> str:
@@ -282,56 +177,11 @@ def _ncbi_delay() -> float:
 def _ncbi_get(url: str, **params: object) -> requests.Response:
     merged_params = {**_ncbi_params(), **params}
     base_delay = _ncbi_delay()
-    last_error: Optional[Exception] = None
-    for attempt in range(4):
-        try:
-            response = _NCBI_SESSION.get(url, params=merged_params, timeout=30)
-            if response.status_code in {429, 500, 502, 503, 504}:
-                raise requests.HTTPError(
-                    f"NCBI request failed with status {response.status_code}",
-                    response=response,
-                )
-            response.raise_for_status()
-            _sleep(base_delay)
-            return response
-        except (requests.ConnectionError, requests.Timeout, requests.HTTPError) as exc:
-            response = getattr(exc, "response", None)
-            status_code = response.status_code if response is not None else None
-            retryable = status_code in {None, 429, 500, 502, 503, 504}
-            last_error = exc
-            if attempt == 3 or not retryable:
-                break
-            # NCBI occasionally drops keep-alive connections; backoff avoids immediate hammering.
-            backoff = max(base_delay, 0.5 * (2**attempt)) + random.uniform(0.0, 0.25)
-            _sleep(backoff)
-    assert last_error is not None
-    raise last_error
+    return _retry_get(_NCBI_SESSION, url, params=merged_params, timeout=30, base_delay=base_delay, max_attempts=4)
 
 
 def _biorxiv_get(session: requests.Session, url: str) -> requests.Response:
-    last_error: Optional[Exception] = None
-    for attempt in range(4):
-        try:
-            response = session.get(url, timeout=60)
-            if response.status_code in {429, 500, 502, 503, 504}:
-                raise requests.HTTPError(
-                    f"bioRxiv request failed with status {response.status_code}",
-                    response=response,
-                )
-            response.raise_for_status()
-            _sleep(1.0)
-            return response
-        except (requests.ConnectionError, requests.Timeout, requests.HTTPError) as exc:
-            response = getattr(exc, "response", None)
-            status_code = response.status_code if response is not None else None
-            retryable = status_code in {None, 429, 500, 502, 503, 504}
-            last_error = exc
-            if attempt == 3 or not retryable:
-                break
-            backoff = 1.0 * (2**attempt) + random.uniform(0.0, 0.5)
-            _sleep(backoff)
-    assert last_error is not None
-    raise last_error
+    return _retry_get(session, url, timeout=60, base_delay=1.0, max_attempts=4)
 
 
 def _pubmed_article_to_document(article: ET.Element) -> Optional[RAGDocument]:
@@ -390,7 +240,9 @@ def _pubmed_article_to_document(article: ET.Element) -> Optional[RAGDocument]:
 
 
 def fetch_pubmed_documents(queries: Optional[Iterable[str]] = None, max_results_per_query: int = 20) -> List[RAGDocument]:
-    queries = list(queries or PUBMED_QUERIES)
+    queries = [str(query).strip() for query in (queries or []) if str(query).strip()]
+    if not queries:
+        return []
     pmids: List[str] = []
     for query in queries:
         response = _ncbi_get(
@@ -421,7 +273,7 @@ def fetch_pubmed_documents(queries: Optional[Iterable[str]] = None, max_results_
 
 
 def fetch_biorxiv_documents(categories: Optional[Iterable[str]] = None, days: int = 365, max_papers: int = 1000) -> List[RAGDocument]:
-    categories = [str(item) for item in (categories or BIORXIV_CATEGORIES) if str(item).strip()]
+    categories = [str(item) for item in (categories or []) if str(item).strip()]
     session = requests.Session()
     all_papers: List[Dict[str, object]] = []
     cursor = 0
@@ -529,7 +381,9 @@ def _fetch_github_readme(session: requests.Session, full_name: str, max_chars: i
 
 def fetch_github_documents(search_topics: Optional[Iterable[Dict[str, object]]] = None, max_results_per_topic: int = 10) -> List[RAGDocument]:
     session = requests.Session()
-    topics = list(search_topics or GITHUB_SEARCH_TOPICS)
+    topics = [topic for topic in (search_topics or []) if isinstance(topic, dict) and str(topic.get("query", "")).strip()]
+    if not topics:
+        return []
     repos_by_name: Dict[str, RAGDocument] = {}
     for topic in topics:
         items = _search_github(
@@ -622,7 +476,7 @@ def fetch_pmc_core_document(document: RAGDocument) -> Optional[CoreFetchResult]:
     sections = _extract_xml_sections(root)
     methods_text = _extract_methods_from_sections(sections)
     body_text = _chunk_text_blocks("\n\n".join(f"{title}\n{text}" for title, text in sections.items()))
-    enriched_text = methods_text or body_text
+    enriched_text = body_text
     if not enriched_text:
         return None
     enriched_doc = RAGDocument(
@@ -636,7 +490,7 @@ def fetch_pmc_core_document(document: RAGDocument) -> Optional[CoreFetchResult]:
         authors=document.authors,
         published=document.published,
         doi=document.doi,
-        doc_type="core_methods" if methods_text else "core_full_text",
+        doc_type="core_full_text",
         categories=list(document.categories),
         metadata={"pmid": document.source_id, "origin_source": "pubmed", "has_methods": bool(methods_text)},
     )
@@ -652,6 +506,7 @@ def fetch_biorxiv_core_document(document: RAGDocument) -> Optional[CoreFetchResu
     xml_path = str(document.metadata.get("jats_xml_path", "")).strip()
     if not xml_path:
         return None
+    version = str(document.metadata.get("version", "1")).strip() or "1"
     xml_url = xml_path if xml_path.startswith("http") else f"https://www.biorxiv.org{xml_path}"
     response = requests.get(xml_url, timeout=30)
     if response.status_code != 200:
@@ -660,7 +515,7 @@ def fetch_biorxiv_core_document(document: RAGDocument) -> Optional[CoreFetchResu
     sections = _extract_xml_sections(root)
     methods_text = _extract_methods_from_sections(sections)
     body_text = _chunk_text_blocks("\n\n".join(f"{title}\n{text}" for title, text in sections.items()))
-    enriched_text = methods_text or body_text
+    enriched_text = body_text
     if not enriched_text:
         return None
     enriched_doc = RAGDocument(
@@ -674,7 +529,7 @@ def fetch_biorxiv_core_document(document: RAGDocument) -> Optional[CoreFetchResu
         authors=document.authors,
         published=document.published,
         doi=document.doi,
-        doc_type="core_methods" if methods_text else "core_full_text",
+        doc_type="core_full_text",
         categories=list(document.categories),
         metadata={
             "version": str(document.metadata.get("version", "1")).strip() or "1",

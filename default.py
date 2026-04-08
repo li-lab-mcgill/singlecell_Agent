@@ -18,6 +18,7 @@ from consultant import (
 )
 from evaluator import (
     critic_plan_from_payload,
+    synthesize_critic_payload_from_evaluators,
     TextGradEvaluator,
     build_instruction_text,
     build_open_issues,
@@ -189,18 +190,19 @@ def _graph_text_var(text: str, predecessors: List[tg.Variable], role_description
     return var
 
 
-def _wire_stage_dependencies(code_bundle: Dict[str, tg.Variable]) -> None:
-    prior_code = code_bundle["prior_construction.py"]
+def _wire_stage_dependencies(code_bundle: Dict[str, tg.Variable], config: Config) -> None:
     data_code = code_bundle["data_preprocess.py"]
     model_code = code_bundle["model_training.py"]
     downstream_code = code_bundle["downstream_analysis.py"]
 
-    data_code.predecessors.add(prior_code)
+    if config.use_priors():
+        prior_code = code_bundle["prior_construction.py"]
+        data_code.predecessors.add(prior_code)
+        model_code.predecessors.add(prior_code)
+        downstream_code.predecessors.add(prior_code)
 
-    model_code.predecessors.add(prior_code)
     model_code.predecessors.add(data_code)
 
-    downstream_code.predecessors.add(prior_code)
     downstream_code.predecessors.add(data_code)
     downstream_code.predecessors.add(model_code)
 
@@ -289,6 +291,9 @@ def _build_optimizer_constraints_for_file(filename: str, path_fields: Dict[str, 
     constraints = [f"Return ONLY valid executable Python code for {filename}."]
     constraints.extend(_non_negotiable_constraints())
     if filename == "prior_construction.py":
+        if not config.use_priors():
+            constraints.append("Priors are disabled for this run. Keep prior_construction.py as a successful no-op script.")
+            return constraints
         constraints.append(f"Current consultant prior schema JSON: {json.dumps(config.current_prior_schema, ensure_ascii=False)}")
         for key in ["input_mod1_path", "input_mod2_path", "prior_output_dir_path"]:
             value = path_fields.get(key, "")
@@ -300,22 +305,30 @@ def _build_optimizer_constraints_for_file(filename: str, path_fields: Dict[str, 
         return constraints
 
     if filename == "data_preprocess.py":
-        constraints.append(f"Current consultant prior schema JSON: {json.dumps(config.current_prior_schema, ensure_ascii=False)}")
+        if config.use_priors():
+            constraints.append(f"Current consultant prior schema JSON: {json.dumps(config.current_prior_schema, ensure_ascii=False)}")
+        else:
+            constraints.append("Priors are disabled for this run. Do not read or require prior artifacts.")
         for key in ["input_mod1_path", "input_mod2_path", "preprocess_metadata_path", "preprocess_train_mod1_path", "preprocess_val_mod1_path", "preprocess_test_mod1_path", "prior_output_dir_path"]:
             value = path_fields.get(key, "")
             if str(value).strip():
                 constraints.append(_path_constraint_line(key, value))
-        constraints.extend(_resolved_prior_file_constraints(config))
+        if config.use_priors():
+            constraints.extend(_resolved_prior_file_constraints(config))
         return constraints
 
     constraints.append(f"Current stage requirements JSON: {json.dumps(stage_schema, ensure_ascii=False)}")
     if filename == "model_training.py":
-        constraints.append(f"Current consultant prior schema JSON: {json.dumps(config.current_prior_schema, ensure_ascii=False)}")
+        if config.use_priors():
+            constraints.append(f"Current consultant prior schema JSON: {json.dumps(config.current_prior_schema, ensure_ascii=False)}")
+        else:
+            constraints.append("Priors are disabled for this run. Do not read or require prior artifacts.")
         for key in ["preprocess_metadata_path", "preprocess_train_mod1_path", "preprocess_val_mod1_path", "preprocess_test_mod1_path", "prior_output_dir_path", "model_performance_path", "best_model_path", "embedding_path", "embedding_metadata_path", "training_logs_path", "pipeline_summary_path"]:
             value = path_fields.get(key, "")
             if str(value).strip():
                 constraints.append(_path_constraint_line(key, value))
-        constraints.extend(_resolved_prior_file_constraints(config))
+        if config.use_priors():
+            constraints.extend(_resolved_prior_file_constraints(config))
         return constraints
 
     if filename == "downstream_analysis.py":
@@ -382,6 +395,7 @@ def main() -> None:
     parser.add_argument("--time-budget", type=int, default=3600)
     parser.add_argument("--delta-min", type=float, default=0.005)
     parser.add_argument("--stagnation_steps_limit", type=int, default=5)
+    parser.add_argument("--critic-enabled", action=argparse.BooleanOptionalAction, default=True)
     args = parser.parse_args()
 
     file_path = args.input_mod1 or f"{cur_path}/data/h5ad/pbmc3k_annotated.h5ad"
@@ -396,12 +410,11 @@ TASK:
 Develop a prior guided unsupervised deep learning Python pipeline for single-cell RNA-seq representation learning.
 
 The pipeline MUST:
-1. Use four executable scripts: prior_construction.py, data_preprocess.py, model_training.py, and downstream_analysis.py.
-2. prior_construction.py builds the fixed prior bundle first.
-3. data_preprocess.py performs preprocessing and consumes prior_construction.py outputs.
-4. model_training.py consumes data_preprocess outputs and prior outputs.
-5. downstream_analysis.py consumes outputs from all earlier scripts.
-6. All scripts must use fixed config-owned artifact paths.
+1. Use executable scripts named prior_construction.py, data_preprocess.py, model_training.py, and downstream_analysis.py.
+2. The prior consultant may decide priors are not needed.
+3. If priors are enabled, prior_construction.py builds the fixed prior bundle first and later stages may consume it.
+4. If priors are disabled, skip prior construction and build a prior-free pipeline.
+5. All scripts must use fixed config-owned artifact paths.
 
 VISUALIZATION:
 Generate UMAP from the learned embedding colored by predicted cluster and by cell_type if available.
@@ -483,8 +496,13 @@ Use labels only for evaluation, never for training.
     mcp_tools_text = fetch_mcp_tools_text()
     print(f"data_summary:\n{config.feat_stats}")
     print(f"prior_resource_summary:\n{config.prior_resource_summary}")
+    rag_agent.ensure_index(config=config, background=consultant_background)
     prior_rag_context = rag_agent.build_prior_context(config=config, background=consultant_background)
-    print(f"Prior RAG CONTEXT:\n{prior_rag_context.general_context}\n\nCore context:\n{prior_rag_context.core_context}\n")
+    print(
+        f"Prior RAG DATASET CONTEXT:\n{prior_rag_context.dataset_context}\n\n"
+        f"Prior RAG RESOURCE CONTEXT:\n{prior_rag_context.prior_resource_context}\n\n"
+        f"Prior RAG METHOD CONTEXT:\n{prior_rag_context.prior_method_context}\n"
+    )
     prior_consultant_query = prior_consultant.create_query(
         samples=None,
         id_col=None,
@@ -496,13 +514,16 @@ Use labels only for evaluation, never for training.
         mcp_tools_text=mcp_tools_text,
         api_dir=config.api_dir,
         dataset_dir=config.dataset_dir,
-        rag_general_context=prior_rag_context.general_context,
-        rag_core_context=prior_rag_context.core_context,
+        rag_dataset_context=prior_rag_context.dataset_context,
+        rag_prior_resource_context=prior_rag_context.prior_resource_context,
+        rag_prior_method_context=prior_rag_context.prior_method_context,
     )
     prior_consultant_output = prior_consultant.generate(prompt=prior_consultant_query)
     print(f"prior_consultant_output:\n{prior_consultant_output}")
     prior_task_summary = TextGradConsultant.parse_prior_summary_tags(prior_consultant_output)
+    config.apply_prior_decision(prior_task_summary["prior_decision"])
     config.apply_prior_schema(prior_task_summary["prior_schema"])
+    prior_decision_summary = json.dumps(prior_task_summary["prior_decision"], ensure_ascii=False)
 
     prior_consultant_records: List[ConsultantPlanRecord] = []
     record_consultant_plan(
@@ -524,6 +545,7 @@ Use labels only for evaluation, never for training.
         background=consultant_background,
         prior_plan=prior_task_summary["suggestion"],
         prior_schema_json=json.dumps(prior_task_summary["prior_schema"], ensure_ascii=False),
+        prior_decision_json=prior_decision_summary,
     )
     consultant_query = consultant.create_query(
         samples=None,
@@ -536,10 +558,11 @@ Use labels only for evaluation, never for training.
         mcp_tools_text=mcp_tools_text,
         api_dir=config.api_dir,
         dataset_dir=config.dataset_dir,
+        prior_decision_summary=prior_decision_summary,
         prior_plan=prior_task_summary["suggestion"],
         prior_output_summary=json.dumps(prior_task_summary["prior_schema"], ensure_ascii=False),
-        rag_general_context=main_rag_context.general_context,
-        rag_core_context=main_rag_context.core_context,
+        rag_dataset_context=main_rag_context.dataset_context,
+        rag_model_design_context=main_rag_context.model_design_context,
     )
     consultant_output = consultant.generate(prompt=consultant_query)
     print(f"consultant_output:\n{consultant_output}")
@@ -585,6 +608,7 @@ Use labels only for evaluation, never for training.
         resolved_artifact_layout = config.set_step_output_paths(step)
         generator = StageScriptGenerator(config=config, engine_name=args.engine)
         stage_schemas = stage_schemas_from_config(config)
+        active_stage_filenames = config.active_stage_filenames()
 
         if code_bundle is None:
             code_bundle = generator.generate_bundle(
@@ -599,14 +623,14 @@ Use labels only for evaluation, never for training.
                 api_dir=config.api_dir,
                 dataset_dir=config.dataset_dir,
             )
-            _wire_stage_dependencies(code_bundle)
+            _wire_stage_dependencies(code_bundle, config)
             optimizer_constraints = {
                 filename: _build_optimizer_constraints_for_file(filename, generator.path_prompt_fields, stage_schemas.get(filename, {}), config)
-                for filename in STAGE_FILENAMES
+                for filename in active_stage_filenames
             }
             optimizers = {
                 filename: tg.TextualGradientDescent(engine=global_engine, parameters=[code_bundle[filename]], constraints=optimizer_constraints[filename])
-                for filename in STAGE_FILENAMES
+                for filename in active_stage_filenames
             }
 
         run_result: Dict[str, Any] = {}
@@ -774,6 +798,7 @@ Use labels only for evaluation, never for training.
 
         evaluator_conversation: List[Dict[str, Any]] = []
         evaluator_message_vars: List[tg.Variable] = []
+        evaluator_backprop_vars: List[tg.Variable] = []
         evaluator_errors: Dict[str, str] = {}
         prior_payload: Dict[str, Any] | None = None
         prior_eval_out = prior_evaluator.loss_fn(
@@ -800,6 +825,7 @@ Use labels only for evaluation, never for training.
             prior_payload = parse_evaluator_message(prior_eval_out.value, "prior")
             evaluator_conversation.append(prior_payload)
             evaluator_message_vars.append(prior_eval_out)
+            evaluator_backprop_vars.append(prior_eval_out)
         except Exception as exc:
             evaluator_errors["prior"] = str(exc)
 
@@ -829,6 +855,7 @@ Use labels only for evaluation, never for training.
             data_science_payload = parse_evaluator_message(data_science_eval_out.value, "data_science")
             evaluator_conversation.append(data_science_payload)
             evaluator_message_vars.append(data_science_eval_out)
+            evaluator_backprop_vars.append(data_science_eval_out)
         except Exception as exc:
             evaluator_errors["data_science"] = str(exc)
 
@@ -855,6 +882,7 @@ Use labels only for evaluation, never for training.
             model_payload = parse_evaluator_message(model_eval_out.value, "model")
             evaluator_conversation.append(model_payload)
             evaluator_message_vars.append(model_eval_out)
+            evaluator_backprop_vars.append(model_eval_out)
         except Exception as exc:
             evaluator_errors["model"] = str(exc)
 
@@ -880,26 +908,39 @@ Use labels only for evaluation, never for training.
             biology_payload = parse_evaluator_message(biology_eval_out.value, "biology")
             evaluator_conversation.append(biology_payload)
             evaluator_message_vars.append(biology_eval_out)
+            evaluator_backprop_vars.append(biology_eval_out)
         except Exception as exc:
             evaluator_errors["biology"] = str(exc)
-
-        critic_out = critic_evaluator.loss_fn(
-            step=step,
-            suggestion=tg.Variable(suggestion, requires_grad=False, role_description="current consultant suggestion"),
-            raw_data_summary=tg.Variable(config.feat_stats, requires_grad=False, role_description="raw data summary"),
-            prior_resource_summary=tg.Variable(config.prior_resource_summary, requires_grad=False, role_description="prior resource summary"),
-            current_performance=tg.Variable(json.dumps({"perf_summary": pstat, "primary_state": primary_state}, ensure_ascii=False), requires_grad=False, role_description="current performance summary"),
-            training_logs=tg.Variable(json.dumps(training_logs, ensure_ascii=False), requires_grad=False, role_description="training logs"),
-            pipeline_summary=tg.Variable(json.dumps(pipeline_summary, ensure_ascii=False), requires_grad=False, role_description="pipeline summary"),
-            prior_construction_notes_history=tg.Variable(script_notes_history["prior_construction.py"], requires_grad=False, role_description="prior construction note history"),
-            data_preprocess_notes_history=tg.Variable(script_notes_history["data_preprocess.py"], requires_grad=False, role_description="data preprocessing note history"),
-            model_training_notes_history=tg.Variable(script_notes_history["model_training.py"], requires_grad=False, role_description="model training note history"),
-            downstream_analysis_notes_history=tg.Variable(script_notes_history["downstream_analysis.py"], requires_grad=False, role_description="downstream analysis note history"),
-            script_summaries=_graph_text_var(StageScriptGenerator.summarize_bundle(code_bundle), list(code_bundle.values()), "current script summaries"),
-            chat_history=_graph_text_var(json.dumps(evaluator_conversation, ensure_ascii=False), evaluator_message_vars, "current step evaluator chat history"),
-        )
-        print(f"critic_output_step_{step}:\n{critic_out.value}")
-        critic_payload = parse_critic_output(critic_out.value)
+        critic_out: tg.Variable | None = None
+        if args.critic_enabled:
+            critic_out = critic_evaluator.loss_fn(
+                step=step,
+                suggestion=tg.Variable(suggestion, requires_grad=False, role_description="current consultant suggestion"),
+                raw_data_summary=tg.Variable(config.feat_stats, requires_grad=False, role_description="raw data summary"),
+                prior_resource_summary=tg.Variable(config.prior_resource_summary, requires_grad=False, role_description="prior resource summary"),
+                current_performance=tg.Variable(json.dumps({"perf_summary": pstat, "primary_state": primary_state}, ensure_ascii=False), requires_grad=False, role_description="current performance summary"),
+                training_logs=tg.Variable(json.dumps(training_logs, ensure_ascii=False), requires_grad=False, role_description="training logs"),
+                pipeline_summary=tg.Variable(json.dumps(pipeline_summary, ensure_ascii=False), requires_grad=False, role_description="pipeline summary"),
+                prior_construction_notes_history=tg.Variable(script_notes_history["prior_construction.py"], requires_grad=False, role_description="prior construction note history"),
+                data_preprocess_notes_history=tg.Variable(script_notes_history["data_preprocess.py"], requires_grad=False, role_description="data preprocessing note history"),
+                model_training_notes_history=tg.Variable(script_notes_history["model_training.py"], requires_grad=False, role_description="model training note history"),
+                downstream_analysis_notes_history=tg.Variable(script_notes_history["downstream_analysis.py"], requires_grad=False, role_description="downstream analysis note history"),
+                script_summaries=_graph_text_var(StageScriptGenerator.summarize_bundle(code_bundle), list(code_bundle.values()), "current script summaries"),
+                chat_history=_graph_text_var(json.dumps(evaluator_conversation, ensure_ascii=False), evaluator_message_vars, "current step evaluator chat history"),
+            )
+            print(f"critic_output_step_{step}:\n{critic_out.value}")
+            critic_payload = parse_critic_output(critic_out.value)
+        else:
+            critic_payload = synthesize_critic_payload_from_evaluators(
+                step=step,
+                evaluator_payloads={
+                    "prior": prior_payload,
+                    "data_science": data_science_payload,
+                    "model": model_payload,
+                    "biology": biology_payload,
+                },
+            )
+            print(f"critic_output_step_{step}:\n{json.dumps(critic_payload, indent=2, ensure_ascii=False)}")
         action = "reconsult" if outer_state.stagnation_steps >= args.stagnation_steps_limit else "exploit"
         critic_plan = critic_plan_from_payload(critic_payload)
         feedback_by_target = {
@@ -907,10 +948,16 @@ Use labels only for evaluation, never for training.
             for filename, target_payload in critic_plan.get("targets", {}).items()
             if _feedback_has_signal(str(target_payload.get("feedback", "")).strip())
         }
-        optimize_targets = _dedupe_preserve_order(list(feedback_by_target.keys())) if action == "exploit" else []
+        if action == "exploit":
+            if args.critic_enabled:
+                optimize_targets = [filename for filename in _dedupe_preserve_order(list(feedback_by_target.keys())) if filename in optimizers]
+            else:
+                optimize_targets = [filename for filename in active_stage_filenames if filename in optimizers] if evaluator_backprop_vars else []
+        else:
+            optimize_targets = []
         exploit_applied = False
         exploit_summary = {
-            filename: str((feedback_by_target.get(filename) or {}).get("feedback", "")).strip()
+            filename: str((feedback_by_target.get(filename) or {}).get("feedback", "")).strip() or ("updated from accumulated evaluator feedback" if not args.critic_enabled else "")
             for filename in optimize_targets
         }
         exploit_change_types = {
@@ -921,7 +968,11 @@ Use labels only for evaluation, never for training.
         if action == "exploit" and optimize_targets:
             for optimizer in optimizers.values():
                 optimizer.zero_grad()
-            critic_out.backward()
+            if args.critic_enabled and critic_out is not None:
+                critic_out.backward()
+            else:
+                for evaluator_var in evaluator_backprop_vars:
+                    evaluator_var.backward()
             for filename in optimize_targets:
                 optimizers[filename].step()
             exploit_applied = True
@@ -1028,6 +1079,7 @@ Use labels only for evaluation, never for training.
         step_log = {
             "step": step,
             "action": action,
+            "critic_enabled": args.critic_enabled,
             "critic_payload": critic_payload,
             "critic_plan": critic_plan,
             "prior_evaluator_payload": prior_payload,
@@ -1074,7 +1126,7 @@ Use labels only for evaluation, never for training.
             historical_failures = "\n".join(open_issues[-10:]) if open_issues else "<none>"
             consultant_history_context = build_consultant_history_context(consultant_records)
             hard_constraints = []
-            for filename in STAGE_FILENAMES:
+            for filename in active_stage_filenames:
                 hard_constraints.extend(_build_optimizer_constraints_for_file(filename, generator.path_prompt_fields, stage_schemas.get(filename, {}), config))
             reconsult_query = build_reconsult_query(
                 task_description=task_summary["task_description"],

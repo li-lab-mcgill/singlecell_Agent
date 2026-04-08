@@ -3,6 +3,7 @@ import json
 import hashlib
 import re
 import sys
+import logging
 from dotenv import load_dotenv
 import textgrad as tg
 from config import Config
@@ -24,6 +25,7 @@ from consultant_prompts import (
 )
 
 load_dotenv()
+logger = logging.getLogger(__name__)
 
 
 def _short(text: str, max_chars: int) -> str:
@@ -196,6 +198,134 @@ def _validate_prior_schema(prior_schema: Dict[str, Any]) -> None:
             if not isinstance(shape, list) or not shape or not all(isinstance(dim, str) and dim.strip() for dim in shape):
                 raise ValueError("Consultant PRIOR_SCHEMA_JSON shape must be a non-empty list of symbolic dimension strings when provided")
 
+
+def _infer_schema_dtype(file_name: str, raw_dtype: Any) -> str:
+    dtype = str(raw_dtype or "").strip()
+    if dtype:
+        return dtype
+    suffix = os.path.splitext(str(file_name or "").strip())[1].lower()
+    inferred = {
+        ".csv": "csv",
+        ".tsv": "tsv",
+        ".txt": "txt",
+        ".json": "json",
+        ".jsonl": "jsonl",
+        ".npy": "npy",
+        ".npz": "npz",
+        ".pt": "pt",
+        ".pth": "pt",
+        ".pkl": "pkl",
+        ".parquet": "parquet",
+        ".h5": "h5",
+        ".h5ad": "h5ad",
+    }.get(suffix)
+    return inferred or "binary"
+
+
+def _normalize_shape(shape: Any) -> Any:
+    if shape is None:
+        return None
+    if isinstance(shape, list):
+        normalized = [str(dim).strip() for dim in shape if str(dim).strip()]
+        return normalized or None
+    if isinstance(shape, str):
+        cleaned = shape.strip()
+        if not cleaned:
+            return None
+        cleaned = cleaned.strip("[]()")
+        parts = [part.strip() for part in re.split(r"[,\u00d7x]", cleaned) if part.strip()]
+        return parts or [shape.strip()]
+    return None
+
+
+def _normalize_prior_file_entry(item: Dict[str, Any]) -> Dict[str, Any]:
+    normalized = dict(item)
+    file_name = str(
+        item.get("file_name")
+        or item.get("filename")
+        or item.get("file")
+        or item.get("path")
+        or item.get("output_file")
+        or item.get("name")
+        or ""
+    ).strip()
+    description = str(
+        item.get("description")
+        or item.get("purpose")
+        or item.get("summary")
+        or item.get("contents")
+        or item.get("content")
+        or item.get("notes")
+        or ""
+    ).strip()
+    dtype = _infer_schema_dtype(
+        file_name,
+        item.get("dtype") or item.get("type") or item.get("format") or item.get("file_type"),
+    )
+    shape = _normalize_shape(item.get("shape") or item.get("dimensions") or item.get("dims"))
+
+    normalized["file_name"] = file_name
+    normalized["dtype"] = dtype
+    if description:
+        normalized["description"] = description
+    elif file_name:
+        normalized["description"] = f"Prior artifact generated at {file_name}"
+    if shape is not None:
+        normalized["shape"] = shape
+    return normalized
+
+
+def _normalize_prior_schema(prior_schema: Dict[str, Any]) -> Dict[str, Any]:
+    if not isinstance(prior_schema, dict):
+        return prior_schema
+    output_files = prior_schema.get("output_files")
+    if output_files is None:
+        output_files = prior_schema.get("required_files")
+    if output_files is None:
+        output_files = [prior_schema]
+    if not isinstance(output_files, list):
+        return prior_schema
+
+    normalized_files: List[Dict[str, Any]] = []
+    dropped_entries = 0
+    for item in output_files:
+        if not isinstance(item, dict):
+            dropped_entries += 1
+            continue
+        normalized_item = _normalize_prior_file_entry(item)
+        if normalized_item.get("file_name"):
+            normalized_files.append(normalized_item)
+        else:
+            dropped_entries += 1
+
+    normalized_schema = dict(prior_schema)
+    normalized_schema["output_files"] = normalized_files
+    if dropped_entries:
+        logger.warning(
+            "Dropped %d malformed PRIOR_SCHEMA_JSON output_files entries during normalization",
+            dropped_entries,
+        )
+    return normalized_schema
+
+
+def _validate_prior_decision(prior_decision: Dict[str, Any]) -> Dict[str, Any]:
+    if not isinstance(prior_decision, dict):
+        raise ValueError("Consultant PRIOR_DECISION_JSON must decode to a JSON object")
+    use_priors = prior_decision.get("use_priors")
+    if not isinstance(use_priors, bool):
+        raise ValueError("Consultant PRIOR_DECISION_JSON use_priors must be a boolean")
+    decision_reason = str(prior_decision.get("decision_reason", "")).strip()
+    if not decision_reason:
+        raise ValueError("Consultant PRIOR_DECISION_JSON decision_reason must be a non-empty string")
+    selected_resource_names = prior_decision.get("selected_resource_names", [])
+    if not isinstance(selected_resource_names, list):
+        raise ValueError("Consultant PRIOR_DECISION_JSON selected_resource_names must be a list")
+    return {
+        "use_priors": use_priors,
+        "decision_reason": decision_reason,
+        "selected_resource_names": [str(item).strip() for item in selected_resource_names if str(item).strip()],
+    }
+
 def _validate_main_plan_text(suggestion: Any) -> None:
     if not str(suggestion or "").strip():
         raise ValueError("Consultant SUGGESTION must be a non-empty string")
@@ -243,8 +373,11 @@ class TextGradConsultant:
         mcp_tools_text: str = "(unavailable)",
         prior_plan: str = "<omitted>",
         prior_output_summary: str = "<omitted>",
-        rag_general_context: str = "RAG_GENERAL_CONTEXT\n<none>",
-        rag_core_context: str = "RAG_CORE_CONTEXT\n<none>",
+        prior_decision_summary: str = "<omitted>",
+        rag_dataset_context: str = "RAG_DATASET_CONTEXT\n<none>",
+        rag_prior_resource_context: str = "RAG_PRIOR_RESOURCE_CONTEXT\n<none>",
+        rag_prior_method_context: str = "RAG_PRIOR_METHOD_CONTEXT\n<none>",
+        rag_model_design_context: str = "RAG_MODEL_DESIGN_CONTEXT\n<none>",
     ):
         api_dir_text = api_dir or "<not provided>"
         dataset_dir_text = dataset_dir or "<not provided>"
@@ -278,10 +411,13 @@ class TextGradConsultant:
                                         api_dir=api_dir_text, dataset_dir=dataset_dir_text,
                                         prior_resource_summary=getattr(self.config, "prior_resource_summary", "<omitted>"),
                                         prior_resource_paths=prior_resource_paths,
+                                        prior_decision_summary=prior_decision_summary,
                                         prior_plan=prior_plan,
                                         prior_output_summary=prior_output_summary,
-                                        rag_general_context=rag_general_context,
-                                        rag_core_context=rag_core_context,
+                                        rag_dataset_context=rag_dataset_context,
+                                        rag_prior_resource_context=rag_prior_resource_context,
+                                        rag_prior_method_context=rag_prior_method_context,
+                                        rag_model_design_context=rag_model_design_context,
                                         mcp_tools=mcp_tools_text,
                                         metrics=self.config.metrics, samples=samples, background=background)
             else:
@@ -291,10 +427,13 @@ class TextGradConsultant:
                     api_dir=api_dir_text, dataset_dir=dataset_dir_text,
                     prior_resource_summary=getattr(self.config, "prior_resource_summary", "<omitted>"),
                     prior_resource_paths=prior_resource_paths,
+                    prior_decision_summary=prior_decision_summary,
                     prior_plan=prior_plan,
                     prior_output_summary=prior_output_summary,
-                    rag_general_context=rag_general_context,
-                    rag_core_context=rag_core_context,
+                    rag_dataset_context=rag_dataset_context,
+                    rag_prior_resource_context=rag_prior_resource_context,
+                    rag_prior_method_context=rag_prior_method_context,
+                    rag_model_design_context=rag_model_design_context,
                     mcp_tools=mcp_tools_text,
                     samples=samples, background=background)
 
@@ -305,10 +444,13 @@ class TextGradConsultant:
                 api_dir=api_dir_text, dataset_dir=dataset_dir_text,
                 prior_resource_summary=getattr(self.config, "prior_resource_summary", "<omitted>"),
                 prior_resource_paths=prior_resource_paths,
+                prior_decision_summary=prior_decision_summary,
                 prior_plan=prior_plan,
                 prior_output_summary=prior_output_summary,
-                rag_general_context=rag_general_context,
-                rag_core_context=rag_core_context,
+                rag_dataset_context=rag_dataset_context,
+                rag_prior_resource_context=rag_prior_resource_context,
+                rag_prior_method_context=rag_prior_method_context,
+                rag_model_design_context=rag_model_design_context,
                 mcp_tools=mcp_tools_text,
                 id_col=id_col, samples=samples, background=background)
 
@@ -327,16 +469,34 @@ class TextGradConsultant:
 
     @staticmethod
     def parse_prior_summary_tags(text: str) -> dict:
-        payloads = _extract_exact_tag_payloads(text, ["TASK_DESCRIPTION", "SUGGESTION", "PRIOR_SCHEMA_JSON"])
+        payloads = _extract_exact_tag_payloads(text, ["TASK_DESCRIPTION", "SUGGESTION", "PRIOR_DECISION_JSON", "PRIOR_SCHEMA_JSON"])
+        prior_decision_raw = payloads["PRIOR_DECISION_JSON"]
+        try:
+            prior_decision = json.loads(prior_decision_raw)
+        except json.JSONDecodeError as exc:
+            raise ValueError(f"Consultant PRIOR_DECISION_JSON is invalid JSON: {exc}") from exc
+        validated_decision = _validate_prior_decision(prior_decision)
         prior_schema_raw = payloads["PRIOR_SCHEMA_JSON"]
         try:
             prior_schema = json.loads(prior_schema_raw)
         except json.JSONDecodeError as exc:
             raise ValueError(f"Consultant PRIOR_SCHEMA_JSON is invalid JSON: {exc}") from exc
-        _validate_prior_schema(prior_schema)
+        prior_schema = _normalize_prior_schema(prior_schema)
+        if validated_decision["use_priors"]:
+            _validate_prior_schema(prior_schema)
+        else:
+            output_files = prior_schema.get("output_files") if isinstance(prior_schema, dict) else None
+            if not isinstance(prior_schema, dict):
+                prior_schema = {"output_files": []}
+            elif output_files != []:
+                logger.warning(
+                    "Consultant returned non-empty PRIOR_SCHEMA_JSON while use_priors=false; clearing schema"
+                )
+                prior_schema = {"output_files": []}
         return {
             "task_description": payloads["TASK_DESCRIPTION"],
             "suggestion": payloads["SUGGESTION"],
+            "prior_decision": validated_decision,
             "prior_schema": prior_schema,
         }
 

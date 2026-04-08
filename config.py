@@ -12,6 +12,7 @@ from typing import Any, Dict, List, Optional, Set, Tuple, Union
 import numpy as np
 import pandas as pd
 import textgrad as tg
+from multieval_types import STAGE_FILENAMES
 
 FIXED_DATA_PREPROCESS_REQUIREMENTS: Dict[str, Any] = {
     "required_outputs": [
@@ -97,6 +98,11 @@ class Config:
         self.current_step_layout: Dict[str, Any] = {}
         self.current_prior_schema: Dict[str, Any] = {}
         self.current_prior_dir_path: str = ""
+        self.current_prior_decision: Dict[str, Any] = {
+            "use_priors": True,
+            "decision_reason": "",
+            "selected_resource_names": [],
+        }
         self.task_types = ["Regression", "Classification", "Clustering", "Integration"]
         self.learning_types = ["Supervised", "Unsupervised", "Self-supervised"]
         self.id_column = id_column
@@ -156,6 +162,27 @@ class Config:
             raise ValueError("prior schema must be a JSON object")
         self.current_prior_schema = deepcopy(prior_schema)
 
+    def apply_prior_decision(self, prior_decision: Dict[str, Any]) -> None:
+        if not isinstance(prior_decision, dict):
+            raise ValueError("prior decision must be a JSON object")
+        use_priors = bool(prior_decision.get("use_priors", True))
+        selected_resource_names = prior_decision.get("selected_resource_names", [])
+        if not isinstance(selected_resource_names, list):
+            selected_resource_names = []
+        self.current_prior_decision = {
+            "use_priors": use_priors,
+            "decision_reason": str(prior_decision.get("decision_reason", "")).strip(),
+            "selected_resource_names": [str(item).strip() for item in selected_resource_names if str(item).strip()],
+        }
+
+    def use_priors(self) -> bool:
+        return bool(self.current_prior_decision.get("use_priors", True))
+
+    def active_stage_filenames(self) -> List[str]:
+        if self.use_priors():
+            return list(STAGE_FILENAMES)
+        return [filename for filename in STAGE_FILENAMES if filename != "prior_construction.py"]
+
     def stage_requirements(self, filename: str) -> Dict[str, Any]:
         if filename == "prior_construction.py":
             return {
@@ -189,6 +216,8 @@ class Config:
         return suffix or "binary"
 
     def resolved_prior_files(self) -> List[Dict[str, Any]]:
+        if not self.use_priors():
+            return []
         prior_schema = self.current_prior_schema if isinstance(self.current_prior_schema, dict) else {}
         if not prior_schema:
             return []
@@ -343,6 +372,8 @@ class Config:
             gene_names_path = os.path.join(gene_embedding_dir, "gene_names.txt")
             missing_names_path = os.path.join(gene_embedding_dir, "missing_gene_names.txt")
             gene_embedding_entry["resource_type"] = "gene_description_text_embedding"
+            gene_embedding_entry["embedding_source"] = "NCBI gene text descriptions"
+            gene_embedding_entry["row_order"] = "Rows in gene_embeddings.npy follow gene_names.txt order"
             gene_embedding_entry["files"] = {
                 "gene_embeddings": emb_path,
                 "gene_names": gene_names_path,
@@ -369,8 +400,9 @@ class Config:
             except Exception as exc:
                 gene_embedding_entry["missing_gene_names_notes"] = f"failed to inspect missing_gene_names.txt: {exc}"
             gene_embedding_entry["description"] = (
-                "Embeddings for gene description text. gene_names.txt lists genes with available embeddings "
-                "aligned to gene_embeddings.npy rows. missing_gene_names.txt lists genes without embeddings."
+                "Embeddings of NCBI gene text descriptions for individual genes. "
+                "Rows in gene_embeddings.npy are ordered exactly as gene_names.txt. "
+                "missing_gene_names.txt lists genes without available embeddings."
             )
         summaries.append(gene_embedding_entry)
         return json.dumps({"prior_resources": summaries}, indent=2, ensure_ascii=False)

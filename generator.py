@@ -47,6 +47,15 @@ class StageScriptGenerator:
             return match.group(1).strip()
         return raw_code.strip()
 
+    @staticmethod
+    def _noop_prior_script() -> str:
+        return (
+            "def main():\n"
+            "    print('prior_construction.py skipped: prior consultant disabled priors for this run')\n\n"
+            "if __name__ == '__main__':\n"
+            "    main()\n"
+        )
+
     def _build_path_prompt_fields(self, artifact_layout: Dict[str, Any]) -> Dict[str, str]:
         runtime_inputs = artifact_layout.get("runtime_inputs", {}) if isinstance(artifact_layout, dict) else {}
         generated_outputs = artifact_layout.get("generated_outputs", {}) if isinstance(artifact_layout, dict) else {}
@@ -103,6 +112,8 @@ class StageScriptGenerator:
     def _prior_schema_context(self, filename: str) -> str:
         if filename not in {"prior_construction.py", "data_preprocess.py", "model_training.py"}:
             return "<none>"
+        if not self.config.use_priors():
+            return "<none>"
         return json.dumps(self.config.current_prior_schema, ensure_ascii=False)
 
     def _prior_resource_lines(self) -> List[str]:
@@ -144,6 +155,12 @@ class StageScriptGenerator:
         fields = self.path_prompt_fields
         lines: List[str] = []
         if filename == "prior_construction.py":
+            if not self.config.use_priors():
+                lines.extend([
+                    f"{self._path_label('prior_output_dir_path')}: {fields['prior_output_dir_path']}",
+                    "Prior construction is disabled for this run because the prior consultant decided priors are not needed.",
+                ])
+                return "\n".join(line for line in lines if line.strip()) or "<none>"
             lines.extend([
                 f"{self._path_label('input_mod1_path')}: {fields['input_mod1_path']}",
                 f"{self._path_label('input_mod2_path')}: {fields['input_mod2_path']}",
@@ -161,8 +178,16 @@ class StageScriptGenerator:
                 f"Output validation split h5ad: {fields['preprocess_val_mod1_path']}",
                 f"Output test split h5ad: {fields['preprocess_test_mod1_path']}",
                 f"{self._path_label('prior_output_dir_path')}: {fields['prior_output_dir_path']}",
-                "This script must perform preprocessing and consume the fixed prior bundle already written by prior_construction.py.",
-                "Do not rebuild raw prior artifacts from the resource tables in this stage.",
+                (
+                    "This script must perform preprocessing without consuming prior artifacts."
+                    if not self.config.use_priors()
+                    else "This script must perform preprocessing and consume the fixed prior bundle already written by prior_construction.py."
+                ),
+                (
+                    "Do not expect prior artifacts for this run."
+                    if not self.config.use_priors()
+                    else "Do not rebuild raw prior artifacts from the resource tables in this stage."
+                ),
             ])
             lines.extend(self._prior_file_lines())
         elif filename == "model_training.py":
@@ -199,13 +224,18 @@ class StageScriptGenerator:
         return "\n".join(line for line in lines if line.strip()) or "<none>"
 
     def _stage_query(self, *, filename: str, task_description: str, background: str, main_plan: str, prior_plan: str, data_summary: str, prior_resource_summary: str, script_summaries: str, existing_code: str, mcp_tools_text: str, api_dir: str | None, dataset_dir: str | None) -> str:
+        prior_decision_summary = json.dumps(self.config.current_prior_decision, ensure_ascii=False)
         prompt_fields = {
             "target_file": filename,
             "target_tag": STAGE_TAG_BY_FILE[filename],
             "task_description": task_description,
             "background": background,
             "main_plan": main_plan if filename != "prior_construction.py" else "<none>",
-            "prior_plan": prior_plan if filename in {"prior_construction.py", "data_preprocess.py", "model_training.py"} else "<none>",
+            "prior_plan": (
+                prior_plan
+                if self.config.use_priors() and filename in {"prior_construction.py", "data_preprocess.py", "model_training.py"}
+                else "<none>"
+            ),
             "prior_schema_json": self._prior_schema_context(filename),
             "stage_requirements_json": self._stage_requirements_json(filename),
             "stage_context": self._stage_context(filename),
@@ -214,6 +244,7 @@ class StageScriptGenerator:
             "mcp_tools": mcp_tools_text,
             "data_summary": data_summary,
             "prior_resource_summary": prior_resource_summary if filename == "prior_construction.py" else "<none>",
+            "prior_decision_summary": prior_decision_summary,
             "primary_metric": self._primary_metric(),
             "metrics": ", ".join(self.config.metrics) if isinstance(self.config.metrics, list) else str(self.config.metrics),
             "time_budget": self.config.timeout,
@@ -287,6 +318,13 @@ class StageScriptGenerator:
         bundle: Dict[str, tg.Variable] = {}
         for item in STAGE_FILES:
             filename = item["filename"]
+            if filename == "prior_construction.py" and not self.config.use_priors():
+                bundle[filename] = tg.Variable(
+                    self._noop_prior_script(),
+                    requires_grad=False,
+                    role_description="placeholder prior construction code when priors are disabled",
+                )
+                continue
             existing_code = existing_bundle[filename].value if existing_bundle and filename in existing_bundle else ""
             prompt = self._stage_query(
                 filename=filename,
@@ -331,6 +369,9 @@ class StageScriptGenerator:
         max_fix_step: int = 1,
     ) -> bool:
         filename = target if target in STAGE_TAG_BY_FILE else STAGE_FILENAMES[0]
+        if filename == "prior_construction.py" and not self.config.use_priors():
+            code_bundle[filename].set_value(self._noop_prior_script())
+            return True
         target_var = code_bundle[filename]
         prompt_fields = {
             "target_file": filename,

@@ -28,6 +28,9 @@ You are a computational biology coder specializing in data processing.
 Task:
 Implement the prior-construction stage of the pipeline. Follow the prior consultant plan (`PRIOR_PLAN`) and produce exactly the output files declared in `PRIOR_SCHEMA_JSON`.
 
+Special case:
+- If the query says priors are disabled or `PRIOR_SCHEMA_JSON` is `<none>`, implement a no-op script that exits successfully without writing prior artifacts.
+
 Inputs you will receive in the query:
 - `PRIOR_PLAN`: The consultant's reasoning, which resources to use, how to preprocess them, how to handle identifier mapping.
 - `PRIOR_SCHEMA_JSON`: The exact output file contract, including file names, shapes, dtypes, and descriptions.
@@ -79,6 +82,7 @@ Implementation steps:
 
 Scope boundaries:
 - You may subset, reindex, and filter prior artifacts to align with the final gene set — but do not change the prior's design (do not pick different resources, change thresholds, or rebuild the prior from scratch).
+- If the query says priors are disabled or the prior schema is `<none>`, do not expect or read prior artifacts; implement a prior-free preprocessing pipeline.
 - Do not define or train any model.
 - Do not perform clustering or downstream analysis.
 """ + _COMMON_STAGE_SYSTEM_PROMPT
@@ -96,24 +100,25 @@ Load model-ready preprocessed inputs from:
    - VALIDATION: {prep_val_out_path}
    - TEST: {prep_test_out_path}
 2. Treat these split files as the authoritative model inputs. Use their feature space exactly as written.
-3. Load prior artifacts only from the fixed prior output paths provided in the query, following the prior consultant PRIOR_SCHEMA_JSON.
-4. Train the deep learning model that integrates the prior information exactly as specified in the consultant plan.
-5. Save outputs only to the fixed paths provided in the query:
+3. If priors are enabled, load prior artifacts only from the fixed prior output paths provided in the query, following the prior consultant PRIOR_SCHEMA_JSON.
+4. If priors are disabled or `PRIOR_SCHEMA_JSON` is `<none>`, implement the prior-free model specified in the consultant plan and do not attempt to read prior artifacts.
+5. Train the deep learning model exactly as specified in the consultant plan.
+6. Save outputs only to the fixed paths provided in the query:
    - Best model checkpoint: {best_model_out_path}
    - Embeddings: {embedding_out_path}
    - Embedding metadata CSV: {embedding_metadata_out_path}
    - Model performance JSON: {performance_out_path}
    - Training logs JSON: {training_logs_out_path}
    - Pipeline summary JSON: {pipeline_summary_out_path}
-6. Write embedding metadata that preserves row alignment with the embedding output and includes:
+7. Write embedding metadata that preserves row alignment with the embedding output and includes:
    - cell_id
    - split
    - row_index
    - cell_type
    - batch
-7. Use CUDA or MPS automatically if available; otherwise run on CPU without changing the workflow.
-8. Follow best practices for reproducibility, code organization, and computational efficiency.
-9. Output exactly one executable Python script.
+8. Use CUDA or MPS automatically if available; otherwise run on CPU without changing the workflow.
+9. Follow best practices for reproducibility, code organization, and computational efficiency.
+10. Output exactly one executable Python script.
 
 """ + _COMMON_STAGE_SYSTEM_PROMPT
 
@@ -159,6 +164,7 @@ Required return tag: <{target_tag}>...</{target_tag}>
 Task description: {task_description}
 Task background: {background}
 Main consultant plan: {main_plan}
+Prior decision summary: {prior_decision_summary}
 Prior consultant PRIOR_SCHEMA_JSON: {prior_schema_json}
 Current stage input and output requirements JSON: {stage_requirements_json}
 Current stage input and output paths: {stage_context}
