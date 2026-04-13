@@ -1,13 +1,17 @@
+import os
+os.environ.setdefault("TOKENIZERS_PARALLELISM", "false")
 import argparse
 import json
 import os
 import shutil
+import sys
 import time
 from pathlib import Path
 from typing import Any, Dict, List
 
 import textgrad as tg
 
+from analyst import Analyst
 from config import Config
 from consultant import (
     TextGradConsultant,
@@ -17,6 +21,7 @@ from consultant import (
     record_consultant_plan,
 )
 from evaluator import (
+    EVALUATOR_MEETING_ORDER,
     critic_plan_from_payload,
     synthesize_critic_payload_from_evaluators,
     TextGradEvaluator,
@@ -53,6 +58,26 @@ from multieval_types import (
 )
 from rag_agent import ConsultantRAGAgent
 from validator import write_failure_record
+
+
+class _StreamTee:
+    def __init__(self, *streams):
+        self._streams = streams
+
+    def write(self, data):
+        for stream in self._streams:
+            stream.write(data)
+        return len(data)
+
+    def flush(self):
+        for stream in self._streams:
+            stream.flush()
+
+    def isatty(self):
+        for stream in self._streams:
+            if hasattr(stream, "isatty") and stream.isatty():
+                return True
+        return False
 
 
 def read_json_safe(path: str) -> Dict[str, Any]:
@@ -109,6 +134,21 @@ def metric_from_dict(d: Dict[str, Any], candidates: List[str]) -> float | None:
     return None
 
 
+def primary_metric_key(metrics: Any) -> str:
+    if isinstance(metrics, list):
+        raw = str(metrics[0]).strip() if metrics else ""
+    else:
+        raw = str(metrics).split(",")[0].strip() if metrics is not None else ""
+    return raw.lower() or "combined_score"
+
+
+def primary_metric_candidates(metric_key: str) -> List[str]:
+    metric = str(metric_key or "").strip()
+    if not metric:
+        metric = "combined_score"
+    return [metric, metric.lower(), metric.upper()]
+
+
 def stage_schemas_from_config(config: Config) -> Dict[str, Dict[str, Any]]:
     return {filename: config.stage_requirements(filename) for filename in STAGE_FILENAMES}
 
@@ -131,6 +171,18 @@ def bundle_text_map_from_dir(script_dir: str) -> Dict[str, str]:
     if not script_dir or not os.path.isdir(script_dir):
         return {}
     return {filename: read_text_safe(os.path.join(script_dir, filename)) for filename in STAGE_FILENAMES}
+
+
+def count_rag_entries(text: str) -> int:
+    count = 0
+    for line in str(text or "").splitlines():
+        stripped = line.strip()
+        if not stripped:
+            continue
+        prefix, _, remainder = stripped.partition(".")
+        if prefix.isdigit() and remainder.startswith(" "):
+            count += 1
+    return count
 
 
 def classify_run_failure(run_result: Dict[str, Any]) -> tuple[str | None, str | None, str]:
@@ -290,6 +342,9 @@ def _feedback_has_signal(feedback: str) -> bool:
 def _build_optimizer_constraints_for_file(filename: str, path_fields: Dict[str, str], stage_schema: Dict[str, Any], config: Config) -> List[str]:
     constraints = [f"Return ONLY valid executable Python code for {filename}."]
     constraints.extend(_non_negotiable_constraints())
+    if getattr(config, "current_evaluation_plan", {}):
+        constraints.append(f"Current analyst evaluation plan:\n{config.current_evaluation_plan_text()}")
+        constraints.append(f"Primary optimization metric for this run: {config.primary_metric_key()}")
     if filename == "prior_construction.py":
         if not config.use_priors():
             constraints.append("Priors are disabled for this run. Keep prior_construction.py as a successful no-op script.")
@@ -341,28 +396,31 @@ def _build_optimizer_constraints_for_file(filename: str, path_fields: Dict[str, 
     return constraints
 
 
-def maybe_update_global_best(*, global_best: GlobalBestState, run_success: bool, step: int, cluster_metrics: Dict[str, Any], perf: Dict[str, Any], executed_script_dir: str, best_script_dir: str, final_out_dir: str) -> GlobalBestState:
+def maybe_update_global_best(*, global_best: GlobalBestState, run_success: bool, step: int, cluster_metrics: Dict[str, Any], perf: Dict[str, Any], executed_script_dir: str, best_script_dir: str, final_out_dir: str, primary_metric_key: str = "combined_score") -> GlobalBestState:
     if not run_success:
         return global_best
-    cur_ari = metric_from_dict(cluster_metrics, ["ari", "ARI"])
-    if cur_ari is None:
+    metric_key = primary_metric_key.strip().lower() or "combined_score"
+    cur_primary = metric_from_dict(cluster_metrics, primary_metric_candidates(metric_key))
+    if cur_primary is None:
         return global_best
-    if global_best.best_ari is not None and cur_ari < global_best.best_ari:
+    if global_best.best_ari is not None and cur_primary < global_best.best_ari:
         return global_best
     if not executed_script_dir or not os.path.isdir(executed_script_dir):
         raise FileNotFoundError(f"Executed script directory is missing: {executed_script_dir}")
     shutil.rmtree(best_script_dir, ignore_errors=True)
     shutil.copytree(executed_script_dir, best_script_dir)
-    global_best.best_ari = cur_ari
+    global_best.best_ari = cur_primary
     global_best.best_step = step
     global_best.best_script_path = best_script_dir
     global_best.best_perf = perf if isinstance(perf, dict) else {}
     global_best.best_cluster_metrics = cluster_metrics if isinstance(cluster_metrics, dict) else {}
-    with open(f"{final_out_dir}/global_best_ari.json", "w", encoding="utf-8") as f:
+    with open(f"{final_out_dir}/global_best_{metric_key}.json", "w", encoding="utf-8") as f:
         json.dump(
             {
+                "best_metric_key": metric_key,
+                "best_metric_value": global_best.best_ari,
+                "best_primary_metric_value": global_best.best_ari,
                 "best_step": global_best.best_step,
-                "best_ari": global_best.best_ari,
                 "best_script_path": global_best.best_script_path,
                 "best_cluster_metrics": global_best.best_cluster_metrics,
                 "best_perf": global_best.best_perf,
@@ -420,7 +478,7 @@ VISUALIZATION:
 Generate UMAP from the learned embedding colored by predicted cluster and by cell_type if available.
 
 EVALUATION:
-Primary evaluation metric: ARI.
+The optimization goal is a task-aligned combined score designed by the analyst.
 Use labels only for evaluation, never for training.
 """
 
@@ -435,7 +493,7 @@ Use labels only for evaluation, never for training.
         mod1_path=file_path,
         mod2_path=mod2_path,
         learning_type="Unsupervised",
-        metrics="ARI",
+        metrics="combined_score",
         label_column=None,
         id_column=None,
         code_dir=args.code_dir,
@@ -448,16 +506,15 @@ Use labels only for evaluation, never for training.
     config.notes_dir = f"{cur_path}/{args.notes_dir}"
     config.code_dir = config.single_code_dir
     resolved_artifact_layout = config.set_step_output_paths(0)
-    consultant_background = (
-        background.strip()
-        + "\n\nFixed downstream output requirements:\n"
-        + json.dumps(config.downstream_requirements(), indent=2, ensure_ascii=False)
-    )
 
     Path(config.notes_dir).mkdir(parents=True, exist_ok=True)
     Path(config.code_dir).mkdir(parents=True, exist_ok=True)
     Path(config.result_dir).mkdir(parents=True, exist_ok=True)
     Path(f"{config.result_dir}/feedback").mkdir(parents=True, exist_ok=True)
+    console_log_path = f"{config.result_dir}/feedback/run_console.log"
+    console_log_handle = open(console_log_path, "w", encoding="utf-8")
+    sys.stdout = _StreamTee(sys.__stdout__, console_log_handle)
+    sys.stderr = _StreamTee(sys.__stderr__, console_log_handle)
 
     note_path = f"{config.notes_dir}/note_history.txt"
     history_notes_path = f"{config.notes_dir}/history_notes.jsonl"
@@ -493,11 +550,53 @@ Use labels only for evaluation, never for training.
         embedding_backend=args.embedding_backend,
         embedding_model=args.embedding_model,
     )
+    rag_agent.reset_run_state()
     mcp_tools_text = fetch_mcp_tools_text()
     print(f"data_summary:\n{config.feat_stats}")
     print(f"prior_resource_summary:\n{config.prior_resource_summary}")
-    rag_agent.ensure_index(config=config, background=consultant_background)
+    rag_agent.ensure_index(config=config, background=background.strip())
+    prepared_rag_contexts = rag_agent.prepare_contexts(config=config, background=background.strip())
+
+    # --- Stage 0: Analyst generates evaluation guidance ---
+    analyst = Analyst(engine_name=args.engine)
+    analyst_rag_context = str(prepared_rag_contexts["dataset"]["context"])
+    benchmark_rag_context = str(prepared_rag_contexts["benchmark"]["context"])
+    marker_db_context = rag_agent.load_marker_db_context(config)
+    evaluation_guidance = analyst.generate_evaluation_guidance(
+        goal_and_query=background.strip(),
+        dataset_profile=config.feat_stats,
+        prior_resource_summary=config.prior_resource_summary,
+        dataset_rag_context=analyst_rag_context,
+        benchmark_rag_context=benchmark_rag_context,
+        marker_db_context=marker_db_context,
+    )
+    config.apply_evaluation_plan(evaluation_guidance.to_dict())
+    primary_metric = config.primary_metric_key()
+    analyst_plan_text = config.current_evaluation_plan_text()
+    consultant_background = background.strip() + "\n\n" + analyst_plan_text
+    print(f"Analysis goal: {evaluation_guidance.goal}")
+    print(f"Evaluation guidance generated for {len(evaluation_guidance.guidance_per_evaluator)} evaluators")
+    print(f"Expected downstream outputs: {evaluation_guidance.expected_downstream_outputs[:500]}")
+    print(f"RAG_DATASET_CONTEXT document count: {count_rag_entries(analyst_rag_context)}")
+    print(f"RAG_BENCHMARK_CONTEXT document count: {count_rag_entries(benchmark_rag_context)}")
+    print(f"RAG_BENCHMARK_CONTEXT:\n{benchmark_rag_context}")
+    shared_evaluation_plan = evaluation_guidance.shared_prompt_context()
+    print(f"Shared analyst evaluation plan:\n{shared_evaluation_plan or '(no shared analyst evaluation plan provided)'}")
+    for role in ["prior", "data_science", "model", "biology", "critic"]:
+        role_guidance = ""
+        for item in evaluation_guidance.guidance_per_evaluator:
+            if item.evaluator_role == role:
+                role_guidance = item.format_for_prompt("")
+                break
+        print(f"{role.upper()} EVALUATION_GUIDANCE:\n{role_guidance or '(no evaluation guidance provided)'}")
+
     prior_rag_context = rag_agent.build_prior_context(config=config, background=consultant_background)
+    print(
+        "Prior RAG hit counts: "
+        f"dataset={len(prior_rag_context.dataset_hits)}, "
+        f"resources={len(prior_rag_context.prior_resource_hits)}, "
+        f"methods={len(prior_rag_context.prior_method_hits)}"
+    )
     print(
         f"Prior RAG DATASET CONTEXT:\n{prior_rag_context.dataset_context}\n\n"
         f"Prior RAG RESOURCE CONTEXT:\n{prior_rag_context.prior_resource_context}\n\n"
@@ -514,6 +613,7 @@ Use labels only for evaluation, never for training.
         mcp_tools_text=mcp_tools_text,
         api_dir=config.api_dir,
         dataset_dir=config.dataset_dir,
+        analyst_plan=analyst_plan_text,
         rag_dataset_context=prior_rag_context.dataset_context,
         rag_prior_resource_context=prior_rag_context.prior_resource_context,
         rag_prior_method_context=prior_rag_context.prior_method_context,
@@ -547,6 +647,11 @@ Use labels only for evaluation, never for training.
         prior_schema_json=json.dumps(prior_task_summary["prior_schema"], ensure_ascii=False),
         prior_decision_json=prior_decision_summary,
     )
+    print(
+        "Main RAG hit counts: "
+        f"dataset={len(main_rag_context.dataset_hits)}, "
+        f"model_design={len(main_rag_context.model_design_hits)}"
+    )
     consultant_query = consultant.create_query(
         samples=None,
         id_col=None,
@@ -563,6 +668,7 @@ Use labels only for evaluation, never for training.
         prior_output_summary=json.dumps(prior_task_summary["prior_schema"], ensure_ascii=False),
         rag_dataset_context=main_rag_context.dataset_context,
         rag_model_design_context=main_rag_context.model_design_context,
+        analyst_plan=analyst_plan_text,
     )
     consultant_output = consultant.generate(prompt=consultant_query)
     print(f"consultant_output:\n{consultant_output}")
@@ -583,11 +689,11 @@ Use labels only for evaluation, never for training.
         ),
     )
 
-    prior_evaluator = TextGradEvaluator(config=config, engine_name=args.engine, task_decrp=task_summary["task_description"], background=background, eval_type="prior")
-    model_evaluator = TextGradEvaluator(config=config, engine_name=args.engine, task_decrp=task_summary["task_description"], background=background, eval_type="model")
-    data_science_evaluator = TextGradEvaluator(config=config, engine_name=args.engine, task_decrp=task_summary["task_description"], background=background, eval_type="data_science")
-    biology_evaluator = TextGradEvaluator(config=config, engine_name=args.engine, task_decrp=task_summary["task_description"], background=background, eval_type="biology")
-    critic_evaluator = TextGradEvaluator(config=config, engine_name=args.engine, task_decrp=task_summary["task_description"], background=background, eval_type="critic")
+    prior_evaluator = TextGradEvaluator(config=config, engine_name=args.engine, task_decrp=task_summary["task_description"], background=consultant_background, eval_type="prior", evaluation_guidance=evaluation_guidance.for_role("prior"))
+    model_evaluator = TextGradEvaluator(config=config, engine_name=args.engine, task_decrp=task_summary["task_description"], background=consultant_background, eval_type="model", evaluation_guidance=evaluation_guidance.for_role("model"))
+    data_science_evaluator = TextGradEvaluator(config=config, engine_name=args.engine, task_decrp=task_summary["task_description"], background=consultant_background, eval_type="data_science", evaluation_guidance=evaluation_guidance.for_role("data_science"))
+    biology_evaluator = TextGradEvaluator(config=config, engine_name=args.engine, task_decrp=task_summary["task_description"], background=consultant_background, eval_type="biology", evaluation_guidance=evaluation_guidance.for_role("biology"))
+    critic_evaluator = TextGradEvaluator(config=config, engine_name=args.engine, task_decrp=task_summary["task_description"], background=consultant_background, eval_type="critic", evaluation_guidance=evaluation_guidance.for_role("critic"))
     script_notebook = ScriptNotebook(engine_name=args.engine, task_description=task_summary["task_description"])
     executor = CodeExecutor(config)
     outer_state = OuterLoopState()
@@ -613,7 +719,7 @@ Use labels only for evaluation, never for training.
         if code_bundle is None:
             code_bundle = generator.generate_bundle(
                 task_description=task_summary["task_description"],
-                background=background,
+                background=consultant_background,
                 main_plan=suggestion,
                 prior_plan=prior_suggestion,
                 data_summary=config.feat_stats,
@@ -672,8 +778,9 @@ Use labels only for evaluation, never for training.
             best_sil=outer_state.best_sil,
             delta_min=args.delta_min,
             stagnation_steps=outer_state.stagnation_steps,
+            primary_metric_key=primary_metric,
         )
-        current_metric_value = metric_from_dict(cluster_metrics, ["ari", "ARI"])
+        current_metric_value = metric_from_dict(cluster_metrics, primary_metric_candidates(primary_metric))
         primary_gain = to_float(primary_state.get("primary_metric_gain"))
         current_bundle_texts = bundle_text_map(code_bundle)
         best_bundle_texts = bundle_text_map_from_dir(global_best.best_script_path)
@@ -800,34 +907,34 @@ Use labels only for evaluation, never for training.
         evaluator_message_vars: List[tg.Variable] = []
         evaluator_backprop_vars: List[tg.Variable] = []
         evaluator_errors: Dict[str, str] = {}
+        biology_payload: Dict[str, Any] | None = None
+        data_science_payload: Dict[str, Any] | None = None
+        model_payload: Dict[str, Any] | None = None
         prior_payload: Dict[str, Any] | None = None
-        prior_eval_out = prior_evaluator.loss_fn(
+        biology_eval_out = biology_evaluator.loss_fn(
             step=step,
-            suggestion=tg.Variable(prior_suggestion, requires_grad=False, role_description="current prior consultant suggestion"),
+            metrics=tg.Variable(config.metrics, requires_grad=False, role_description="primary metric name"),
+            time_budget=tg.Variable(str(config.timeout), requires_grad=False, role_description="time budget seconds"),
+            downstream_analysis_code=code_bundle["downstream_analysis.py"],
+            suggestion=tg.Variable(suggestion, requires_grad=False, role_description="current consultant suggestion"),
             training_history=tg.Variable(json.dumps(perf.get("training_history", []), ensure_ascii=False), requires_grad=False, role_description="training history"),
             stagnation_steps=tg.Variable(str(outer_state.stagnation_steps), requires_grad=False, role_description="current stagnation steps"),
             delta_min=tg.Variable(str(args.delta_min), requires_grad=False, role_description="minimum meaningful validation gain"),
             current_performance=tg.Variable(json.dumps({"perf_summary": pstat, "primary_state": primary_state}, ensure_ascii=False), requires_grad=False, role_description="current performance summary"),
-            prior_construction_notes_history=tg.Variable(script_notes_history["prior_construction.py"], requires_grad=False, role_description="prior construction note history"),
-            prior_construction_current_diffs=tg.Variable(script_current_diffs["prior_construction.py"], requires_grad=False, role_description="current prior construction raw diffs"),
-            prior_construction_code=code_bundle["prior_construction.py"],
-            prior_resource_summary=tg.Variable(config.prior_resource_summary, requires_grad=False, role_description="structured summary of prior resource files"),
-            raw_data_summary=tg.Variable(config.feat_stats, requires_grad=False, role_description="raw data summary"),
             cluster_summary=tg.Variable(json.dumps(cluster_summary, ensure_ascii=False), requires_grad=False, role_description="cluster summary"),
-            training_logs=tg.Variable(json.dumps(training_logs, ensure_ascii=False), requires_grad=False, role_description="training logs"),
-            paths=tg.Variable(json.dumps(generator.path_prompt_fields, ensure_ascii=False), requires_grad=False, role_description="fixed artifact paths"),
-            prior_schema=tg.Variable(json.dumps(config.current_prior_schema, ensure_ascii=False), requires_grad=False, role_description="prior schema"),
-            pipeline_summary=tg.Variable(json.dumps(pipeline_summary, ensure_ascii=False), requires_grad=False, role_description="pipeline summary"),
+            downstream_analysis_notes_history=tg.Variable(script_notes_history["downstream_analysis.py"], requires_grad=False, role_description="downstream analysis note history"),
+            downstream_analysis_current_diffs=tg.Variable(script_current_diffs["downstream_analysis.py"], requires_grad=False, role_description="current downstream raw diffs"),
+            downstream_schema=tg.Variable(json.dumps(config.stage_requirements("downstream_analysis.py"), ensure_ascii=False), requires_grad=False, role_description="downstream requirements"),
             chat_history=_graph_text_var("[]", [], "current step evaluator chat history"),
         )
-        print(f"prior_evaluator_output_step_{step}:\n{prior_eval_out.value}")
+        print(f"biology_evaluator_output_step_{step}:\n{biology_eval_out.value}")
         try:
-            prior_payload = parse_evaluator_message(prior_eval_out.value, "prior")
-            evaluator_conversation.append(prior_payload)
-            evaluator_message_vars.append(prior_eval_out)
-            evaluator_backprop_vars.append(prior_eval_out)
+            biology_payload = parse_evaluator_message(biology_eval_out.value, "biology")
+            evaluator_conversation.append(biology_payload)
+            evaluator_message_vars.append(biology_eval_out)
+            evaluator_backprop_vars.append(biology_eval_out)
         except Exception as exc:
-            evaluator_errors["prior"] = str(exc)
+            evaluator_errors["biology"] = str(exc)
 
         data_science_eval_out = data_science_evaluator.loss_fn(
             step=step,
@@ -886,31 +993,33 @@ Use labels only for evaluation, never for training.
         except Exception as exc:
             evaluator_errors["model"] = str(exc)
 
-        biology_eval_out = biology_evaluator.loss_fn(
+        prior_eval_out = prior_evaluator.loss_fn(
             step=step,
-            metrics=tg.Variable(config.metrics, requires_grad=False, role_description="primary metric name"),
-            time_budget=tg.Variable(str(config.timeout), requires_grad=False, role_description="time budget seconds"),
-            downstream_analysis_code=code_bundle["downstream_analysis.py"],
-            suggestion=tg.Variable(suggestion, requires_grad=False, role_description="current consultant suggestion"),
+            suggestion=tg.Variable(prior_suggestion, requires_grad=False, role_description="current prior consultant suggestion"),
             training_history=tg.Variable(json.dumps(perf.get("training_history", []), ensure_ascii=False), requires_grad=False, role_description="training history"),
             stagnation_steps=tg.Variable(str(outer_state.stagnation_steps), requires_grad=False, role_description="current stagnation steps"),
             delta_min=tg.Variable(str(args.delta_min), requires_grad=False, role_description="minimum meaningful validation gain"),
             current_performance=tg.Variable(json.dumps({"perf_summary": pstat, "primary_state": primary_state}, ensure_ascii=False), requires_grad=False, role_description="current performance summary"),
-            downstream_analysis_notes_history=tg.Variable(script_notes_history["downstream_analysis.py"], requires_grad=False, role_description="downstream analysis note history"),
-            downstream_analysis_current_diffs=tg.Variable(script_current_diffs["downstream_analysis.py"], requires_grad=False, role_description="current downstream raw diffs"),
+            prior_construction_notes_history=tg.Variable(script_notes_history["prior_construction.py"], requires_grad=False, role_description="prior construction note history"),
+            prior_construction_current_diffs=tg.Variable(script_current_diffs["prior_construction.py"], requires_grad=False, role_description="current prior construction raw diffs"),
+            prior_construction_code=code_bundle["prior_construction.py"],
+            prior_resource_summary=tg.Variable(config.prior_resource_summary, requires_grad=False, role_description="structured summary of prior resource files"),
+            raw_data_summary=tg.Variable(config.feat_stats, requires_grad=False, role_description="raw data summary"),
             cluster_summary=tg.Variable(json.dumps(cluster_summary, ensure_ascii=False), requires_grad=False, role_description="cluster summary"),
-            downstream_schema=tg.Variable(json.dumps(config.stage_requirements("downstream_analysis.py"), ensure_ascii=False), requires_grad=False, role_description="downstream requirements"),
+            training_logs=tg.Variable(json.dumps(training_logs, ensure_ascii=False), requires_grad=False, role_description="training logs"),
+            paths=tg.Variable(json.dumps(generator.path_prompt_fields, ensure_ascii=False), requires_grad=False, role_description="fixed artifact paths"),
+            prior_schema=tg.Variable(json.dumps(config.current_prior_schema, ensure_ascii=False), requires_grad=False, role_description="prior schema"),
+            pipeline_summary=tg.Variable(json.dumps(pipeline_summary, ensure_ascii=False), requires_grad=False, role_description="pipeline summary"),
             chat_history=_graph_text_var(json.dumps(evaluator_conversation, ensure_ascii=False), evaluator_message_vars, "current step evaluator chat history"),
         )
-        print(f"biology_evaluator_output_step_{step}:\n{biology_eval_out.value}")
-        biology_payload: Dict[str, Any] | None = None
+        print(f"prior_evaluator_output_step_{step}:\n{prior_eval_out.value}")
         try:
-            biology_payload = parse_evaluator_message(biology_eval_out.value, "biology")
-            evaluator_conversation.append(biology_payload)
-            evaluator_message_vars.append(biology_eval_out)
-            evaluator_backprop_vars.append(biology_eval_out)
+            prior_payload = parse_evaluator_message(prior_eval_out.value, "prior")
+            evaluator_conversation.append(prior_payload)
+            evaluator_message_vars.append(prior_eval_out)
+            evaluator_backprop_vars.append(prior_eval_out)
         except Exception as exc:
-            evaluator_errors["biology"] = str(exc)
+            evaluator_errors["prior"] = str(exc)
         critic_out: tg.Variable | None = None
         if args.critic_enabled:
             critic_out = critic_evaluator.loss_fn(
@@ -934,10 +1043,10 @@ Use labels only for evaluation, never for training.
             critic_payload = synthesize_critic_payload_from_evaluators(
                 step=step,
                 evaluator_payloads={
-                    "prior": prior_payload,
+                    "biology": biology_payload,
                     "data_science": data_science_payload,
                     "model": model_payload,
-                    "biology": biology_payload,
+                    "prior": prior_payload,
                 },
             )
             print(f"critic_output_step_{step}:\n{json.dumps(critic_payload, indent=2, ensure_ascii=False)}")
@@ -994,7 +1103,7 @@ Use labels only for evaluation, never for training.
             architecture_fingerprint=architecture_fingerprint,
             design_summary=design_summary,
             decision_rationale=decision_rationale,
-            primary_metric="ari",
+            primary_metric=primary_metric,
             metric_value=current_metric_value,
             gain=primary_gain,
             stagnation=outer_state.stagnation_steps,
@@ -1020,7 +1129,7 @@ Use labels only for evaluation, never for training.
                 architecture_fingerprint=architecture_fingerprint,
                 design_summary=design_summary,
                 decision_rationale=decision_rationale,
-                primary_metric="ari",
+                primary_metric=primary_metric,
                 metric_value=current_metric_value,
                 metric_gain=primary_gain,
                 result=classify_decision_result(run_success=bool(run_result.get("success", False)), primary_gain=primary_gain, metric_value=current_metric_value),
@@ -1046,8 +1155,9 @@ Use labels only for evaluation, never for training.
             cluster_metrics=cluster_metrics,
             perf=perf,
             executed_script_dir=script_dir,
-            best_script_dir=os.path.join(config.code_dir, "code_best_ari"),
+            best_script_dir=os.path.join(config.code_dir, f"code_best_{primary_metric}"),
             final_out_dir=config.final_out_dir,
+            primary_metric_key=primary_metric,
         )
 
         for filename in STAGE_FILENAMES:
@@ -1140,6 +1250,7 @@ Use labels only for evaluation, never for training.
                 hard_constraints=hard_constraints,
                 history_digest=notes_text,
                 consultant_history_context=consultant_history_context,
+                analyst_plan=analyst_plan_text,
             )
             reconsult_output = consultant.generate(prompt=reconsult_query)
             print(f"consultant_output_step_{step}:\n{reconsult_output}")
@@ -1158,11 +1269,11 @@ Use labels only for evaluation, never for training.
                     plan_fingerprint=plan_fingerprint(task_summary["task_description"], task_summary["suggestion"], {}),
                 ),
             )
-            prior_evaluator = TextGradEvaluator(config=config, engine_name=args.engine, task_decrp=task_summary["task_description"], background=background, eval_type="prior")
-            model_evaluator = TextGradEvaluator(config=config, engine_name=args.engine, task_decrp=task_summary["task_description"], background=background, eval_type="model")
-            data_science_evaluator = TextGradEvaluator(config=config, engine_name=args.engine, task_decrp=task_summary["task_description"], background=background, eval_type="data_science")
-            biology_evaluator = TextGradEvaluator(config=config, engine_name=args.engine, task_decrp=task_summary["task_description"], background=background, eval_type="biology")
-            critic_evaluator = TextGradEvaluator(config=config, engine_name=args.engine, task_decrp=task_summary["task_description"], background=background, eval_type="critic")
+            prior_evaluator = TextGradEvaluator(config=config, engine_name=args.engine, task_decrp=task_summary["task_description"], background=consultant_background, eval_type="prior", evaluation_guidance=evaluation_guidance.for_role("prior"))
+            model_evaluator = TextGradEvaluator(config=config, engine_name=args.engine, task_decrp=task_summary["task_description"], background=consultant_background, eval_type="model", evaluation_guidance=evaluation_guidance.for_role("model"))
+            data_science_evaluator = TextGradEvaluator(config=config, engine_name=args.engine, task_decrp=task_summary["task_description"], background=consultant_background, eval_type="data_science", evaluation_guidance=evaluation_guidance.for_role("data_science"))
+            biology_evaluator = TextGradEvaluator(config=config, engine_name=args.engine, task_decrp=task_summary["task_description"], background=consultant_background, eval_type="biology", evaluation_guidance=evaluation_guidance.for_role("biology"))
+            critic_evaluator = TextGradEvaluator(config=config, engine_name=args.engine, task_decrp=task_summary["task_description"], background=consultant_background, eval_type="critic", evaluation_guidance=evaluation_guidance.for_role("critic"))
             script_notebook = ScriptNotebook(engine_name=args.engine, task_description=task_summary["task_description"])
             code_bundle = None
             optimizers = {}

@@ -134,6 +134,7 @@ def build_reconsult_query(
     hard_constraints: List[str],
     history_digest: str,
     consultant_history_context: str,
+    analyst_plan: str = "<not available>",
 ) -> str:
     return (
         "You are reconsulted to produce a new improved plan for the same task.\n\n"
@@ -141,6 +142,9 @@ def build_reconsult_query(
         f"TASK_DESCRIPTION={task_description}\n"
         f"BACKGROUND={background}\n"
         "[/TASK_BLOCK]\n\n"
+        "[ANALYST_EVALUATION_PLAN_BLOCK]\n"
+        f"{analyst_plan}\n"
+        "[/ANALYST_EVALUATION_PLAN_BLOCK]\n\n"
         "[CURRENT_PLAN_BLOCK]\n"
         f"SUGGESTION={current_suggestion}\n"
         f"PRIOR_PLAN={current_prior_plan}\n"
@@ -195,7 +199,9 @@ def _validate_prior_schema(prior_schema: Dict[str, Any]) -> None:
             raise ValueError(f"Consultant PRIOR_SCHEMA_JSON uses placeholder file name: {file_name}")
         shape = item.get("shape")
         if shape is not None:
-            if not isinstance(shape, list) or not shape or not all(isinstance(dim, str) and dim.strip() for dim in shape):
+            if shape == []:
+                continue
+            if not isinstance(shape, list) or not all(isinstance(dim, str) and dim.strip() for dim in shape):
                 raise ValueError("Consultant PRIOR_SCHEMA_JSON shape must be a non-empty list of symbolic dimension strings when provided")
 
 
@@ -263,6 +269,9 @@ def _normalize_prior_file_entry(item: Dict[str, Any]) -> Dict[str, Any]:
         item.get("dtype") or item.get("type") or item.get("format") or item.get("file_type"),
     )
     shape = _normalize_shape(item.get("shape") or item.get("dimensions") or item.get("dims"))
+    normalized.pop("shape", None)
+    normalized.pop("dimensions", None)
+    normalized.pop("dims", None)
 
     normalized["file_name"] = file_name
     normalized["dtype"] = dtype
@@ -378,13 +387,21 @@ class TextGradConsultant:
         rag_prior_resource_context: str = "RAG_PRIOR_RESOURCE_CONTEXT\n<none>",
         rag_prior_method_context: str = "RAG_PRIOR_METHOD_CONTEXT\n<none>",
         rag_model_design_context: str = "RAG_MODEL_DESIGN_CONTEXT\n<none>",
+        analyst_plan: str = "<not available>",
     ):
         api_dir_text = api_dir or "<not provided>"
         dataset_dir_text = dataset_dir or "<not provided>"
-        prior_resource_paths = ", ".join(
-            os.path.join(dataset_dir_text, name)
-            for name in ["MsigDB.csv", "NeST.tsv", "GO_terms.csv", "Cell_marker_Human.xlsx", "meta_info.csv"]
-        ) if dataset_dir_text and dataset_dir_text != "<not provided>" else "<omitted>"
+        prior_resource_paths = "<omitted>"
+        if dataset_dir_text and dataset_dir_text != "<not provided>":
+            try:
+                summary = json.loads(str(getattr(self.config, "prior_resource_summary", "") or ""))
+                resources = summary.get("prior_resources", [])
+                paths = [str(r.get("file_path", "")).strip() for r in resources if isinstance(r, dict)]
+                paths = [p for p in paths if p]
+                if paths:
+                    prior_resource_paths = ", ".join(paths)
+            except (json.JSONDecodeError, TypeError, AttributeError):
+                prior_resource_paths = "<omitted>"
 
         if not include_samples or samples is None:
             samples = "(omitted; see background/file path)"
@@ -418,6 +435,7 @@ class TextGradConsultant:
                                         rag_prior_resource_context=rag_prior_resource_context,
                                         rag_prior_method_context=rag_prior_method_context,
                                         rag_model_design_context=rag_model_design_context,
+                                        analyst_plan=analyst_plan,
                                         mcp_tools=mcp_tools_text,
                                         metrics=self.config.metrics, samples=samples, background=background)
             else:
@@ -434,6 +452,7 @@ class TextGradConsultant:
                     rag_prior_resource_context=rag_prior_resource_context,
                     rag_prior_method_context=rag_prior_method_context,
                     rag_model_design_context=rag_model_design_context,
+                    analyst_plan=analyst_plan,
                     mcp_tools=mcp_tools_text,
                     samples=samples, background=background)
 
@@ -451,6 +470,7 @@ class TextGradConsultant:
                 rag_prior_resource_context=rag_prior_resource_context,
                 rag_prior_method_context=rag_prior_method_context,
                 rag_model_design_context=rag_model_design_context,
+                analyst_plan=analyst_plan,
                 mcp_tools=mcp_tools_text,
                 id_col=id_col, samples=samples, background=background)
 

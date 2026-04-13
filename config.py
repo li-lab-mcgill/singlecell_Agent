@@ -12,6 +12,11 @@ from typing import Any, Dict, List, Optional, Set, Tuple, Union
 import numpy as np
 import pandas as pd
 import textgrad as tg
+from evaluation_plan import (
+    REQUIRED_COMBINED_METRIC_KEY,
+    build_analyst_plan_text,
+    normalize_evaluation_plan,
+)
 from multieval_types import STAGE_FILENAMES
 
 FIXED_DATA_PREPROCESS_REQUIREMENTS: Dict[str, Any] = {
@@ -46,7 +51,7 @@ FIXED_MODEL_REQUIREMENTS: Dict[str, Any] = {
     },
 }
 
-FIXED_DOWNSTREAM_REQUIREMENTS: Dict[str, Any] = {
+BASE_DOWNSTREAM_REQUIREMENTS: Dict[str, Any] = {
     "required_outputs": [
         "cluster_assignments",
         "cluster_metrics",
@@ -59,7 +64,11 @@ FIXED_DOWNSTREAM_REQUIREMENTS: Dict[str, Any] = {
         },
         "cluster_metrics": {
             "format": "json",
-            "required_keys": ["ari"],
+            "required_keys": ["combined_score"],
+        },
+        "cluster_summary": {
+            "format": "json",
+            "required_keys": [],
         },
     },
 }
@@ -103,6 +112,7 @@ class Config:
             "decision_reason": "",
             "selected_resource_names": [],
         }
+        self.current_evaluation_plan: Dict[str, Any] = {}
         self.task_types = ["Regression", "Classification", "Clustering", "Integration"]
         self.learning_types = ["Supervised", "Unsupervised", "Self-supervised"]
         self.id_column = id_column
@@ -175,6 +185,27 @@ class Config:
             "selected_resource_names": [str(item).strip() for item in selected_resource_names if str(item).strip()],
         }
 
+    def apply_evaluation_plan(self, plan: Dict[str, Any]) -> None:
+        normalized = normalize_evaluation_plan(plan)
+        self.current_evaluation_plan = deepcopy(normalized)
+        self.metrics = REQUIRED_COMBINED_METRIC_KEY
+
+    def current_evaluation_plan_text(self) -> str:
+        if not self.current_evaluation_plan:
+            raise RuntimeError("Evaluation plan has not been applied")
+        return build_analyst_plan_text(self.current_evaluation_plan)
+
+    def combined_metric_spec(self) -> Dict[str, Any]:
+        if not self.current_evaluation_plan:
+            raise RuntimeError("Evaluation plan has not been applied")
+        spec = self.current_evaluation_plan.get("combined_metric_spec", {})
+        if not isinstance(spec, dict) or not spec:
+            raise RuntimeError("Combined metric spec is missing from current evaluation plan")
+        return deepcopy(spec)
+
+    def primary_metric_key(self) -> str:
+        return str(self.combined_metric_spec().get("metric_key") or REQUIRED_COMBINED_METRIC_KEY).strip() or REQUIRED_COMBINED_METRIC_KEY
+
     def use_priors(self) -> bool:
         return bool(self.current_prior_decision.get("use_priors", True))
 
@@ -202,11 +233,22 @@ class Config:
         if filename == "model_training.py":
             return deepcopy(FIXED_MODEL_REQUIREMENTS)
         if filename == "downstream_analysis.py":
-            return deepcopy(FIXED_DOWNSTREAM_REQUIREMENTS)
+            downstream_schema = self.downstream_requirements()
+            downstream_schema["evaluation_experiments"] = deepcopy(self.current_evaluation_plan.get("evaluation_experiments", []))
+            downstream_schema["combined_metric_spec"] = self.combined_metric_spec()
+            return downstream_schema
         return {"required_outputs": [], "artifacts": {}}
 
     def downstream_requirements(self) -> Dict[str, Any]:
-        return deepcopy(FIXED_DOWNSTREAM_REQUIREMENTS)
+        if not self.current_evaluation_plan:
+            raise RuntimeError("Evaluation plan has not been applied")
+        downstream = self.current_evaluation_plan.get("downstream_requirements", {})
+        if not isinstance(downstream, dict) or not downstream:
+            raise RuntimeError("Downstream requirements are missing from current evaluation plan")
+        merged = deepcopy(BASE_DOWNSTREAM_REQUIREMENTS)
+        merged["required_outputs"] = deepcopy(downstream.get("required_outputs", merged["required_outputs"]))
+        merged["artifacts"].update(deepcopy(downstream.get("artifacts", {})))
+        return merged
 
     @staticmethod
     def _infer_prior_format(file_name: str) -> str:

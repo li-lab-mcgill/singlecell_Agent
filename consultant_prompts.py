@@ -32,11 +32,11 @@ You will receive:
 - `TASK`: The single-cell analysis objective.
 - `DATA_SUMMARY`: Description of the single-cell dataset (species, tissue, assay, number of cells, number of genes/features, available annotations).
 - `PRIOR_RESOURCES`: A list of available prior knowledge sources with brief descriptions. This list may be incomplete — you may suggest additional public resources if they would meaningfully improve the prior.
-- `DATASET_CONTEXT`: External knowledge about the biological system and preprocessing requirements.
-- `PRIOR_RESOURCE_CONTEXT`: External knowledge about what the available prior resources contain, their coverage, limitations, and relevance.
-- `PRIOR_METHOD_CONTEXT`: External knowledge about prior-guided vs prior-free methods, including comparisons, ablations, and benchmarks.
-- `METRICS`: The evaluation metrics used to assess the model (e.g., Silhouette, ARI, NMI for clustering; AUROC, AUPRC for classification).
-- `EXTERNAL_KNOWLEDGE`: Excerpts from research papers, method documentation, or technical references relevant to the task. These are provided as reference material. Use them as a source of inspiration for prior design choices, to identify proven strategies for similar tasks, or to justify your decisions. Do not follow them blindly: adapt ideas to the specific dataset and task rather than copying an approach wholesale. If the external knowledge describes a method that assumes a different data modality, species, or task type, note the mismatch and adjust accordingly.
+- `DATASET_CONTEXT`: Structured paper summaries about the biological system and preprocessing requirements. These summaries may also include a section-fetch contract of the form `fetch_paper_section(paper_id, section_type)`.
+- `PRIOR_RESOURCE_CONTEXT`: Structured paper summaries about what the available prior resources contain, their coverage, limitations, and relevance. These summaries may also include a section-fetch contract of the form `fetch_paper_section(paper_id, section_type)`.
+- `PRIOR_METHOD_CONTEXT`: Structured paper summaries about prior-guided vs prior-free methods, including comparisons, ablations, and benchmarks. These summaries may also include a section-fetch contract of the form `fetch_paper_section(paper_id, section_type)`.
+- `METRICS`: The optimization target and component metrics used to assess the model (for example `combined_score` plus task-relevant clustering, biological, or robustness metrics).
+- `EXTERNAL_KNOWLEDGE`: Structured paper summaries and optional section fetch context relevant to the task. Use them as reference material and drill into methods/results sections when the summaries indicate a paper is especially relevant.
  
 
 You MUST produce your response strictly inside the following tags:
@@ -115,7 +115,7 @@ A prior consultant has already decided whether priors should be used. If priors 
 
 You will receive:
 - `TASK`: The analysis objective and learning type (e.g., unsupervised clustering).
-- `METRICS`: The target evaluation metrics (e.g., Silhouette, ARI, NMI).
+- `METRICS`: The target optimization metric and supporting component metrics (for example `combined_score` plus task-relevant component metrics).
 - `DATA_SUMMARY`: Dataset statistics — number of cells, features, species, assay type, sample data, and background.
 - `PRIOR_DECISION`: Whether priors should be used and why.
 - `PRIOR_PLAN`: The prior consultant's full plan, including resource selection reasoning and integration rationale.
@@ -123,7 +123,7 @@ You will receive:
 - `PRIOR_RESOURCES`: Available prior resource files and their paths.
 - `AVAILABLE_TOOLS`: API directory, dataset directory, and MCP tools available to the code agent.
 - `OUTPUT_PATHS`: Fixed file paths where the pipeline must write its final outputs.
-- `EXTERNAL_KNOWLEDGE`: Excerpts from research papers, method documentation, or technical references relevant to the task. These are provided as reference material. Use them as a source of inspiration for prior design choices, to identify proven strategies for similar tasks, or to justify your decisions. Do not follow them blindly: adapt ideas to the specific dataset and task rather than copying an approach wholesale. If the external knowledge describes a method that assumes a different data modality, species, or task type, note the mismatch and adjust accordingly.
+- `EXTERNAL_KNOWLEDGE`: Structured paper summaries and optional section fetch context relevant to the task. Use them as reference material and drill into methods/results sections when the summaries indicate a paper is especially relevant.
  
 
 ---
@@ -182,7 +182,7 @@ Design the evaluation and downstream analysis pipeline:
 1. Specify how to compute per-cluster DEGs or marker genes (e.g., Wilcoxon rank-sum test via `sc.tl.rank_genes_groups`).
 2. Specify how to produce cluster summaries (top DEGs per cluster, marker gene overlap).
 3. Specify how to generate embeddings visualization (e.g., UMAP on the latent space).
-
+4. Specify how to implement the analyst evaluation plan experiments.
 
 The pipeline must write the following files to the fixed paths provided in the query:
 - **Cluster assignments CSV** → `{cluster_assignments_out_path}`: Specify the required columns and format.
@@ -212,6 +212,7 @@ The complete plan.
 - If `PRIOR_DECISION` says priors are enabled, every architectural choice must reference the prior format: explain how the prior enters the model and why the chosen architecture is the right way to consume it.
 - Dimension specifications must use concrete numbers from `DATA_SUMMARY` where available (e.g., "input_dim = 2000 HVGs" not "input_dim = n_features").
 - All output files must be written to the exact paths provided in `OUTPUT_PATHS`. Do not invent new output paths.
+- Every metric used in the combined metric computation must be written explicitly to `cluster_metrics.json`.
 - If the task is unsupervised, explain how validation metrics are computed without labels (e.g., reconstruction loss, Silhouette on held-out set).
 """
 
@@ -228,9 +229,10 @@ INPUT_QUERY_SUPERVISED = (
   "Available MCP tools: {mcp_tools}\n"
   "The data statistics: {feat_stats}\n"
   "The prior resource summary: {prior_resource_summary}\n"
-  "Dataset context papers: {rag_dataset_context}\n"
-  "Prior resource papers: {rag_prior_resource_context}\n"
-  "Prior method papers: {rag_prior_method_context}\n"
+  "The analyst evaluation plan: {analyst_plan}\n"
+  "Dataset context paper summaries: {rag_dataset_context}\n"
+  "Prior resource paper summaries: {rag_prior_resource_context}\n"
+  "Prior method paper summaries: {rag_prior_method_context}\n"
   "The following are sample data: \n{samples}\n"
   "Background of the dataset: {background}\n"
 )
@@ -249,8 +251,9 @@ MAIN_INPUT_QUERY_SUPERVISED = (
   "The prior decision summary: {prior_decision_summary}\n"
   "The prior specialist plan: {prior_plan}\n"
   "The prior specialist output summary: {prior_output_summary}\n"
-  "Dataset context papers: {rag_dataset_context}\n"
-  "Model design papers: {rag_model_design_context}\n"
+  "The analyst evaluation plan: {analyst_plan}\n"
+  "Dataset context paper summaries: {rag_dataset_context}\n"
+  "Model design paper summaries: {rag_model_design_context}\n"
   "The following are sample data: \n{samples}\n"
   "Background of the dataset: {background}\n"
 )
@@ -264,9 +267,10 @@ INPUT_QUERY_UNSUPERVISED = (
   "Available MCP tools: {mcp_tools}\n"
   "The data statistics: {feat_stats}\n"
   "The prior resource summary: {prior_resource_summary}\n"
-  "Dataset context papers: {rag_dataset_context}\n"
-  "Prior resource papers: {rag_prior_resource_context}\n"
-  "Prior method papers: {rag_prior_method_context}\n"
+  "The analyst evaluation plan: {analyst_plan}\n"
+  "Dataset context paper summaries: {rag_dataset_context}\n"
+  "Prior resource paper summaries: {rag_prior_resource_context}\n"
+  "Prior method paper summaries: {rag_prior_method_context}\n"
   "Sample data: {samples}\n"
   "Background of the dataset: {background}\n"
 )
@@ -284,8 +288,9 @@ MAIN_INPUT_QUERY_UNSUPERVISED = (
   "The prior decision summary: {prior_decision_summary}\n"
   "The prior specialist plan: {prior_plan}\n"
   "The prior specialist output summary: {prior_output_summary}\n"
-  "Dataset context papers: {rag_dataset_context}\n"
-  "Model design papers: {rag_model_design_context}\n"
+  "The analyst evaluation plan: {analyst_plan}\n"
+  "Dataset context paper summaries: {rag_dataset_context}\n"
+  "Model design paper summaries: {rag_model_design_context}\n"
   "Sample data: {samples}\n"
   "Background of the dataset: {background}\n"
 )
@@ -300,9 +305,10 @@ INPUT_QUERY_UNSUPERVISED_LABEL = (
   "Available MCP tools: {mcp_tools}\n"
   "The data statistics: {feat_stats}\n"
   "The prior resource summary: {prior_resource_summary}\n"
-  "Dataset context papers: {rag_dataset_context}\n"
-  "Prior resource papers: {rag_prior_resource_context}\n"
-  "Prior method papers: {rag_prior_method_context}\n"
+  "The analyst evaluation plan: {analyst_plan}\n"
+  "Dataset context paper summaries: {rag_dataset_context}\n"
+  "Prior resource paper summaries: {rag_prior_resource_context}\n"
+  "Prior method paper summaries: {rag_prior_method_context}\n"
   "Sample data: {samples}\n"
   "Background of the dataset: {background}\n"
 )
@@ -321,8 +327,9 @@ MAIN_INPUT_QUERY_UNSUPERVISED_LABEL = (
   "The prior decision summary: {prior_decision_summary}\n"
   "The prior specialist plan: {prior_plan}\n"
   "The prior specialist output summary: {prior_output_summary}\n"
-  "Dataset context papers: {rag_dataset_context}\n"
-  "Model design papers: {rag_model_design_context}\n"
+  "The analyst evaluation plan: {analyst_plan}\n"
+  "Dataset context paper summaries: {rag_dataset_context}\n"
+  "Model design paper summaries: {rag_model_design_context}\n"
   "Sample data: {samples}\n"
   "Background of the dataset: {background}\n"
 )

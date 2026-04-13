@@ -6,12 +6,12 @@ import random
 import re
 import time
 from pathlib import Path
-from typing import Dict, Iterable, List, Optional
+from typing import Dict, Iterable, List, Optional, Tuple
 from xml.etree import ElementTree as ET
 
 import requests
 
-from rag_types import CoreFetchResult, RAGDocument
+from rag_types import CoreFetchResult, RAGDocument, RAGSection
 
 METHOD_TITLE_RE = re.compile(
     r"(?i)^(?:[0-9IVXLCDM]+[.)]?\s+)?(?:methods?|methodology|materials\s+and\s+methods?|methods\s+and\s+materials|approach|experimental\s+methods?)\s*:?\s*$"
@@ -111,26 +111,81 @@ def _extract_text_recursive(elem: Optional[ET.Element]) -> str:
     return " ".join(parts)
 
 
-def _extract_xml_sections(root: ET.Element) -> Dict[str, str]:
-    sections: Dict[str, str] = {}
-    for sec in root.findall(".//sec"):
+def normalize_section_type(title: str) -> str:
+    cleaned = _normalize_text(title).lower()
+    if not cleaned:
+        return "supplement"
+    if any(token in cleaned for token in ["abstract", "summary"]):
+        return "abstract"
+    if any(token in cleaned for token in ["introduction", "background"]):
+        return "introduction"
+    if any(token in cleaned for token in ["methods", "methodology", "materials and methods", "methods and materials", "experimental methods", "approach"]):
+        return "methods"
+    if "results" in cleaned:
+        return "results"
+    if any(token in cleaned for token in ["discussion", "interpretation"]):
+        return "discussion"
+    if any(token in cleaned for token in ["conclusion", "conclusions"]):
+        return "conclusion"
+    return "supplement"
+
+
+def _extract_xml_sections(root: ET.Element) -> List[RAGSection]:
+    sections: List[RAGSection] = []
+    for order, sec in enumerate(root.findall(".//sec")):
         title_elem = sec.find("./title")
         title = _normalize_text(_extract_text_recursive(title_elem))
         if not title:
             continue
-        paragraphs = [_normalize_text(_extract_text_recursive(node)) for node in sec.findall(".//p")]
+        paragraphs = [_normalize_text(_extract_text_recursive(node)) for node in sec.findall("./p")]
+        if not paragraphs:
+            paragraphs = [_normalize_text(_extract_text_recursive(node)) for node in sec.findall(".//p")]
         content = "\n\n".join(paragraph for paragraph in paragraphs if paragraph)
-        if content:
-            sections[title] = content
+        if not content:
+            continue
+        section_type = normalize_section_type(title)
+        section_id = f"{section_type}:{order}"
+        sections.append(
+            RAGSection(
+                section_id=section_id,
+                section_type=section_type,
+                heading=title,
+                text=content,
+                order=order,
+                metadata={},
+            )
+        )
     return sections
 
 
-def _extract_methods_from_sections(sections: Dict[str, str]) -> str:
+def _finalize_sections(sections: List[RAGSection]) -> List[RAGSection]:
+    finalized: List[RAGSection] = []
+    type_counts: Dict[str, int] = {}
+    for order, section in enumerate(sections):
+        section_type = normalize_section_type(section.section_type or section.heading)
+        type_index = type_counts.get(section_type, 0)
+        type_counts[section_type] = type_index + 1
+        finalized.append(
+            RAGSection(
+                section_id=f"{section_type}:{type_index}",
+                section_type=section_type,
+                heading=section.heading,
+                text=section.text,
+                order=order,
+                metadata=dict(section.metadata),
+            )
+        )
+    return finalized
+
+
+def _extract_methods_from_sections(sections: List[RAGSection]) -> str:
     if not sections:
         return ""
     selected: List[str] = []
     collecting = False
-    for title, text in sections.items():
+    for section in sections:
+        title = section.heading
+        text = section.text
         if METHOD_TITLE_RE.match(title):
             collecting = True
         elif collecting and SECTION_STOP_RE.match(title):
@@ -436,19 +491,22 @@ def fetch_github_documents(search_topics: Optional[Iterable[Dict[str, object]]] 
 
 
 def resolve_pmcid_for_pubmed(pmid: str) -> str:
-    response = requests.get(
-        "https://pmc.ncbi.nlm.nih.gov/tools/idconv/api/v1/articles/",
-        params={
-            "ids": pmid,
-            "idtype": "pmid",
-            "format": "json",
-            "email": _require_env("NCBI_EMAIL"),
-            "tool": "singlecell_agent_rag",
-        },
-        timeout=30,
-    )
-    response.raise_for_status()
-    _sleep(_ncbi_delay())
+    try:
+        response = _retry_get(
+            _NCBI_SESSION,
+            "https://pmc.ncbi.nlm.nih.gov/tools/idconv/api/v1/articles/",
+            params={
+                "ids": pmid,
+                "idtype": "pmid",
+                "format": "json",
+                "email": _require_env("NCBI_EMAIL"),
+                "tool": "singlecell_agent_rag",
+            },
+            timeout=30,
+            base_delay=_ncbi_delay(),
+        )
+    except (requests.ConnectionError, requests.Timeout, requests.HTTPError):
+        return ""
     records = response.json().get("records", [])
     for record in records:
         pmcid = str(record.get("pmcid", "")).strip().replace("PMC", "")
@@ -474,8 +532,26 @@ def fetch_pmc_core_document(document: RAGDocument) -> Optional[CoreFetchResult]:
     xml_text = _fetch_pmc_xml(pmcid)
     root = ET.fromstring(xml_text)
     sections = _extract_xml_sections(root)
+    if document.abstract:
+        sections = [
+            RAGSection(
+                section_id="abstract:lead",
+                section_type="abstract",
+                heading="Abstract",
+                text=document.abstract,
+                order=-1,
+                metadata={},
+            )
+        ] + sections
+    sections = _finalize_sections(sections)
     methods_text = _extract_methods_from_sections(sections)
-    body_text = _chunk_text_blocks("\n\n".join(f"{title}\n{text}" for title, text in sections.items()))
+    body_text = _chunk_text_blocks(
+        "\n\n".join(
+            f"{section.heading}\n{section.text}"
+            for section in sections
+            if str(section.text).strip()
+        )
+    )
     enriched_text = body_text
     if not enriched_text:
         return None
@@ -493,6 +569,7 @@ def fetch_pmc_core_document(document: RAGDocument) -> Optional[CoreFetchResult]:
         doc_type="core_full_text",
         categories=list(document.categories),
         metadata={"pmid": document.source_id, "origin_source": "pubmed", "has_methods": bool(methods_text)},
+        sections=sections,
     )
     return CoreFetchResult(
         document=enriched_doc,
@@ -513,8 +590,26 @@ def fetch_biorxiv_core_document(document: RAGDocument) -> Optional[CoreFetchResu
         return None
     root = ET.fromstring(response.text)
     sections = _extract_xml_sections(root)
+    if document.abstract:
+        sections = [
+            RAGSection(
+                section_id="abstract:lead",
+                section_type="abstract",
+                heading="Abstract",
+                text=document.abstract,
+                order=-1,
+                metadata={},
+            )
+        ] + sections
+    sections = _finalize_sections(sections)
     methods_text = _extract_methods_from_sections(sections)
-    body_text = _chunk_text_blocks("\n\n".join(f"{title}\n{text}" for title, text in sections.items()))
+    body_text = _chunk_text_blocks(
+        "\n\n".join(
+            f"{section.heading}\n{section.text}"
+            for section in sections
+            if str(section.text).strip()
+        )
+    )
     enriched_text = body_text
     if not enriched_text:
         return None
@@ -537,6 +632,7 @@ def fetch_biorxiv_core_document(document: RAGDocument) -> Optional[CoreFetchResu
             "has_methods": bool(methods_text),
             "jats_xml_path": xml_path,
         },
+        sections=sections,
     )
     return CoreFetchResult(
         document=enriched_doc,

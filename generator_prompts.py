@@ -129,6 +129,7 @@ Coder — an AI computational biologist specializing in single-cell data analysi
 
 Inputs you will receive in the query:
 - The consultant's plan on clustering algorithm, hyperparameters, evaluation metrics, DEG method, and downstream output specifications.
+- The Analyst evaluation plan, including experiment design, dynamic downstream requirements, and the `combined_score` definition.
 - Fixed file paths for: embeddings, embedding metadata, preprocessed data splits, and output locations.
 
 Guidelines:
@@ -143,18 +144,20 @@ Guidelines:
 5. Assign cluster labels to all cells (train + validation + test).
  
 **Evaluation**:
-6. Compute the evaluation metrics specified in the query (`METRICS`). 
+6. Compute every component metric required by the Analyst's `combined_metric_spec` and any additional metrics required by the dynamic downstream requirements.
+7. Compute `combined_score` exactly from the provided `combined_metric_spec`. Emit it as a numeric value in `cluster_metrics.json`.
  
 **Downstream analysis**:
-8. Compute per-cluster DEGs or marker genes using the method specified in the plan (e.g., Wilcoxon rank-sum test via `sc.tl.rank_genes_groups`).
-9. Produce cluster summaries: top DEGs per cluster, marker gene overlap with cellMarker csv file provided in Prior resource summary
-10. Generate any additional downstream outputs specified in the plan (e.g., UMAP visualization coordinates).
+8. Execute the Analyst's evaluation experiments insofar as they can be supported by the required downstream artifacts.
+9. Compute per-cluster DEGs or marker genes using the method specified in the plan (e.g., Wilcoxon rank-sum test via `sc.tl.rank_genes_groups`).
+10. Produce cluster summaries: top DEGs per cluster, marker gene overlap with cellMarker csv file provided in Prior resource summary, and any required summary evidence requested by the evaluation experiments.
+11. Generate any additional downstream outputs specified in the plan (e.g., UMAP visualization coordinates), but keep the required downstream artifact filenames unchanged.
  
 **Outputs**:
-11. Save all required outputs to the fixed paths provided in the query:
+12. Save all required outputs to the fixed paths provided in the query:
     - Cluster assignments CSV: `{cluster_assignments_out_path}` — must include `cell_id` and `cluster` columns, with row alignment matching the embeddings.
-    - Cluster metrics JSON: `{cluster_metrics_out_path}` — must include all computed evaluation metrics as key-value pairs.
-    - Cluster summary JSON: `{cluster_summary_out_path}` — must include per-cluster entries with top DEGs, marker overlap (if available), and cluster size.
+    - Cluster metrics JSON: `{cluster_metrics_out_path}` — must include all required component metrics and `combined_score`.
+    - Cluster summary JSON: `{cluster_summary_out_path}` — must include all required evidence fields from the dynamic downstream requirements.
 """ + _COMMON_STAGE_SYSTEM_PROMPT
 
 
@@ -178,6 +181,7 @@ Use these evaluation metrics: {metrics}
 Time budget given for running the code: {time_budget} seconds
 Existing stage bundle summary: {script_summaries}
 Current stage previous code: {existing_code}
+Analyst evaluation plan: {analyst_evaluation_plan}
 All listed paths are fixed shared artifact paths and must be used directly.
 """
 
@@ -221,6 +225,7 @@ Prior consultant PRIOR_SCHEMA_JSON: {prior_schema_json}
 Current stage input and output requirements JSON: {stage_requirements_json}
 Current stage input and output paths: {stage_context}
 Existing stage bundle summary: {script_summaries}
+Analyst evaluation plan: {analyst_evaluation_plan}
 Current stage previous code: {target_code}
 
 Error message:

@@ -101,10 +101,13 @@ class StageScriptGenerator:
         return labels.get(key, key)
 
     def _primary_metric(self) -> str:
-        metrics = self.config.metrics
-        if isinstance(metrics, list):
-            return str(metrics[0]).strip() if metrics else "ARI"
-        return str(metrics).split(",")[0].strip() if metrics is not None else "ARI"
+        try:
+            return self.config.primary_metric_key()
+        except Exception:
+            metrics = self.config.metrics
+            if isinstance(metrics, list):
+                return str(metrics[0]).strip() if metrics else "combined_score"
+            return str(metrics).split(",")[0].strip() if metrics is not None else "combined_score"
 
     def _stage_requirements_json(self, filename: str) -> str:
         return json.dumps(self.config.stage_requirements(filename), ensure_ascii=False)
@@ -250,6 +253,7 @@ class StageScriptGenerator:
             "time_budget": self.config.timeout,
             "script_summaries": script_summaries,
             "existing_code": existing_code or "<none>",
+            "analyst_evaluation_plan": self.config.current_evaluation_plan_text(),
         }
         return STAGE_QUERY.format(**prompt_fields)
 
@@ -383,6 +387,7 @@ class StageScriptGenerator:
             "stage_requirements_json": self._stage_requirements_json(filename),
             "stage_context": self._stage_context(filename),
             "script_summaries": self.summarize_bundle(code_bundle),
+            "analyst_evaluation_plan": self.config.current_evaluation_plan_text(),
             "target_code": target_var.value,
             "error": error,
         }

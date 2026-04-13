@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import time
 from dataclasses import dataclass, field
 from typing import Any, Dict, List
@@ -15,6 +16,78 @@ STAGE_FILES: List[Dict[str, str]] = [
 STAGE_FILENAMES: List[str] = [item["filename"] for item in STAGE_FILES]
 STAGE_TAG_BY_FILE: Dict[str, str] = {item["filename"]: item["tag"] for item in STAGE_FILES}
 STAGE_ORDER_INDEX: Dict[str, int] = {item["filename"]: idx for idx, item in enumerate(STAGE_FILES)}
+
+
+@dataclass
+class EvaluatorGuidance:
+    evaluator_role: str
+    what_to_look_for: str
+    what_good_looks_like: str
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "evaluator_role": self.evaluator_role,
+            "what_to_look_for": self.what_to_look_for,
+            "what_good_looks_like": self.what_good_looks_like,
+        }
+
+    def format_for_prompt(self, shared_context: str = "") -> str:
+        base = (
+            f"What to look for:\n{self.what_to_look_for}\n\n"
+            f"What good looks like:\n{self.what_good_looks_like}"
+        )
+        if not shared_context:
+            return base
+        return f"{base}\n\nShared analyst evaluation plan:\n{shared_context}"
+
+
+@dataclass
+class EvaluationGuidance:
+    goal: str
+    dataset_summary: str
+    guidance_per_evaluator: List[EvaluatorGuidance] = field(default_factory=list)
+    expected_downstream_outputs: str = ""
+    query_decomposition: Dict[str, Any] = field(default_factory=dict)
+    evaluation_experiments: List[Dict[str, Any]] = field(default_factory=list)
+    downstream_requirements: Dict[str, Any] = field(default_factory=dict)
+    combined_metric_spec: Dict[str, Any] = field(default_factory=dict)
+
+    def for_role(self, role: str) -> str:
+        shared_context = self.shared_prompt_context()
+        for g in self.guidance_per_evaluator:
+            if g.evaluator_role == role:
+                return g.format_for_prompt(shared_context)
+        return shared_context
+
+    def primary_metric_key(self) -> str:
+        metric_key = str(self.combined_metric_spec.get("metric_key", "")).strip()
+        return metric_key or "combined_score"
+
+    def shared_prompt_context(self) -> str:
+        sections: List[str] = []
+        if self.query_decomposition:
+            sections.append("Analyst query decomposition:\n" + json.dumps(self.query_decomposition, ensure_ascii=False, indent=2))
+        if self.evaluation_experiments:
+            sections.append("Analyst evaluation experiments:\n" + json.dumps(self.evaluation_experiments, ensure_ascii=False, indent=2))
+        if self.expected_downstream_outputs:
+            sections.append(f"Expected downstream outputs:\n{self.expected_downstream_outputs}")
+        if self.downstream_requirements:
+            sections.append("Dynamic downstream requirements:\n" + json.dumps(self.downstream_requirements, ensure_ascii=False, indent=2))
+        if self.combined_metric_spec:
+            sections.append("Combined metric spec:\n" + json.dumps(self.combined_metric_spec, ensure_ascii=False, indent=2))
+        return "\n\n".join(sections)
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "goal": self.goal,
+            "dataset_summary": self.dataset_summary,
+            "guidance_per_evaluator": [g.to_dict() for g in self.guidance_per_evaluator],
+            "expected_downstream_outputs": self.expected_downstream_outputs,
+            "query_decomposition": self.query_decomposition,
+            "evaluation_experiments": self.evaluation_experiments,
+            "downstream_requirements": self.downstream_requirements,
+            "combined_metric_spec": self.combined_metric_spec,
+        }
 
 
 @dataclass

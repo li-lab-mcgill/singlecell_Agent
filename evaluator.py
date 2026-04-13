@@ -23,6 +23,7 @@ from multieval_types import STAGE_FILENAMES
 load_dotenv()
 
 EVALUATOR_ROLES = {"prior", "data_science", "model", "biology"}
+EVALUATOR_MEETING_ORDER = ["biology", "data_science", "model", "prior"]
 CRITIC_TARGETS = {"prior_construction.py", "data_preprocess.py", "model_training.py", "downstream_analysis.py"}
 EVALUATOR_TARGET_BY_ROLE = {
     "prior": "prior_construction.py",
@@ -30,6 +31,10 @@ EVALUATOR_TARGET_BY_ROLE = {
     "model": "model_training.py",
     "biology": "downstream_analysis.py",
 }
+
+
+def _escape_format_braces(text: Any) -> str:
+    return str(text or "").replace("{", "{{").replace("}", "}}")
 
 
 def _parse_json_object(text: str, label: str) -> Dict[str, Any]:
@@ -110,7 +115,7 @@ def critic_plan_from_payload(payload: Dict[str, Any]) -> Dict[str, Any]:
 def synthesize_critic_payload_from_evaluators(*, step: int, evaluator_payloads: Dict[str, Dict[str, Any] | None]) -> Dict[str, Any]:
     targets: Dict[str, Dict[str, str]] = {}
     rationale_parts: List[str] = []
-    for role in ("prior", "data_science", "model", "biology"):
+    for role in EVALUATOR_MEETING_ORDER:
         payload = evaluator_payloads.get(role)
         if not isinstance(payload, dict):
             continue
@@ -134,6 +139,13 @@ def to_float(x: Any) -> float | None:
         return float(x) if x is not None else None
     except Exception:
         return None
+
+
+def _metric_candidates(metric_key: str) -> List[str]:
+    metric = str(metric_key or "").strip()
+    if not metric:
+        metric = "combined_score"
+    return [metric, metric.lower(), metric.upper()]
 
 
 def build_open_issues(*, run_result: Dict[str, Any], primary_state: Dict[str, Any], critic_payload: Dict[str, Any]) -> List[str]:
@@ -168,43 +180,59 @@ def build_instruction_text(critic_targets: Dict[str, Dict[str, str]]) -> str:
     return "\n".join(lines).strip()
 
 
-def update_primary_metric_state(cluster_metrics: Dict[str, Any], best_ari: float | None, best_sil: float | None, delta_min: float, stagnation_steps: int) -> Tuple[float | None, float | None, int, Dict[str, Any]]:
-    cur_ari = to_float(cluster_metrics.get("ari") if isinstance(cluster_metrics, dict) else None)
+def update_primary_metric_state(
+    cluster_metrics: Dict[str, Any],
+    best_ari: float | None,
+    best_sil: float | None,
+    delta_min: float,
+    stagnation_steps: int,
+    primary_metric_key: str = "combined_score",
+) -> Tuple[float | None, float | None, int, Dict[str, Any]]:
+    cur_primary = None
+    if isinstance(cluster_metrics, dict):
+        for candidate in _metric_candidates(primary_metric_key):
+            cur_primary = to_float(cluster_metrics.get(candidate))
+            if cur_primary is not None:
+                break
     cur_sil = to_float(cluster_metrics.get("silhouette") if isinstance(cluster_metrics, dict) else None)
     cur_nmi = to_float(cluster_metrics.get("nmi") if isinstance(cluster_metrics, dict) else None)
-    gain = None if cur_ari is None or best_ari is None else cur_ari - best_ari
-    if cur_ari is None:
+    gain = None if cur_primary is None or best_ari is None else cur_primary - best_ari
+    if cur_primary is None:
         stagnation_steps += 1
     elif best_ari is None or gain is None or gain > delta_min:
         stagnation_steps = 0
     else:
         stagnation_steps += 1
-    previous_best_ari = best_ari
+    previous_best_primary = best_ari
     previous_best_sil = best_sil
-    if cur_ari is not None:
-        best_ari = cur_ari if best_ari is None else max(best_ari, cur_ari)
+    if cur_primary is not None:
+        best_ari = cur_primary if best_ari is None else max(best_ari, cur_primary)
     if cur_sil is not None:
         best_sil = cur_sil if best_sil is None else max(best_sil, cur_sil)
     return best_ari, best_sil, stagnation_steps, {
-        "current_ari": cur_ari,
+        f"current_{primary_metric_key}": cur_primary,
         "current_silhouette": cur_sil,
         "current_nmi": cur_nmi,
-        "previous_best_ari": previous_best_ari,
+        f"previous_best_{primary_metric_key}": previous_best_primary,
         "previous_best_silhouette": previous_best_sil,
-        "previous_best_nmi": None,
+        "primary_metric_key": primary_metric_key,
         "primary_metric_gain": gain,
     }
 
 
 class TextGradEvaluator:
-    def __init__(self, config: Config, engine_name: str, task_decrp: str, background: str = "Not available", eval_type: str = "model"):
+    def __init__(self, config: Config, engine_name: str, task_decrp: str, background: str = "Not available", eval_type: str = "model", evaluation_guidance: str = ""):
         self.config = config
         self.engine_name = engine_name
         self.engine = tg.get_engine(engine_name, max_tokens=7000)
         self.eval_type = eval_type
+        self.evaluation_guidance = evaluation_guidance or "(no evaluation guidance provided)"
+        escaped_task = _escape_format_braces(task_decrp)
+        escaped_guidance = _escape_format_braces(self.evaluation_guidance)
         if eval_type == "prior":
             format_string = PRIOR_FORMAT_STRING.format(
-                task=task_decrp,
+                task=escaped_task,
+                evaluation_guidance=escaped_guidance,
                 step="{step}",
                 metrics=self.config.metrics,
                 time_budget=config.timeout,
@@ -249,7 +277,8 @@ class TextGradEvaluator:
             prompt_role = "system prompt for prior evaluator"
         elif eval_type == "model":
             format_string = MODEL_FORMAT_STRING.format(
-                task=task_decrp,
+                task=escaped_task,
+                evaluation_guidance=escaped_guidance,
                 step="{step}",
                 metrics=self.config.metrics,
                 time_budget=config.timeout,
@@ -290,7 +319,8 @@ class TextGradEvaluator:
             prompt_role = "system prompt for model evaluator"
         elif eval_type == "data_science":
             format_string = DATA_SCIENCE_FORMAT_STRING.format(
-                task=task_decrp,
+                task=escaped_task,
+                evaluation_guidance=escaped_guidance,
                 step="{step}",
                 metrics=self.config.metrics,
                 time_budget=config.timeout,
@@ -335,7 +365,8 @@ class TextGradEvaluator:
             prompt_role = "system prompt for data-science evaluator"
         elif eval_type == "biology":
             format_string = BIOLOGY_FORMAT_STRING.format(
-                task=task_decrp,
+                task=escaped_task,
+                evaluation_guidance=escaped_guidance,
                 step="{step}",
                 metrics=self.config.metrics,
                 time_budget=config.timeout,
@@ -372,7 +403,8 @@ class TextGradEvaluator:
             prompt_role = "system prompt for biology evaluator"
         elif eval_type == "critic":
             format_string = CRITIC_FORMAT_STRING.format(
-                task=task_decrp,
+                task=escaped_task,
+                evaluation_guidance=escaped_guidance,
                 step="{step}",
                 suggestion="{suggestion}",
                 raw_data_summary="{raw_data_summary}",

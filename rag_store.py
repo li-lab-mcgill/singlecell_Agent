@@ -3,10 +3,12 @@ from __future__ import annotations
 import json
 import os
 import re
+import shutil
 from pathlib import Path
 from typing import Dict, Iterable, List, Optional
+from datetime import datetime
 
-from rag_types import RAGChunk, RAGDocument, RAGHit, dedup_key
+from rag_types import RAGChunk, RAGDocument, RAGHit, RAGSection, dedup_key
 
 try:
     import chromadb
@@ -30,6 +32,21 @@ SESSION_GENERAL_COLLECTION = "runtime_session_knowledge_base"
 DEFAULT_LOCAL_EMBEDDING_MODEL = "all-MiniLM-L6-v2"
 DEFAULT_OPENAI_EMBEDDING_MODEL = "text-embedding-3-large"
 
+_MONTH_BY_ABBR = {
+    "jan": 1,
+    "feb": 2,
+    "mar": 3,
+    "apr": 4,
+    "may": 5,
+    "jun": 6,
+    "jul": 7,
+    "aug": 8,
+    "sep": 9,
+    "oct": 10,
+    "nov": 11,
+    "dec": 12,
+}
+
 def _to_chroma_metadata(payload: Dict[str, object]) -> Dict[str, object]:
     converted: Dict[str, object] = {}
     for key, value in payload.items():
@@ -44,6 +61,67 @@ def _to_chroma_metadata(payload: Dict[str, object]) -> Dict[str, object]:
         else:
             converted[key] = str(value)
     return converted
+
+
+def _publication_metadata(published: str) -> Dict[str, object]:
+    text = str(published or "").strip()
+    if not text:
+        return {}
+
+    year_match = re.search(r"\b(19|20)\d{2}\b", text)
+    if not year_match:
+        return {}
+
+    year = int(year_match.group(0))
+    metadata: Dict[str, object] = {"publication_year": year}
+
+    normalized_text = re.sub(r"\s+", " ", text).strip()
+    direct_formats = [
+        ("%Y-%m-%d", "publication_date_iso"),
+        ("%Y/%m/%d", "publication_date_iso"),
+    ]
+    for fmt, key in direct_formats:
+        try:
+            metadata[key] = datetime.strptime(normalized_text, fmt).strftime("%Y-%m-%d")
+            return metadata
+        except ValueError:
+            continue
+
+    year_first_match = re.search(
+        r"\b((19|20)\d{2})\b\s+([A-Za-z]{3,9})(?:\s+(\d{1,2}))?\b",
+        normalized_text,
+        flags=re.IGNORECASE,
+    )
+    month_first_match = re.search(
+        r"\b([A-Za-z]{3,9})\s+(\d{1,2})?,?\s*((19|20)\d{2})\b",
+        normalized_text,
+        flags=re.IGNORECASE,
+    )
+    month = None
+    day = None
+    if year_first_match:
+        month = _MONTH_BY_ABBR.get(year_first_match.group(3)[:3].lower())
+        day_token = year_first_match.group(4)
+        if day_token:
+            parsed_day = int(day_token)
+            if 1 <= parsed_day <= 31:
+                day = parsed_day
+    elif month_first_match:
+        month = _MONTH_BY_ABBR.get(month_first_match.group(1)[:3].lower())
+        day_token = month_first_match.group(2)
+        if day_token:
+            parsed_day = int(day_token)
+            if 1 <= parsed_day <= 31:
+                day = parsed_day
+
+    if month is not None:
+        metadata["publication_month"] = month
+        if day is not None:
+            metadata["publication_day"] = day
+            metadata["publication_date_iso"] = f"{year:04d}-{month:02d}-{day:02d}"
+        else:
+            metadata["publication_date_iso"] = f"{year:04d}-{month:02d}"
+    return metadata
 
 
 class RAGStore:
@@ -96,6 +174,12 @@ class RAGStore:
         with open(self.manifest_path, "r", encoding="utf-8") as handle:
             payload = json.load(handle)
         return payload if isinstance(payload, dict) else {}
+
+    def reset_runtime_artifacts(self) -> None:
+        for directory in [self.sessions_dir, self.cache_dir]:
+            if directory.exists():
+                shutil.rmtree(directory, ignore_errors=True)
+            directory.mkdir(parents=True, exist_ok=True)
 
     def core_cache_path(self, cache_key: str) -> Path:
         safe_name = re.sub(r"[^a-zA-Z0-9_.:-]+", "_", cache_key)
@@ -218,22 +302,40 @@ class RAGStore:
             collection.upsert(ids=ids[start:end], documents=documents[start:end], metadatas=metadatas[start:end])
 
     def _chunk_document(self, document: RAGDocument) -> List[RAGChunk]:
-        base_text = document.searchable_text()
         chunk_size = 1500 if document.doc_type.startswith("core") else 900
         overlap = 200 if document.doc_type.startswith("core") else 120
-        chunks = self._chunk_text(base_text, chunk_size=chunk_size, overlap=overlap)
-        return [
-            RAGChunk(
-                chunk_id=f"{document.doc_id}::chunk::{idx}",
-                doc_id=document.doc_id,
-                source=document.source,
-                title=document.title,
-                text=chunk,
-                doc_type=document.doc_type,
-                metadata=dict(document.metadata),
-            )
-            for idx, chunk in enumerate(chunks)
-        ]
+        sections = list(document.sections)
+        if not sections:
+            sections = [
+                RAGSection(
+                    section_id="body:0",
+                    section_type="supplement",
+                    heading=document.title or "Document",
+                    text=document.searchable_text(),
+                    order=0,
+                    metadata={},
+                )
+            ]
+
+        all_chunks: List[RAGChunk] = []
+        for section in sections:
+            section_chunks = self._chunk_text(section.text, chunk_size=chunk_size, overlap=overlap)
+            for idx, chunk in enumerate(section_chunks):
+                all_chunks.append(
+                    RAGChunk(
+                        chunk_id=f"{document.doc_id}::section::{section.section_id}::chunk::{idx}",
+                        doc_id=document.doc_id,
+                        source=document.source,
+                        title=document.title,
+                        text=chunk,
+                        doc_type=document.doc_type,
+                        section_type=section.section_type,
+                        section_heading=section.heading,
+                        chunk_index=idx,
+                        metadata={**dict(document.metadata), **dict(section.metadata)},
+                    )
+                )
+        return all_chunks
 
     def build_general_index(self, documents: Iterable[RAGDocument], rebuild: bool = False) -> int:
         if rebuild:
@@ -255,8 +357,14 @@ class RAGStore:
                             "title": chunk.title,
                             "url": document.url,
                             "doc_type": chunk.doc_type,
+                            "chunk_id": chunk.chunk_id,
+                            "paper_id": document.doc_id,
+                            "section_type": chunk.section_type,
+                            "section_heading": chunk.section_heading,
+                            "chunk_index": chunk.chunk_index,
                             "published": document.published,
                             "doi": document.doi,
+                            **_publication_metadata(document.published),
                             **chunk.metadata,
                         }
                     )
@@ -285,8 +393,14 @@ class RAGStore:
                             "title": chunk.title,
                             "url": document.url,
                             "doc_type": chunk.doc_type,
+                            "chunk_id": chunk.chunk_id,
+                            "paper_id": document.doc_id,
+                            "section_type": chunk.section_type,
+                            "section_heading": chunk.section_heading,
+                            "chunk_index": chunk.chunk_index,
                             "published": document.published,
                             "doi": document.doi,
+                            **_publication_metadata(document.published),
                             **chunk.metadata,
                         }
                     )
@@ -316,8 +430,14 @@ class RAGStore:
                             "title": document.title,
                             "url": document.url,
                             "doc_type": document.doc_type,
+                            "chunk_id": chunk.chunk_id,
+                            "paper_id": document.doc_id,
+                            "section_type": chunk.section_type,
+                            "section_heading": chunk.section_heading,
+                            "chunk_index": chunk.chunk_index,
                             "published": document.published,
                             "doi": document.doi,
+                            **_publication_metadata(document.published),
                             "consultant_type": consultant_type,
                             "query_hash": query_hash,
                             **document.metadata,
@@ -378,6 +498,9 @@ class RAGStore:
                     published=str(metadata.get("published", "")),
                     doi=str(metadata.get("doi", "")),
                     is_runtime_fallback=bool(metadata.get("is_runtime_fallback", False)),
+                    chunk_id=str(metadata.get("chunk_id", "")),
+                    section_type=str(metadata.get("section_type", "")),
+                    section_heading=str(metadata.get("section_heading", "")),
                     metadata=dict(metadata),
                 )
             )

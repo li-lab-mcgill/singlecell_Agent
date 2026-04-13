@@ -14,6 +14,37 @@ def dedup_key(doc_id: str, doi: str, title: str) -> tuple[str, str, str]:
 
 
 @dataclass
+class RAGSection:
+    section_id: str
+    section_type: str
+    heading: str
+    text: str
+    order: int = 0
+    metadata: Dict[str, Any] = field(default_factory=dict)
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "section_id": self.section_id,
+            "section_type": self.section_type,
+            "heading": self.heading,
+            "text": self.text,
+            "order": self.order,
+            "metadata": dict(self.metadata),
+        }
+
+    @classmethod
+    def from_dict(cls, payload: Dict[str, Any]) -> "RAGSection":
+        return cls(
+            section_id=str(payload.get("section_id", "")),
+            section_type=str(payload.get("section_type", "")),
+            heading=str(payload.get("heading", "")),
+            text=str(payload.get("text", "")),
+            order=int(payload.get("order", 0) or 0),
+            metadata=payload.get("metadata", {}) if isinstance(payload.get("metadata", {}), dict) else {},
+        )
+
+
+@dataclass
 class RAGDocument:
     doc_id: str
     source: str
@@ -28,9 +59,19 @@ class RAGDocument:
     doc_type: str = "general"
     categories: List[str] = field(default_factory=list)
     metadata: Dict[str, Any] = field(default_factory=dict)
+    sections: List[RAGSection] = field(default_factory=list)
 
     def searchable_text(self) -> str:
-        primary_text = self.text or self.abstract
+        if self.sections:
+            pieces: List[str] = []
+            for section in self.sections:
+                if str(section.heading).strip():
+                    pieces.append(section.heading)
+                if str(section.text).strip():
+                    pieces.append(section.text)
+            primary_text = "\n\n".join(pieces)
+        else:
+            primary_text = self.text or self.abstract
         return "\n\n".join(part for part in [self.title, primary_text] if str(part).strip())
 
     def to_dict(self) -> Dict[str, Any]:
@@ -48,6 +89,7 @@ class RAGDocument:
             "doc_type": self.doc_type,
             "categories": list(self.categories),
             "metadata": dict(self.metadata),
+            "sections": [section.to_dict() for section in self.sections],
         }
 
     @classmethod
@@ -66,6 +108,11 @@ class RAGDocument:
             doc_type=str(payload.get("doc_type", "general")),
             categories=[str(item) for item in payload.get("categories", []) if str(item).strip()],
             metadata=payload.get("metadata", {}) if isinstance(payload.get("metadata", {}), dict) else {},
+            sections=[
+                RAGSection.from_dict(item)
+                for item in payload.get("sections", [])
+                if isinstance(item, dict)
+            ],
         )
 
 
@@ -77,6 +124,9 @@ class RAGChunk:
     title: str
     text: str
     doc_type: str
+    section_type: str = ""
+    section_heading: str = ""
+    chunk_index: int = 0
     metadata: Dict[str, Any] = field(default_factory=dict)
 
 
@@ -93,6 +143,9 @@ class RAGHit:
     published: str = ""
     doi: str = ""
     is_runtime_fallback: bool = False
+    chunk_id: str = ""
+    section_type: str = ""
+    section_heading: str = ""
     metadata: Dict[str, Any] = field(default_factory=dict)
 
 

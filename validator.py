@@ -6,6 +6,7 @@ from typing import Any, Dict, List
 
 import pandas as pd
 
+from evaluation_plan import COMBINED_SCORE_TOLERANCE, compute_combined_score
 from multieval_types import ValidationFailure
 
 
@@ -49,6 +50,36 @@ def _validate_json_file(path: str, required_keys: List[str], target_file: str, o
         missing = [key for key in required_keys if key not in payload]
         if missing:
             return [_failure(target_file, "InvalidSchema", f"JSON output missing required keys: {missing}", output_key=output_key, path=path)]
+    return []
+
+
+def _validate_combined_score(path: str, stage_schema: Dict[str, Any], target_file: str) -> List[ValidationFailure]:
+    combined_metric_spec = stage_schema.get("combined_metric_spec") if isinstance(stage_schema, dict) else None
+    if not isinstance(combined_metric_spec, dict) or not combined_metric_spec:
+        return [_failure(target_file, "InvalidSchema", "Downstream stage schema is missing combined_metric_spec", output_key="cluster_metrics", path=path)]
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            payload = json.load(f)
+    except Exception as exc:
+        return [_failure(target_file, "InvalidSchema", f"Failed to read JSON output at {path}: {exc}", output_key="cluster_metrics", path=path)]
+    try:
+        emitted_score = float(payload.get("combined_score"))
+    except (TypeError, ValueError):
+        return [_failure(target_file, "InvalidSchema", "cluster_metrics.json must contain numeric combined_score", output_key="cluster_metrics", path=path)]
+    try:
+        recomputed = compute_combined_score(payload, combined_metric_spec)
+    except Exception as exc:
+        return [_failure(target_file, "InvalidSchema", f"Unable to recompute combined_score: {exc}", output_key="cluster_metrics", path=path)]
+    if abs(emitted_score - recomputed) > COMBINED_SCORE_TOLERANCE:
+        return [
+            _failure(
+                target_file,
+                "InvalidSchema",
+                f"combined_score does not match recomputed value (emitted={emitted_score}, recomputed={recomputed})",
+                output_key="cluster_metrics",
+                path=path,
+            )
+        ]
     return []
 
 
@@ -107,6 +138,10 @@ def validate_stage_outputs(resolved_artifact_layout: Dict[str, Any], stage_schem
             failures = _validate_json_file(path, schema.get("required_keys", []), target_file, output_key)
             if failures:
                 return failures
+            if target_file == "downstream_analysis.py" and output_key == "cluster_metrics":
+                failures = _validate_combined_score(path, stage_schema, target_file)
+                if failures:
+                    return failures
     return []
 
 
