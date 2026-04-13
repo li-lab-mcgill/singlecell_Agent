@@ -59,6 +59,13 @@ from multieval_types import (
 from rag_agent import ConsultantRAGAgent
 from validator import write_failure_record
 
+EVALUATOR_TARGET_FILE_MAP = {
+    "prior": "prior_construction.py",
+    "data_science": "data_preprocess.py",
+    "model": "model_training.py",
+    "biology": "downstream_analysis.py",
+}
+
 
 class _StreamTee:
     def __init__(self, *streams):
@@ -906,6 +913,7 @@ Use labels only for evaluation, never for training.
         evaluator_conversation: List[Dict[str, Any]] = []
         evaluator_message_vars: List[tg.Variable] = []
         evaluator_backprop_vars: List[tg.Variable] = []
+        evaluator_backprop_vars_by_target: Dict[str, tg.Variable] = {}
         evaluator_errors: Dict[str, str] = {}
         biology_payload: Dict[str, Any] | None = None
         data_science_payload: Dict[str, Any] | None = None
@@ -933,6 +941,7 @@ Use labels only for evaluation, never for training.
             evaluator_conversation.append(biology_payload)
             evaluator_message_vars.append(biology_eval_out)
             evaluator_backprop_vars.append(biology_eval_out)
+            evaluator_backprop_vars_by_target[EVALUATOR_TARGET_FILE_MAP["biology"]] = biology_eval_out
         except Exception as exc:
             evaluator_errors["biology"] = str(exc)
 
@@ -963,6 +972,7 @@ Use labels only for evaluation, never for training.
             evaluator_conversation.append(data_science_payload)
             evaluator_message_vars.append(data_science_eval_out)
             evaluator_backprop_vars.append(data_science_eval_out)
+            evaluator_backprop_vars_by_target[EVALUATOR_TARGET_FILE_MAP["data_science"]] = data_science_eval_out
         except Exception as exc:
             evaluator_errors["data_science"] = str(exc)
 
@@ -990,6 +1000,7 @@ Use labels only for evaluation, never for training.
             evaluator_conversation.append(model_payload)
             evaluator_message_vars.append(model_eval_out)
             evaluator_backprop_vars.append(model_eval_out)
+            evaluator_backprop_vars_by_target[EVALUATOR_TARGET_FILE_MAP["model"]] = model_eval_out
         except Exception as exc:
             evaluator_errors["model"] = str(exc)
 
@@ -1018,6 +1029,7 @@ Use labels only for evaluation, never for training.
             evaluator_conversation.append(prior_payload)
             evaluator_message_vars.append(prior_eval_out)
             evaluator_backprop_vars.append(prior_eval_out)
+            evaluator_backprop_vars_by_target[EVALUATOR_TARGET_FILE_MAP["prior"]] = prior_eval_out
         except Exception as exc:
             evaluator_errors["prior"] = str(exc)
         critic_out: tg.Variable | None = None
@@ -1057,16 +1069,35 @@ Use labels only for evaluation, never for training.
             for filename, target_payload in critic_plan.get("targets", {}).items()
             if _feedback_has_signal(str(target_payload.get("feedback", "")).strip())
         }
+        direct_evaluator_feedback_by_target = {
+            EVALUATOR_TARGET_FILE_MAP[role]: {"feedback": str((payload or {}).get("feedback", "")).strip()}
+            for role, payload in {
+                "biology": biology_payload,
+                "data_science": data_science_payload,
+                "model": model_payload,
+                "prior": prior_payload,
+            }.items()
+            if payload is not None
+            and _feedback_has_signal(str(payload.get("feedback", "")).strip())
+            and EVALUATOR_TARGET_FILE_MAP[role] in optimizers
+        }
         if action == "exploit":
             if args.critic_enabled:
                 optimize_targets = [filename for filename in _dedupe_preserve_order(list(feedback_by_target.keys())) if filename in optimizers]
             else:
-                optimize_targets = [filename for filename in active_stage_filenames if filename in optimizers] if evaluator_backprop_vars else []
+                optimize_targets = [filename for filename in _dedupe_preserve_order(list(direct_evaluator_feedback_by_target.keys())) if filename in optimizers]
         else:
             optimize_targets = []
         exploit_applied = False
         exploit_summary = {
-            filename: str((feedback_by_target.get(filename) or {}).get("feedback", "")).strip() or ("updated from accumulated evaluator feedback" if not args.critic_enabled else "")
+            filename: str(
+                (
+                    feedback_by_target.get(filename)
+                    if args.critic_enabled
+                    else direct_evaluator_feedback_by_target.get(filename)
+                or {}
+                ).get("feedback", "")
+            ).strip() or ("updated from accumulated evaluator feedback" if not args.critic_enabled else "")
             for filename in optimize_targets
         }
         exploit_change_types = {
@@ -1075,15 +1106,21 @@ Use labels only for evaluation, never for training.
         }
 
         if action == "exploit" and optimize_targets:
-            for optimizer in optimizers.values():
-                optimizer.zero_grad()
             if args.critic_enabled and critic_out is not None:
+                for optimizer in optimizers.values():
+                    optimizer.zero_grad()
                 critic_out.backward()
+                for filename in optimize_targets:
+                    optimizers[filename].step()
             else:
-                for evaluator_var in evaluator_backprop_vars:
+                for filename in optimize_targets:
+                    evaluator_var = evaluator_backprop_vars_by_target.get(filename)
+                    if evaluator_var is None:
+                        continue
+                    for optimizer in optimizers.values():
+                        optimizer.zero_grad()
                     evaluator_var.backward()
-            for filename in optimize_targets:
-                optimizers[filename].step()
+                    optimizers[filename].step()
             exploit_applied = True
 
         open_issues = build_open_issues(run_result=run_result, primary_state=primary_state, critic_payload=critic_payload)
