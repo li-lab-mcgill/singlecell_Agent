@@ -155,3 +155,20 @@ Return your response as a JSON object with this structure:
 
 Return only the JSON object, no surrounding text.
 """
+
+
+ANALYST_TOOL_USE_PROMPT = """
+You have access to tools for:
+- dataset summary
+- label distribution
+- prior resource summary and coverage
+- benchmark/dataset paper search
+- paper summaries and paper sections
+- marker database lookup
+- pathway database lookup
+
+Use tools instead of guessing whenever evidence is needed.
+Keep your visible reasoning concise and factual.
+When you have enough evidence, return the final JSON object only.
+Do not paste large raw tool outputs into the final answer.
+"""

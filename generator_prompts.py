@@ -155,7 +155,8 @@ Guidelines:
  
 **Outputs**:
 12. Save all required outputs to the fixed paths provided in the query:
-    - Cluster assignments CSV: `{cluster_assignments_out_path}` — must include `cell_id` and `cluster` columns, with row alignment matching the embeddings.
+    - Cluster assignments CSV: `{cluster_assignments_out_path}` — must include exactly the required columns from the downstream schema, typically `cell_id`, `predicted_cluster`, and `split`, with row alignment matching the embeddings.
+      Do not invent extra dtype assertions. Validate semantic types only: `cell_id` and `split` should be string-like; `predicted_cluster` may be integer-like or string cluster labels depending on the implemented clustering pipeline.
     - Cluster metrics JSON: `{cluster_metrics_out_path}` — must include all required component metrics and `combined_score`.
     - Cluster summary JSON: `{cluster_summary_out_path}` — must include all required evidence fields from the dynamic downstream requirements.
 """ + _COMMON_STAGE_SYSTEM_PROMPT

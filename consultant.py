@@ -340,6 +340,132 @@ def _validate_main_plan_text(suggestion: Any) -> None:
         raise ValueError("Consultant SUGGESTION must be a non-empty string")
 
 
+def _extract_tag_payload(text: str, tag: str) -> str:
+    match = re.search(rf"<{tag}>\s*(.*?)\s*</{tag}>", str(text or ""), flags=re.DOTALL | re.IGNORECASE)
+    if not match:
+        raise ValueError(f"Missing <{tag}> block")
+    return match.group(1).strip()
+
+
+def validate_candidate_comparison(payload: Dict[str, Any]) -> Dict[str, Any]:
+    if not isinstance(payload, dict):
+        raise ValueError("candidate comparison must be a JSON object")
+    candidates = payload.get("candidate_approaches")
+    if not isinstance(candidates, list) or len(candidates) < 3:
+        raise ValueError("candidate comparison must include at least 3 candidate approaches")
+    normalized_candidates: List[Dict[str, Any]] = []
+    labels: Set[str] = set()
+    for idx, item in enumerate(candidates):
+        if not isinstance(item, dict):
+            raise ValueError(f"candidate_approaches[{idx}] must be an object")
+        label = str(item.get("label", "")).strip()
+        summary = str(item.get("summary", "")).strip()
+        if not label or not summary:
+            raise ValueError(f"candidate_approaches[{idx}] must include non-empty label and summary")
+        if label in labels:
+            raise ValueError(f"Duplicate candidate label: {label}")
+        labels.add(label)
+        pros = [str(x).strip() for x in item.get("pros", []) if str(x).strip()]
+        cons = [str(x).strip() for x in item.get("cons", []) if str(x).strip()]
+        normalized_candidates.append({"label": label, "summary": summary, "pros": pros, "cons": cons})
+    selected_label = str(payload.get("selected_label", "")).strip()
+    if selected_label not in labels:
+        raise ValueError("selected_label must match one of the candidate labels")
+    selection_reason = str(payload.get("selection_reason", "")).strip()
+    if not selection_reason:
+        raise ValueError("selection_reason must be non-empty")
+    return {
+        "candidate_approaches": normalized_candidates,
+        "selected_label": selected_label,
+        "selection_reason": selection_reason,
+    }
+
+
+def validate_prior_decision_payload(payload: Dict[str, Any]) -> Dict[str, Any]:
+    decision = _validate_prior_decision(payload)
+    prior_schema = _normalize_prior_schema(payload.get("prior_schema", {"output_files": []}))
+    if decision["use_priors"]:
+        _validate_prior_schema(prior_schema)
+    else:
+        prior_schema = {"output_files": []}
+    return {
+        **decision,
+        "prior_schema": prior_schema,
+    }
+
+
+def validate_implementation_plan(payload: Dict[str, Any]) -> Dict[str, Any]:
+    if not isinstance(payload, dict):
+        raise ValueError("implementation plan must be a JSON object")
+    task_summary = str(payload.get("task_summary", "")).strip()
+    chosen_approach = str(payload.get("chosen_approach", "")).strip()
+    if not task_summary or not chosen_approach:
+        raise ValueError("implementation plan must include non-empty task_summary and chosen_approach")
+    prior_decision_summary = str(payload.get("prior_decision_summary", "")).strip()
+    stage_plan = payload.get("stage_plan")
+    if not isinstance(stage_plan, dict):
+        raise ValueError("implementation plan stage_plan must be an object")
+    normalized_stage_plan = {
+        filename: str(stage_plan.get(filename, "")).strip()
+        for filename in ["prior_construction.py", "data_preprocess.py", "model_training.py", "downstream_analysis.py"]
+    }
+    artifact_expectations = payload.get("artifact_expectations", {})
+    if not isinstance(artifact_expectations, dict):
+        artifact_expectations = {}
+    open_risks = [str(x).strip() for x in payload.get("open_risks", []) if str(x).strip()]
+    return {
+        "task_summary": task_summary,
+        "chosen_approach": chosen_approach,
+        "prior_decision_summary": prior_decision_summary,
+        "stage_plan": normalized_stage_plan,
+        "artifact_expectations": artifact_expectations,
+        "open_risks": open_risks,
+    }
+
+
+def format_prior_plan_text(prior_decision: Dict[str, Any]) -> str:
+    lines = [
+        f"Use priors: {bool(prior_decision.get('use_priors', False))}",
+        f"Decision reason: {str(prior_decision.get('decision_reason', '')).strip()}",
+    ]
+    selected = prior_decision.get("selected_resource_names", [])
+    if isinstance(selected, list) and selected:
+        lines.append("Selected resources: " + ", ".join(str(x).strip() for x in selected if str(x).strip()))
+    schema = prior_decision.get("prior_schema", {})
+    output_files = schema.get("output_files", []) if isinstance(schema, dict) else []
+    if output_files:
+        lines.append("Prior artifacts:")
+        for item in output_files:
+            if not isinstance(item, dict):
+                continue
+            lines.append(
+                f"- {str(item.get('file_name', '')).strip()} ({str(item.get('dtype', '')).strip()}): "
+                f"{str(item.get('description', '')).strip()}"
+            )
+    return "\n".join(line for line in lines if line.strip())
+
+
+def format_implementation_plan_text(plan: Dict[str, Any]) -> str:
+    lines = [
+        f"Task summary: {str(plan.get('task_summary', '')).strip()}",
+        f"Chosen approach: {str(plan.get('chosen_approach', '')).strip()}",
+    ]
+    prior_summary = str(plan.get("prior_decision_summary", "")).strip()
+    if prior_summary:
+        lines.append(f"Prior decision summary: {prior_summary}")
+    stage_plan = plan.get("stage_plan", {})
+    if isinstance(stage_plan, dict):
+        for filename in ["prior_construction.py", "data_preprocess.py", "model_training.py", "downstream_analysis.py"]:
+            value = str(stage_plan.get(filename, "")).strip()
+            if value:
+                lines.append(f"{filename}: {value}")
+    risks = [str(x).strip() for x in plan.get("open_risks", []) if str(x).strip()]
+    if risks:
+        lines.append("Open risks:")
+        lines.extend(f"- {item}" for item in risks)
+    return "\n".join(lines)
+
+
 class TextGradConsultant:
     def __init__(self, config: Config, engine_name: str, consultant_type: str = "main"):
         self.config = config

@@ -905,7 +905,14 @@ class ConsultantRAGAgent:
         prior_method_base_query = self._resolve_base_query("prior_methods", config, background)
         prior_method_session_key = self._channel_hash(
             "prior_methods",
-            {"prior_resource_summary": str(config.prior_resource_summary or ""), "feat_stats": str(config.feat_stats or ""), "task_type": str(config.task_type or ""), "learning_type": str(config.learning_type or ""), "metrics": str(config.metrics or "")},
+            {
+                "prior_resource_summary": str(config.prior_resource_summary or ""),
+                "feat_stats": str(config.feat_stats or ""),
+                "task_type": str(config.task_type or ""),
+                "learning_type": str(config.learning_type or ""),
+                "metrics": str(config.metrics or ""),
+                "prior_resource_types": self._prior_resource_types(config),
+            },
             prior_method_base_query,
             background,
         )
@@ -922,21 +929,29 @@ class ConsultantRAGAgent:
                 "documents": list(dataset_documents),
                 "context": self._format_summary_context(channel_name="dataset", documents=dataset_documents, session_key=dataset_session_key),
                 "hits": self._document_hits(dataset_documents),
+                "session_key": dataset_session_key,
+                "collection_name": self.store.runtime_collection_name(dataset_session_key, "dataset"),
             },
             "prior_resources": {
                 "documents": list(prior_resource_documents),
                 "context": self._format_summary_context(channel_name="prior_resources", documents=prior_resource_documents, session_key=prior_resource_session_key),
                 "hits": self._document_hits(prior_resource_documents),
+                "session_key": prior_resource_session_key,
+                "collection_name": self.store.runtime_collection_name(prior_resource_session_key, "prior_resources"),
             },
             "prior_methods": {
                 "documents": list(prior_method_documents),
                 "context": self._format_summary_context(channel_name="prior_methods", documents=prior_method_documents, session_key=prior_method_session_key),
                 "hits": self._document_hits(prior_method_documents),
+                "session_key": prior_method_session_key,
+                "collection_name": self.store.runtime_collection_name(prior_method_session_key, "prior_methods"),
             },
             "benchmark": {
                 "documents": list(benchmark_documents),
                 "context": self._format_summary_context(channel_name="benchmark", documents=benchmark_documents, session_key=benchmark_session_key),
                 "hits": self._document_hits(benchmark_documents),
+                "session_key": benchmark_session_key,
+                "collection_name": self.store.runtime_collection_name(benchmark_session_key, "benchmark"),
             },
         }
         self._prepared_channel_contexts["__prepared_contexts__"] = prepared

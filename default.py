@@ -11,12 +11,11 @@ from typing import Any, Dict, List
 
 import textgrad as tg
 
-from analyst import Analyst
+from analyst_agent import AnalystAgent
+from consultant_agent import ConsultantAgent
 from config import Config
 from consultant import (
-    TextGradConsultant,
     build_consultant_history_context,
-    build_reconsult_query,
     plan_fingerprint,
     record_consultant_plan,
 )
@@ -56,6 +55,7 @@ from multieval_types import (
     ScriptNoteRecord,
     STAGE_FILENAMES,
 )
+from paper_store import SharedPaperStore
 from rag_agent import ConsultantRAGAgent
 from validator import write_failure_record
 
@@ -178,18 +178,6 @@ def bundle_text_map_from_dir(script_dir: str) -> Dict[str, str]:
     if not script_dir or not os.path.isdir(script_dir):
         return {}
     return {filename: read_text_safe(os.path.join(script_dir, filename)) for filename in STAGE_FILENAMES}
-
-
-def count_rag_entries(text: str) -> int:
-    count = 0
-    for line in str(text or "").splitlines():
-        stripped = line.strip()
-        if not stripped:
-            continue
-        prefix, _, remainder = stripped.partition(".")
-        if prefix.isdigit() and remainder.startswith(" "):
-            count += 1
-    return count
 
 
 def classify_run_failure(run_result: Dict[str, Any]) -> tuple[str | None, str | None, str]:
@@ -530,7 +518,6 @@ Use labels only for evaluation, never for training.
     history_notes_result_path = f"{config.result_dir}/feedback/history_notes.jsonl"
     decision_ledger_result_path = f"{config.result_dir}/feedback/decision_ledger.jsonl"
     consultant_history_path = f"{config.result_dir}/feedback/consultant_history.jsonl"
-    prior_consultant_history_path = f"{config.result_dir}/feedback/prior_consultant_history.jsonl"
     script_note_paths = {
         filename: f"{config.notes_dir}/{filename.replace('.py', '')}_notes.jsonl"
         for filename in STAGE_FILENAMES
@@ -539,7 +526,7 @@ Use labels only for evaluation, never for training.
         filename: f"{config.result_dir}/feedback/{filename.replace('.py', '')}_notes.jsonl"
         for filename in STAGE_FILENAMES
     }
-    for path in [note_path, history_notes_path, decision_ledger_path, history_notes_result_path, decision_ledger_result_path, consultant_history_path, prior_consultant_history_path]:
+    for path in [note_path, history_notes_path, decision_ledger_path, history_notes_result_path, decision_ledger_result_path, consultant_history_path]:
         with open(path, "w", encoding="utf-8"):
             pass
     for path in list(script_note_paths.values()) + list(script_note_result_paths.values()):
@@ -548,8 +535,6 @@ Use labels only for evaluation, never for training.
     with open(history_digest_path, "w", encoding="utf-8") as f:
         f.write("<empty>\n")
 
-    prior_consultant = TextGradConsultant(config=config, engine_name=args.engine, consultant_type="prior")
-    consultant = TextGradConsultant(config=config, engine_name=args.engine, consultant_type="main")
     rag_root = args.rag_root if os.path.isabs(args.rag_root) else f"{cur_path}/{args.rag_root}"
     rag_agent = ConsultantRAGAgent(
         root_dir=rag_root,
@@ -563,19 +548,18 @@ Use labels only for evaluation, never for training.
     print(f"prior_resource_summary:\n{config.prior_resource_summary}")
     rag_agent.ensure_index(config=config, background=background.strip())
     prepared_rag_contexts = rag_agent.prepare_contexts(config=config, background=background.strip())
+    paper_store = SharedPaperStore(rag_agent=rag_agent, config=config, prepared_contexts=prepared_rag_contexts)
 
     # --- Stage 0: Analyst generates evaluation guidance ---
-    analyst = Analyst(engine_name=args.engine)
-    analyst_rag_context = str(prepared_rag_contexts["dataset"]["context"])
-    benchmark_rag_context = str(prepared_rag_contexts["benchmark"]["context"])
-    marker_db_context = rag_agent.load_marker_db_context(config)
+    analyst = AnalystAgent(
+        engine_name=args.engine,
+        paper_store=paper_store,
+        result_dir=config.result_dir,
+    )
     evaluation_guidance = analyst.generate_evaluation_guidance(
-        goal_and_query=background.strip(),
+        background=background.strip(),
         dataset_profile=config.feat_stats,
         prior_resource_summary=config.prior_resource_summary,
-        dataset_rag_context=analyst_rag_context,
-        benchmark_rag_context=benchmark_rag_context,
-        marker_db_context=marker_db_context,
     )
     config.apply_evaluation_plan(evaluation_guidance.to_dict())
     primary_metric = config.primary_metric_key()
@@ -584,9 +568,8 @@ Use labels only for evaluation, never for training.
     print(f"Analysis goal: {evaluation_guidance.goal}")
     print(f"Evaluation guidance generated for {len(evaluation_guidance.guidance_per_evaluator)} evaluators")
     print(f"Expected downstream outputs: {evaluation_guidance.expected_downstream_outputs[:500]}")
-    print(f"RAG_DATASET_CONTEXT document count: {count_rag_entries(analyst_rag_context)}")
-    print(f"RAG_BENCHMARK_CONTEXT document count: {count_rag_entries(benchmark_rag_context)}")
-    print(f"RAG_BENCHMARK_CONTEXT:\n{benchmark_rag_context}")
+    print(f"Prepared dataset papers: {len(prepared_rag_contexts['dataset']['documents'])}")
+    print(f"Prepared benchmark papers: {len(prepared_rag_contexts['benchmark']['documents'])}")
     shared_evaluation_plan = evaluation_guidance.shared_prompt_context()
     print(f"Shared analyst evaluation plan:\n{shared_evaluation_plan or '(no shared analyst evaluation plan provided)'}")
     for role in ["prior", "data_science", "model", "biology", "critic"]:
@@ -597,89 +580,34 @@ Use labels only for evaluation, never for training.
                 break
         print(f"{role.upper()} EVALUATION_GUIDANCE:\n{role_guidance or '(no evaluation guidance provided)'}")
 
-    prior_rag_context = rag_agent.build_prior_context(config=config, background=consultant_background)
-    print(
-        "Prior RAG hit counts: "
-        f"dataset={len(prior_rag_context.dataset_hits)}, "
-        f"resources={len(prior_rag_context.prior_resource_hits)}, "
-        f"methods={len(prior_rag_context.prior_method_hits)}"
+    consultant = ConsultantAgent(
+        engine_name=args.engine,
+        paper_store=paper_store,
+        result_dir=config.result_dir,
     )
-    print(
-        f"Prior RAG DATASET CONTEXT:\n{prior_rag_context.dataset_context}\n\n"
-        f"Prior RAG RESOURCE CONTEXT:\n{prior_rag_context.prior_resource_context}\n\n"
-        f"Prior RAG METHOD CONTEXT:\n{prior_rag_context.prior_method_context}\n"
-    )
-    prior_consultant_query = prior_consultant.create_query(
-        samples=None,
-        id_col=None,
+    consultant_artifacts = consultant.generate_plan(
         background=consultant_background,
-        label_col=None,
-        include_feat_stats=True,
-        background_only=False,
-        include_samples=False,
-        mcp_tools_text=mcp_tools_text,
-        api_dir=config.api_dir,
-        dataset_dir=config.dataset_dir,
-        analyst_plan=analyst_plan_text,
-        rag_dataset_context=prior_rag_context.dataset_context,
-        rag_prior_resource_context=prior_rag_context.prior_resource_context,
-        rag_prior_method_context=prior_rag_context.prior_method_context,
-    )
-    prior_consultant_output = prior_consultant.generate(prompt=prior_consultant_query)
-    print(f"prior_consultant_output:\n{prior_consultant_output}")
-    prior_task_summary = TextGradConsultant.parse_prior_summary_tags(prior_consultant_output)
-    config.apply_prior_decision(prior_task_summary["prior_decision"])
-    config.apply_prior_schema(prior_task_summary["prior_schema"])
-    prior_decision_summary = json.dumps(prior_task_summary["prior_decision"], ensure_ascii=False)
-
-    prior_consultant_records: List[ConsultantPlanRecord] = []
-    record_consultant_plan(
-        consultant_records=prior_consultant_records,
-        path=prior_consultant_history_path,
-        record=ConsultantPlanRecord(
-            step=-1,
-            source="initial",
-            task_description=prior_task_summary["task_description"],
-            suggestion=prior_task_summary["suggestion"],
-            prior_schema_json=prior_task_summary["prior_schema"],
-            raw_output=prior_consultant_output,
-            plan_fingerprint=plan_fingerprint(prior_task_summary["task_description"], prior_task_summary["suggestion"], prior_task_summary["prior_schema"]),
-        ),
-    )
-
-    main_rag_context = rag_agent.build_main_context(
-        config=config,
-        background=consultant_background,
-        prior_plan=prior_task_summary["suggestion"],
-        prior_schema_json=json.dumps(prior_task_summary["prior_schema"], ensure_ascii=False),
-        prior_decision_json=prior_decision_summary,
+        evaluation_guidance=evaluation_guidance.to_dict(),
+        session_tag="consultant",
     )
     print(
-        "Main RAG hit counts: "
-        f"dataset={len(main_rag_context.dataset_hits)}, "
-        f"model_design={len(main_rag_context.model_design_hits)}"
+        "Consultant milestones saved: "
+        f"candidate_comparison={config.result_dir}/feedback/candidate_comparison.json, "
+        f"prior_decision={config.result_dir}/feedback/prior_decision.json, "
+        f"implementation_plan={config.result_dir}/feedback/implementation_plan.json"
     )
-    consultant_query = consultant.create_query(
-        samples=None,
-        id_col=None,
-        background=consultant_background,
-        label_col=None,
-        include_feat_stats=True,
-        background_only=False,
-        include_samples=False,
-        mcp_tools_text=mcp_tools_text,
-        api_dir=config.api_dir,
-        dataset_dir=config.dataset_dir,
-        prior_decision_summary=prior_decision_summary,
-        prior_plan=prior_task_summary["suggestion"],
-        prior_output_summary=json.dumps(prior_task_summary["prior_schema"], ensure_ascii=False),
-        rag_dataset_context=main_rag_context.dataset_context,
-        rag_model_design_context=main_rag_context.model_design_context,
-        analyst_plan=analyst_plan_text,
-    )
-    consultant_output = consultant.generate(prompt=consultant_query)
-    print(f"consultant_output:\n{consultant_output}")
-    task_summary = TextGradConsultant.parse_main_summary_tags(consultant_output)
+    config.apply_prior_decision(consultant_artifacts["prior_decision"])
+    config.apply_prior_schema(consultant_artifacts["prior_decision"]["prior_schema"])
+    prior_task_summary = {
+        "task_description": consultant_artifacts["implementation_plan"]["task_summary"],
+        "suggestion": consultant_artifacts["prior_plan_text"],
+        "prior_decision": consultant_artifacts["prior_decision"],
+        "prior_schema": consultant_artifacts["prior_decision"]["prior_schema"],
+    }
+    task_summary = {
+        "task_description": consultant_artifacts["implementation_plan"]["task_summary"],
+        "suggestion": consultant_artifacts["implementation_plan_text"],
+    }
 
     consultant_records: List[ConsultantPlanRecord] = []
     record_consultant_plan(
@@ -690,9 +618,16 @@ Use labels only for evaluation, never for training.
             source="initial",
             task_description=task_summary["task_description"],
             suggestion=task_summary["suggestion"],
-            prior_schema_json={},
-            raw_output=consultant_output,
-            plan_fingerprint=plan_fingerprint(task_summary["task_description"], task_summary["suggestion"], {}),
+            prior_schema_json=prior_task_summary["prior_schema"],
+            raw_output=json.dumps(
+                {
+                    "candidate_comparison": consultant_artifacts["candidate_comparison"],
+                    "prior_decision": consultant_artifacts["prior_decision"],
+                    "implementation_plan": consultant_artifacts["implementation_plan"],
+                },
+                ensure_ascii=False,
+            ),
+            plan_fingerprint=plan_fingerprint(task_summary["task_description"], task_summary["suggestion"], prior_task_summary["prior_schema"]),
         ),
     )
 
@@ -1272,27 +1207,32 @@ Use labels only for evaluation, never for training.
             }
             historical_failures = "\n".join(open_issues[-10:]) if open_issues else "<none>"
             consultant_history_context = build_consultant_history_context(consultant_records)
-            hard_constraints = []
-            for filename in active_stage_filenames:
-                hard_constraints.extend(_build_optimizer_constraints_for_file(filename, generator.path_prompt_fields, stage_schemas.get(filename, {}), config))
-            reconsult_query = build_reconsult_query(
-                task_description=task_summary["task_description"],
-                background=consultant_background,
-                current_suggestion=suggestion,
-                current_prior_plan=prior_suggestion,
-                current_prior_schema=config.current_prior_schema,
-                current_attempt=current_attempt,
-                why_current_fails=why_current_fails,
-                historical_failures=historical_failures,
-                hard_constraints=hard_constraints,
-                history_digest=notes_text,
-                consultant_history_context=consultant_history_context,
-                analyst_plan=analyst_plan_text,
+            reconsult_background = (
+                f"{consultant_background}\n\n"
+                "[RECONSULT CONTEXT]\n"
+                f"Current implementation plan:\n{suggestion}\n\n"
+                f"Current prior plan:\n{prior_suggestion}\n\n"
+                f"Current attempt:\n{json.dumps(current_attempt, indent=2, ensure_ascii=False)}\n\n"
+                f"Why current attempt fails:\n{json.dumps(why_current_fails, indent=2, ensure_ascii=False)}\n\n"
+                f"Historical failures:\n{historical_failures}\n\n"
+                f"History digest:\n{notes_text}\n\n"
+                f"Consultant history:\n{consultant_history_context}\n"
+                "[/RECONSULT CONTEXT]"
             )
-            reconsult_output = consultant.generate(prompt=reconsult_query)
-            print(f"consultant_output_step_{step}:\n{reconsult_output}")
-            task_summary = TextGradConsultant.parse_main_summary_tags(reconsult_output)
+            consultant_artifacts = consultant.generate_plan(
+                background=reconsult_background,
+                evaluation_guidance=evaluation_guidance.to_dict(),
+                session_tag=f"consultant_step_{step}",
+            )
+            print(f"consultant_output_step_{step}:\n{json.dumps(consultant_artifacts['implementation_plan'], indent=2, ensure_ascii=False)}")
+            config.apply_prior_decision(consultant_artifacts["prior_decision"])
+            config.apply_prior_schema(consultant_artifacts["prior_decision"]["prior_schema"])
+            task_summary = {
+                "task_description": consultant_artifacts["implementation_plan"]["task_summary"],
+                "suggestion": consultant_artifacts["implementation_plan_text"],
+            }
             suggestion = task_summary["suggestion"]
+            prior_suggestion = consultant_artifacts["prior_plan_text"]
             record_consultant_plan(
                 consultant_records=consultant_records,
                 path=consultant_history_path,
@@ -1301,9 +1241,16 @@ Use labels only for evaluation, never for training.
                     source="reconsult",
                     task_description=task_summary["task_description"],
                     suggestion=task_summary["suggestion"],
-                    prior_schema_json={},
-                    raw_output=reconsult_output,
-                    plan_fingerprint=plan_fingerprint(task_summary["task_description"], task_summary["suggestion"], {}),
+                    prior_schema_json=consultant_artifacts["prior_decision"]["prior_schema"],
+                    raw_output=json.dumps(
+                        {
+                            "candidate_comparison": consultant_artifacts["candidate_comparison"],
+                            "prior_decision": consultant_artifacts["prior_decision"],
+                            "implementation_plan": consultant_artifacts["implementation_plan"],
+                        },
+                        ensure_ascii=False,
+                    ),
+                    plan_fingerprint=plan_fingerprint(task_summary["task_description"], task_summary["suggestion"], consultant_artifacts["prior_decision"]["prior_schema"]),
                 ),
             )
             prior_evaluator = TextGradEvaluator(config=config, engine_name=args.engine, task_decrp=task_summary["task_description"], background=consultant_background, eval_type="prior", evaluation_guidance=evaluation_guidance.for_role("prior"))

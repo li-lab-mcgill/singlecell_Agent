@@ -219,6 +219,103 @@ The complete plan.
 
 PIPELINE_CONSULTANT_SYSTEM_PROMPT = MAIN_SYSTEM_PROMPT
 
+
+CONSULTANT_CANDIDATE_STAGE_PROMPT = """
+Before committing to a plan, compare at least 3 candidate approaches using the available tools and evidence.
+
+When you are ready, emit:
+<CANDIDATE_COMPARISON>
+{
+  "candidate_approaches": [
+    {
+      "label": "<short name>",
+      "summary": "<1-2 sentence description>",
+      "pros": ["<string>"],
+      "cons": ["<string>"]
+    }
+  ],
+  "selected_label": "<short name>",
+  "selection_reason": "<string>"
+}
+</CANDIDATE_COMPARISON>
+
+Rules:
+- Compare at least 3 concrete approaches.
+- Make the comparison visible in the transcript.
+- Do not emit PRIOR_DECISION before CANDIDATE_COMPARISON.
+"""
+
+
+CONSULTANT_TOOL_USE_PROMPT = """
+You have access to tools for:
+- dataset summary
+- label distribution
+- prior resource summary and coverage
+- benchmark / dataset / prior-method paper search
+- paper summaries and paper sections
+- marker and pathway lookup
+
+Use tools instead of guessing when evidence is needed.
+Keep visible reasoning concise and factual.
+After candidate comparison, emit PRIOR_DECISION, then IMPLEMENTATION_PLAN.
+Do not paste large raw tool outputs into milestone artifacts.
+"""
+
+
+CONSULTANT_PRIOR_DECISION_PROMPT = """
+Your prior-decision stage serves the same purpose as the old prior consultant:
+- decide whether priors should be used
+- identify which resources are justified
+- define the concrete prior artifacts needed downstream
+
+When ready, emit:
+<PRIOR_DECISION>
+{
+  "use_priors": true,
+  "decision_reason": "<string>",
+  "selected_resource_names": ["<string>"],
+  "prior_schema": {
+    "output_files": []
+  }
+}
+</PRIOR_DECISION>
+
+Rules:
+- If use_priors is false, prior_schema.output_files must be empty.
+- If use_priors is true, prior_schema.output_files must be non-empty and concrete.
+- Each output file entry must include non-empty file_name, description, and dtype.
+"""
+
+
+CONSULTANT_IMPLEMENTATION_PLAN_PROMPT = """
+Your implementation-plan stage serves the same purpose as the old main consultant:
+- commit to one concrete end-to-end strategy
+- specify preprocessing, model training, and downstream analysis precisely
+- ensure the plan satisfies the analyst evaluation contract
+
+When ready, emit:
+<IMPLEMENTATION_PLAN>
+{
+  "task_summary": "<string>",
+  "chosen_approach": "<string>",
+  "prior_decision_summary": "<string>",
+  "stage_plan": {
+    "prior_construction.py": "<string>",
+    "data_preprocess.py": "<string>",
+    "model_training.py": "<string>",
+    "downstream_analysis.py": "<string>"
+  },
+  "artifact_expectations": {},
+  "open_risks": ["<string>"]
+}
+</IMPLEMENTATION_PLAN>
+
+Rules:
+- Commit to one strategy, do not return alternatives here.
+- Every metric used in the combined metric computation must be written explicitly to cluster_metrics.json.
+- The stage_plan must cover all four stage files, even if priors are disabled.
+"""
+
 INPUT_QUERY_SUPERVISED = (
   "The task type: {task_type}, {learning_type}\n"
   "The column name for groundtruth (label): {label_col}\n"
