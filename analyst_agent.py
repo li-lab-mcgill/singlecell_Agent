@@ -5,21 +5,30 @@ from pathlib import Path
 from typing import Any, Dict
 
 from agent_runner import ToolCallingAgentRunner
-from agent_tools import build_tool_executor, build_tool_specs
+from agent_tools import build_analyst_registry
 from analyst import parse_evaluation_guidance_response
 from analyst_prompts import ANALYST_GUIDANCE_PROMPT, ANALYST_SYSTEM_PROMPT, ANALYST_TOOL_USE_PROMPT
 
 
 class AnalystAgent:
-    def __init__(self, *, engine_name: str, paper_store: Any, result_dir: str, client: Any | None = None):
+    def __init__(
+        self,
+        *,
+        engine_name: str,
+        paper_store: Any,
+        result_dir: str,
+        single_cell_backend: Any | None = None,
+        client: Any | None = None,
+    ):
         feedback_dir = Path(result_dir) / "feedback"
         self.paper_store = paper_store
         self.result_dir = feedback_dir
+        registry = build_analyst_registry(paper_store)
         self.runner = ToolCallingAgentRunner(
             model=engine_name,
             system_prompt="\n\n".join([ANALYST_SYSTEM_PROMPT.strip(), ANALYST_TOOL_USE_PROMPT.strip()]),
-            tool_specs=build_tool_specs(),
-            tool_executor=build_tool_executor(paper_store),
+            tool_specs=registry.tool_specs(),
+            tool_executor=registry.executor(),
             transcript_path=str(feedback_dir / "analyst_transcript.jsonl"),
             tool_trace_path=str(feedback_dir / "analyst_tool_trace.jsonl"),
             client=client,

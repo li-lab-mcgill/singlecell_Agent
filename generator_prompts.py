@@ -151,7 +151,10 @@ Guidelines:
 8. Execute the Analyst's evaluation experiments insofar as they can be supported by the required downstream artifacts.
 9. Compute per-cluster DEGs or marker genes using the method specified in the plan (e.g., Wilcoxon rank-sum test via `sc.tl.rank_genes_groups`).
 10. Produce cluster summaries: top DEGs per cluster, marker gene overlap with cellMarker csv file provided in Prior resource summary, and any required summary evidence requested by the evaluation experiments.
-11. Generate any additional downstream outputs specified in the plan (e.g., UMAP visualization coordinates), but keep the required downstream artifact filenames unchanged.
+11. Generate any additional downstream outputs specified in the plan, but keep the required downstream artifact filenames unchanged.
+    - If UMAP visualization is required, save it as figure file(s) and include only figure paths or compact metadata in `cluster_summary.json`.
+    - Do not serialize per-cell UMAP coordinates into JSON outputs.
+    - Keep `cluster_summary.json` compact; do not dump dense per-cell arrays or other large visualization payloads into it.
  
 **Outputs**:
 12. Save all required outputs to the fixed paths provided in the query:
@@ -159,6 +162,7 @@ Guidelines:
       Do not invent extra dtype assertions. Validate semantic types only: `cell_id` and `split` should be string-like; `predicted_cluster` may be integer-like or string cluster labels depending on the implemented clustering pipeline.
     - Cluster metrics JSON: `{cluster_metrics_out_path}` — must include all required component metrics and `combined_score`.
     - Cluster summary JSON: `{cluster_summary_out_path}` — must include all required evidence fields from the dynamic downstream requirements.
+      Store only compact summaries and artifact paths. For UMAP outputs, save only fields such as `umap_paths.by_cluster_png` and `umap_paths.by_cell_type_png`, not raw coordinate arrays.
 """ + _COMMON_STAGE_SYSTEM_PROMPT
 
 

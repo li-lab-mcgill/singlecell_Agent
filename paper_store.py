@@ -53,8 +53,6 @@ class SharedPaperStore:
         return {
             "dataset_summary": str(getattr(self.config, "feat_stats", "") or "").strip(),
             "label_column": str(getattr(self.config, "label_column", "") or "").strip(),
-            "task_type": str(getattr(self.config, "task_type", "") or "").strip(),
-            "learning_type": str(getattr(self.config, "learning_type", "") or "").strip(),
         }
 
     def read_label_distribution(self, label_key: str) -> Dict[str, Any]:

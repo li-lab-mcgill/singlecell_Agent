@@ -57,6 +57,7 @@ from multieval_types import (
 )
 from paper_store import SharedPaperStore
 from rag_agent import ConsultantRAGAgent
+from singlecell_store import SingleCellStore
 from validator import write_failure_record
 
 EVALUATOR_TARGET_FILE_MAP = {
@@ -453,28 +454,36 @@ def main() -> None:
 
     file_path = args.input_mod1 or f"{cur_path}/data/h5ad/pbmc3k_annotated.h5ad"
     mod2_path = args.input_mod2
+#     background = f"""
+# Data file: Modality 1: {file_path}
+# Data file: Modality 2: {mod2_path if mod2_path else "None"}
+# DATA: Sparse, high-dimensional gene expression counts.
+# Each row represents a cell and each column represents a gene.
+
+# TASK:
+# Develop a prior guided unsupervised deep learning Python pipeline for single-cell RNA-seq representation learning.
+
+# The pipeline MUST:
+# 1. Use executable scripts named prior_construction.py, data_preprocess.py, model_training.py, and downstream_analysis.py.
+# 2. The prior consultant may decide priors are not needed.
+# 3. If priors are enabled, prior_construction.py builds the fixed prior bundle first and later stages may consume it.
+# 4. If priors are disabled, skip prior construction and build a prior-free pipeline.
+# 5. All scripts must use fixed config-owned artifact paths.
+
+# VISUALIZATION:
+# Generate UMAP from the learned embedding colored by predicted cluster and by cell_type if available.
+
+# EVALUATION:
+# The optimization goal is a task-aligned combined score designed by the analyst.
+# Use labels only for evaluation, never for training.
+# """
     background = f"""
 Data file: Modality 1: {file_path}
-Data file: Modality 2: {mod2_path if mod2_path else "None"}
 DATA: Sparse, high-dimensional gene expression counts.
 Each row represents a cell and each column represents a gene.
 
 TASK:
-Develop a prior guided unsupervised deep learning Python pipeline for single-cell RNA-seq representation learning.
-
-The pipeline MUST:
-1. Use executable scripts named prior_construction.py, data_preprocess.py, model_training.py, and downstream_analysis.py.
-2. The prior consultant may decide priors are not needed.
-3. If priors are enabled, prior_construction.py builds the fixed prior bundle first and later stages may consume it.
-4. If priors are disabled, skip prior construction and build a prior-free pipeline.
-5. All scripts must use fixed config-owned artifact paths.
-
-VISUALIZATION:
-Generate UMAP from the learned embedding colored by predicted cluster and by cell_type if available.
-
-EVALUATION:
-The optimization goal is a task-aligned combined score designed by the analyst.
-Use labels only for evaluation, never for training.
+Develop a pipeline for cell type annotation of single-cell RNA-seq data
 """
 
     global_engine = tg.get_engine(engine_name=args.engine)
@@ -484,10 +493,8 @@ Use labels only for evaluation, never for training.
         opt_step=args.opt_step,
         max_fix_step=args.max_fix_step,
         timeout=args.time_budget,
-        task_type="Integration",
         mod1_path=file_path,
         mod2_path=mod2_path,
-        learning_type="Unsupervised",
         metrics="combined_score",
         label_column=None,
         id_column=None,
@@ -549,12 +556,14 @@ Use labels only for evaluation, never for training.
     rag_agent.ensure_index(config=config, background=background.strip())
     prepared_rag_contexts = rag_agent.prepare_contexts(config=config, background=background.strip())
     paper_store = SharedPaperStore(rag_agent=rag_agent, config=config, prepared_contexts=prepared_rag_contexts)
+    single_cell_store = SingleCellStore()
 
     # --- Stage 0: Analyst generates evaluation guidance ---
     analyst = AnalystAgent(
         engine_name=args.engine,
         paper_store=paper_store,
         result_dir=config.result_dir,
+        single_cell_backend=single_cell_store,
     )
     evaluation_guidance = analyst.generate_evaluation_guidance(
         background=background.strip(),
@@ -584,6 +593,7 @@ Use labels only for evaluation, never for training.
         engine_name=args.engine,
         paper_store=paper_store,
         result_dir=config.result_dir,
+        single_cell_backend=single_cell_store,
     )
     consultant_artifacts = consultant.generate_plan(
         background=consultant_background,

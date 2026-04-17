@@ -69,7 +69,6 @@ Return your response as a JSON object with this structure:
   "goal": "<restated analysis goal>",
   "dataset_summary": "<1-2 sentence summary of the dataset and its biological context>",
   "query_decomposition": {{
-    "task_category": "annotation|clustering|trajectory|integration|discovery|other",
     "primary_question": "<string>",
     "success_hypothesis": "<string>",
     "expected_biological_outcome": "<string>",

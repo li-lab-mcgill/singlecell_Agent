@@ -76,8 +76,8 @@ BASE_DOWNSTREAM_REQUIREMENTS: Dict[str, Any] = {
 class Config:
     def __init__(self, code_dir = "saved_code", result_dir = "results", data_dir = "data", file_path = None,
                  mod1_path: str | None = None, mod2_path: str | None = None,
-                 opt_step = 3, max_fix_step = 5, timeout = 300, task_type = "classification",
-                 learning_type = "supervised", metrics="accuracy", label_column = None, id_column = None,
+                 opt_step = 3, max_fix_step = 5, timeout = 300,
+                 metrics="accuracy", label_column = None, id_column = None,
                  time_column = None, engine_name = "gpt-5",
                  monitor_train_epoch: int = 1, monitor_metric_epoch: int = 5):
         cur_path = os.path.dirname(os.path.abspath(__file__))
@@ -113,8 +113,6 @@ class Config:
             "selected_resource_names": [],
         }
         self.current_evaluation_plan: Dict[str, Any] = {}
-        self.task_types = ["Regression", "Classification", "Clustering", "Integration"]
-        self.learning_types = ["Supervised", "Unsupervised", "Self-supervised"]
         self.id_column = id_column
         self.time_column = time_column
         self.label_column = label_column
@@ -133,17 +131,6 @@ class Config:
         if self.data_mod1_path is None:
             raise ValueError("Error: mod1_path (or file_path) not provided")
         self.file_path = self.data_mod1_path
-        if task_type.lower() in (x.lower() for x in self.task_types):
-            self.task_type = task_type
-        else:
-            raise ValueError(f"Error: Task type should be one of: {self.task_types}")
-        if learning_type.lower() in (x.lower() for x in self.learning_types):
-            self.learning_type = learning_type
-        else:
-            raise ValueError(f"Error: Learning type should be one of: {self.learning_types}")
-        if self.task_type.lower() == 'supervised'.lower():
-            if self.label_column == None:
-                raise ValueError(f"Error: Need to provide the column name of groundtruth (label_column) for supervised task!")
 
         self.engine = tg.get_engine(self.engine_name, max_tokens=5000)
         self.feat_stats = self.summarize_dataset_stats(sample_n=1, feature_n=100, random_seed=42)

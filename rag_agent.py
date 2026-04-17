@@ -14,7 +14,7 @@ import textgrad as tg
 from config import Config
 from rag_sources import fetch_core_document, normalize_section_type, fetch_pubmed_documents
 from rag_store import RAGStore
-from rag_types import ConsultantRAGContext, PromotedPaper, RAGDocument, RAGHit, dedup_key
+from rag_types import PromotedPaper, RAGDocument, RAGHit, dedup_key
 
 
 logger = logging.getLogger(__name__)
@@ -235,11 +235,7 @@ class ConsultantRAGAgent:
             extracted = re.sub(r"\s+", " ", task_match.group(1)).strip()
             if extracted:
                 return extracted
-        parts = [
-            str(config.learning_type or "").strip().lower(),
-            "representation learning and clustering",
-        ]
-        return " ".join(part for part in parts if part).strip()
+        return "representation learning and clustering"
 
     def _prior_resources_payload(self, config: Config) -> List[Dict[str, Any]]:
         try:
@@ -864,8 +860,6 @@ class ConsultantRAGAgent:
         payload = {
             "prior_resource_summary": str(config.prior_resource_summary or ""),
             "feat_stats": str(config.feat_stats or ""),
-            "task_type": str(config.task_type or ""),
-            "learning_type": str(config.learning_type or ""),
             "metrics": str(config.metrics or ""),
             "prior_resource_types": self._prior_resource_types(config),
         }
@@ -876,8 +870,6 @@ class ConsultantRAGAgent:
         payload = {
             "feat_stats": str(config.feat_stats or ""),
             "background": str(background or ""),
-            "task_type": str(config.task_type or ""),
-            "learning_type": str(config.learning_type or ""),
         }
         base_query = self._resolve_base_query("benchmark", config, background)
         return self._channel_documents(channel_name="benchmark", config=config, payload=payload, base_query=base_query, background=background)
@@ -908,8 +900,6 @@ class ConsultantRAGAgent:
             {
                 "prior_resource_summary": str(config.prior_resource_summary or ""),
                 "feat_stats": str(config.feat_stats or ""),
-                "task_type": str(config.task_type or ""),
-                "learning_type": str(config.learning_type or ""),
                 "metrics": str(config.metrics or ""),
                 "prior_resource_types": self._prior_resource_types(config),
             },
@@ -919,7 +909,7 @@ class ConsultantRAGAgent:
         benchmark_base_query = self._resolve_base_query("benchmark", config, background)
         benchmark_session_key = self._channel_hash(
             "benchmark",
-            {"feat_stats": str(config.feat_stats or ""), "background": str(background or ""), "task_type": str(config.task_type or ""), "learning_type": str(config.learning_type or "")},
+            {"feat_stats": str(config.feat_stats or ""), "background": str(background or "")},
             benchmark_base_query,
             background,
         )
@@ -963,14 +953,6 @@ class ConsultantRAGAgent:
             raise RuntimeError("RAG contexts have not been prepared. Call prepare_contexts(...) first.")
         return prepared
 
-    def build_analyst_context(self, config: Config, background: str) -> str:
-        _ = (config, background)
-        return str(self._prepared_contexts()["dataset"]["context"])
-
-    def build_benchmark_context(self, config: Config, background: str) -> str:
-        _ = (config, background)
-        return str(self._prepared_contexts()["benchmark"]["context"])
-
     @staticmethod
     def load_marker_db_context(config: Config) -> str:
         datasets_dir = Path(config.cur_path) / "Datasets"
@@ -1013,44 +995,3 @@ class ConsultantRAGAgent:
         if not sections:
             return "(no marker databases available)"
         return "Available structured databases:\n" + "\n".join(sections)
-
-    def build_prior_context(self, config: Config, background: str) -> ConsultantRAGContext:
-        _ = (config, background)
-        prepared = self._prepared_contexts()
-        query_text = f"prior_consultant\n{config.feat_stats}\n{config.prior_resource_summary}\n{background}"
-
-        return ConsultantRAGContext(
-            query_text=query_text,
-            dataset_context=str(prepared["dataset"]["context"]),
-            prior_resource_context=str(prepared["prior_resources"]["context"]),
-            prior_method_context=str(prepared["prior_methods"]["context"]),
-            model_design_context="RAG_MODEL_DESIGN_CONTEXT\n<none>",
-            dataset_hits=list(prepared["dataset"]["hits"]),
-            prior_resource_hits=list(prepared["prior_resources"]["hits"]),
-            prior_method_hits=list(prepared["prior_methods"]["hits"]),
-            model_design_hits=[],
-        )
-
-    def build_main_context(
-        self,
-        config: Config,
-        background: str,
-        prior_plan: str,
-        prior_schema_json: str,
-        prior_decision_json: str,
-    ) -> ConsultantRAGContext:
-        _ = (prior_plan, prior_schema_json, prior_decision_json)
-        prepared = self._prepared_contexts()
-        query_text = f"main_consultant\n{config.feat_stats}\n{background}"
-
-        return ConsultantRAGContext(
-            query_text=query_text,
-            dataset_context=str(prepared["dataset"]["context"]),
-            prior_resource_context="RAG_PRIOR_RESOURCE_CONTEXT\n<none>",
-            prior_method_context="RAG_PRIOR_METHOD_CONTEXT\n<none>",
-            model_design_context=str(prepared["prior_methods"]["context"]),
-            dataset_hits=list(prepared["dataset"]["hits"]),
-            prior_resource_hits=[],
-            prior_method_hits=[],
-            model_design_hits=list(prepared["prior_methods"]["hits"]),
-        )

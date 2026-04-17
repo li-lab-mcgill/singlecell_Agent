@@ -1,16 +1,11 @@
 from __future__ import annotations
 
 import json
-import logging
 from typing import List
 
-import textgrad as tg
-
-from analyst_prompts import ANALYST_SYSTEM_PROMPT, ANALYST_GUIDANCE_PROMPT
 from evaluation_plan import normalize_evaluation_plan
 from multieval_types import EvaluatorGuidance, EvaluationGuidance
 
-logger = logging.getLogger(__name__)
 
 EVALUATOR_ROLES = ["biology", "data_science", "model", "prior", "critic"]
 
@@ -52,34 +47,3 @@ def parse_evaluation_guidance_response(response: str, goal: str, dataset_profile
         downstream_requirements=normalized_payload.get("downstream_requirements", {}),
         combined_metric_spec=normalized_payload.get("combined_metric_spec", {}),
     )
-
-
-class Analyst:
-    def __init__(self, engine_name: str):
-        self.engine = tg.get_engine(engine_name, max_tokens=5000)
-
-    def generate_evaluation_guidance(
-        self,
-        goal_and_query: str,
-        dataset_profile: str,
-        prior_resource_summary: str,
-        dataset_rag_context: str = "",
-        benchmark_rag_context: str = "",
-        marker_db_context: str = "",
-    ) -> EvaluationGuidance:
-        prompt = ANALYST_GUIDANCE_PROMPT.format(
-            goal_and_query=goal_and_query,
-            dataset_profile=dataset_profile,
-            prior_resource_summary=prior_resource_summary,
-            dataset_rag_context=dataset_rag_context or "RAG_DATASET_CONTEXT\n<none>",
-            benchmark_rag_context=benchmark_rag_context or "RAG_BENCHMARK_CONTEXT\n<none>",
-            marker_db_context=marker_db_context or "(no marker database context available)",
-        )
-
-        response = self.engine.generate(
-            content=prompt,
-            system_prompt=ANALYST_SYSTEM_PROMPT.strip(),
-            temperature=0.2,
-        )
-
-        return parse_evaluation_guidance_response(str(response), goal_and_query, dataset_profile)

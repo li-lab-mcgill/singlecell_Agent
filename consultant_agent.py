@@ -5,7 +5,7 @@ from pathlib import Path
 from typing import Any, Dict
 
 from agent_runner import ToolCallingAgentRunner
-from agent_tools import build_tool_executor, build_tool_specs
+from agent_tools import build_consultant_registry
 from consultant import (
     _extract_tag_payload,
     format_implementation_plan_text,
@@ -23,10 +23,19 @@ from consultant_prompts import (
 
 
 class ConsultantAgent:
-    def __init__(self, *, engine_name: str, paper_store: Any, result_dir: str, client: Any | None = None):
+    def __init__(
+        self,
+        *,
+        engine_name: str,
+        paper_store: Any,
+        result_dir: str,
+        single_cell_backend: Any | None = None,
+        client: Any | None = None,
+    ):
         self.engine_name = engine_name
         self.paper_store = paper_store
         self.result_dir = Path(result_dir) / "feedback"
+        self.single_cell_backend = single_cell_backend
         self.client = client
         self.system_prompt = "\n\n".join(
             [
@@ -43,11 +52,12 @@ class ConsultantAgent:
             "prior_decision": None,
             "implementation_plan": None,
         }
+        registry = build_consultant_registry(self.paper_store, single_cell_backend=self.single_cell_backend)
         runner = ToolCallingAgentRunner(
             model=self.engine_name,
             system_prompt=self.system_prompt,
-            tool_specs=build_tool_specs(),
-            tool_executor=build_tool_executor(self.paper_store),
+            tool_specs=registry.tool_specs(),
+            tool_executor=registry.executor(),
             transcript_path=str(self.result_dir / f"{session_tag}_transcript.jsonl"),
             tool_trace_path=str(self.result_dir / f"{session_tag}_tool_trace.jsonl"),
             client=self.client,
