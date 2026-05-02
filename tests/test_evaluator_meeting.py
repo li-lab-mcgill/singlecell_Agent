@@ -16,33 +16,33 @@ if "dotenv" not in sys.modules:
     fake_dotenv.load_dotenv = lambda *args, **kwargs: None
     sys.modules["dotenv"] = fake_dotenv
 
-if "consultant" not in sys.modules:
-    fake_consultant = types.ModuleType("consultant")
+if "agents.consultant" not in sys.modules:
+    fake_consultant = types.ModuleType("agents.consultant")
     fake_consultant._short = lambda text, max_chars: str(text)[:max_chars]
-    sys.modules["consultant"] = fake_consultant
+    sys.modules["agents.consultant"] = fake_consultant
 
-if "config" not in sys.modules:
-    fake_config = types.ModuleType("config")
+if "pipelines.config" not in sys.modules:
+    fake_config = types.ModuleType("pipelines.config")
 
     class _Config:
         pass
 
     fake_config.Config = _Config
-    sys.modules["config"] = fake_config
+    sys.modules["pipelines.config"] = fake_config
 
-if "multieval_types" not in sys.modules:
-    fake_multieval_types = types.ModuleType("multieval_types")
+if "pipelines.multieval_types" not in sys.modules:
+    fake_multieval_types = types.ModuleType("pipelines.multieval_types")
     fake_multieval_types.STAGE_FILENAMES = [
         "prior_construction.py",
         "data_preprocess.py",
         "model_training.py",
         "downstream_analysis.py",
     ]
-    sys.modules["multieval_types"] = fake_multieval_types
+    sys.modules["pipelines.multieval_types"] = fake_multieval_types
 
 
-evaluator = importlib.import_module("evaluator")
-evaluator_prompts = importlib.import_module("evaluator_prompts")
+evaluator = importlib.import_module("agents.evaluator")
+evaluator_prompts = importlib.import_module("prompts.evaluator_prompts")
 
 
 class EvaluatorMeetingTests(unittest.TestCase):
@@ -77,7 +77,7 @@ class EvaluatorMeetingTests(unittest.TestCase):
         )
 
     def test_default_runtime_calls_evaluators_in_biology_first_order(self):
-        source = Path("/Users/vickydong/Documents/singlecell_Agent/default.py").read_text(encoding="utf-8")
+        source = Path("/Users/vickydong/Documents/singlecell_Agent/pipelines/research_pipeline.py").read_text(encoding="utf-8")
         biology_idx = source.index("biology_evaluator.loss_fn(")
         data_science_idx = source.index("data_science_evaluator.loss_fn(")
         model_idx = source.index("model_evaluator.loss_fn(")

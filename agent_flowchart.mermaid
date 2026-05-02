@@ -1,0 +1,54 @@
+flowchart TD
+    User([User])
+
+    Session[("Session (memory)<br/>- dataset_path, feat_stats<br/>- evaluation_guidance<br/>- tool_task_ids<br/>- current_anndata_path<br/>- artifact_history<br/>- transcript<br/>- research_run_dir")]
+
+    Orch{{"Orchestrator<br/>dispatch on session.state"}}
+
+    subgraph Initial ["Initial pass (state = initial)"]
+      Analyst["AnalystAgent<br/>generate_evaluation_guidance<br/>(existing)"]
+      ToolCon["ToolConsultantAgent (new class)<br/>designs pipeline + search space<br/>emits PIPELINE_SEARCH_SPEC"]
+      ToolOpt["ToolOptimizerAgent (new class)<br/>drives Optuna loop,<br/>writes best output h5ad,<br/>emits OPTIMIZATION_RESULT"]
+    end
+
+    Decision{{"Present results<br/>User satisfied?"}}
+
+    subgraph SatisfiedPath ["state = chatting"]
+      Chat["ChatAgent (new class)<br/>- compute tools on current_anndata_path<br/>- narrow optimization subtasks<br/>- reads full session context"]
+    end
+
+    subgraph NotSatisfiedPath ["state = escalated"]
+      Research["Research stream (existing default.py body)<br/>ResearchConsultantAgent.generate_plan →<br/>(= existing ConsultantAgent, maybe renamed)<br/>StageScriptGenerator →<br/>CodeExecutor →<br/>4 evaluators + critic →<br/>TextGrad optimizer →<br/>reconsult on stagnation"]
+    end
+
+    User -->|initial query| Orch
+    Orch -->|state=initial| Analyst
+    Analyst --> ToolCon
+    ToolCon --> ToolOpt
+    ToolOpt --> Decision
+    Decision -->|yes| Chat
+    Decision -->|no, with dissatisfaction notes| Research
+
+    Chat -->|tool answers + new artifacts| User
+    User -.->|follow-up query| Orch
+    Orch -.->|state=chatting| Chat
+
+    Research -->|custom pipeline + metrics| User
+    Research -.->|optionally re-enters chat| Chat
+
+    Analyst -.writes evaluation_guidance.-> Session
+    ToolCon -.reads dataset + guidance.-> Session
+    ToolOpt -.writes task_id, trials,<br/>current_anndata_path.-> Session
+    Chat <-.reads/writes artifacts,<br/>transcript.-> Session
+    Research <-.reads consultant_background<br/>from session;<br/>writes research_run_dir.-> Session
+    Orch -.loads/saves.-> Session
+
+    classDef new fill:#e8f4ff,stroke:#1e6cc6,stroke-width:2px
+    classDef existing fill:#f0f0f0,stroke:#555,stroke-width:1px
+    classDef mem fill:#fff5e6,stroke:#c67a1e,stroke-width:2px
+    classDef decision fill:#ffe8e8,stroke:#c61e1e,stroke-width:1px
+
+    class ToolCon,ToolOpt,Chat new
+    class Analyst,Research existing
+    class Session mem
+    class Decision,Orch decision

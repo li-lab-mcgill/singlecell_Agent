@@ -1,0 +1,16 @@
+__pycache__/
+*.py[cod]
+
+logs/
+rag_data/
+results_*/
+notes_*/
+saved_code_*/
+tool_artifacts*/
+temp/
+fetch_prior_resources/kegg_matrices/
+
+# Large single-cell datasets and generated intermediate files.
+*.h5ad
+
+.DS_Store

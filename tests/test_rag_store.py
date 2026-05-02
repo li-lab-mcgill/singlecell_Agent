@@ -20,8 +20,8 @@ if "chromadb.utils.embedding_functions" not in sys.modules:
     sys.modules["chromadb.utils.embedding_functions"] = fake_embedding_functions
 
 
-from rag_store import RAGStore, _publication_metadata
-from rag_types import RAGDocument, RAGSection
+from rag.store_backend import RAGStore, _publication_metadata
+from rag.types import RAGDocument, RAGSection
 
 
 class RagStoreTests(unittest.TestCase):

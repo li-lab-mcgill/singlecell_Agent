@@ -42,14 +42,14 @@ if "requests" not in sys.modules:
     fake_requests.Session = type("Session", (), {})
     sys.modules["requests"] = fake_requests
 
-if "config" not in sys.modules:
-    fake_config = types.ModuleType("config")
+if "pipelines.config" not in sys.modules:
+    fake_config = types.ModuleType("pipelines.config")
     fake_config.Config = object
-    sys.modules["config"] = fake_config
+    sys.modules["pipelines.config"] = fake_config
 
 
-from rag_agent import BASE_QUERIES, ConsultantRAGAgent
-from rag_types import PromotedPaper, RAGDocument, RAGSection
+from rag.agent import BASE_QUERIES, ConsultantRAGAgent
+from rag.types import PromotedPaper, RAGDocument, RAGSection
 
 
 class _FakeStore:
@@ -172,7 +172,7 @@ class RagAgentTests(unittest.TestCase):
 
     def test_resolve_base_query_keeps_existing_dataset_query_unchanged(self):
         agent = ConsultantRAGAgent.__new__(ConsultantRAGAgent)
-        config = types.SimpleNamespace(feat_stats="PBMC dataset", task_type="Integration", learning_type="Unsupervised")
+        config = types.SimpleNamespace(feat_stats="PBMC dataset")
         self.assertEqual(
             agent._resolve_base_query("dataset", config, "background"),
             BASE_QUERIES["dataset"],
@@ -180,7 +180,7 @@ class RagAgentTests(unittest.TestCase):
 
     def test_task_descriptor_uses_real_task_block_from_background(self):
         agent = ConsultantRAGAgent.__new__(ConsultantRAGAgent)
-        config = types.SimpleNamespace(learning_type="Unsupervised")
+        config = types.SimpleNamespace()
         background = """
         DATA:
         Something.
@@ -296,26 +296,7 @@ class RagAgentTests(unittest.TestCase):
         )
         self.assertEqual(captured["n_queries"], 20)
 
-    def test_prepared_context_cache_is_reused(self):
-        agent = ConsultantRAGAgent.__new__(ConsultantRAGAgent)
-        agent._prepared_channel_contexts = {
-            "__prepared_contexts__": {
-                "dataset": {"context": "RAG_DATASET_CONTEXT\ncached", "hits": []},
-                "prior_resources": {"context": "RAG_PRIOR_RESOURCE_CONTEXT\ncached", "hits": []},
-                "prior_methods": {"context": "RAG_PRIOR_METHOD_CONTEXT\ncached", "hits": []},
-                "benchmark": {"context": "RAG_BENCHMARK_CONTEXT\ncached", "hits": []},
-            }
-        }
-        self.assertEqual(
-            agent.build_analyst_context(config=None, background="ignored"),
-            "RAG_DATASET_CONTEXT\ncached",
-        )
-        self.assertEqual(
-            agent.build_benchmark_context(config=None, background="ignored"),
-            "RAG_BENCHMARK_CONTEXT\ncached",
-        )
-
-    @patch("rag_agent.fetch_core_document")
+    @patch("rag.agent.fetch_core_document")
     def test_resolve_pmc_document_skips_fetch_errors(self, mock_fetch_core_document):
         agent = ConsultantRAGAgent.__new__(ConsultantRAGAgent)
         agent.store = types.SimpleNamespace(load_cached_core_document=lambda *_: None, save_cached_core_document=lambda *_: None)

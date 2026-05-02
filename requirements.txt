@@ -1,0 +1,41 @@
+# Core agent/runtime dependencies
+openai
+textgrad
+python-dotenv
+requests
+
+# Scientific Python stack
+anndata
+h5py
+matplotlib
+numpy
+pandas
+scikit-learn
+scipy
+seaborn
+
+# Single-cell analysis backends
+scanpy
+scrublet
+harmonypy
+scanorama
+bbknn
+leidenalg
+python-igraph
+umap-learn
+celltypist
+scvi-tools
+torch
+
+# RAG and optimization support
+chromadb
+sentence-transformers
+optuna
+
+# Reference and interval utilities
+pyfaidx
+pyranges
+pyliger
+
+# Test runner
+pytest

@@ -43,9 +43,9 @@ sys.modules["pandas"].read_csv = _fake_read_csv
 sys.modules["pandas"].ExcelFile = lambda *args, **kwargs: None
 sys.modules["pandas"].read_excel = lambda *args, **kwargs: None
 
-from config import Config
-from evaluation_plan import compute_combined_score, normalize_evaluation_plan
-from validator import validate_stage_outputs
+from pipelines.config import Config
+from pipelines.evaluation_plan import compute_combined_score, normalize_evaluation_plan
+from pipelines.validator import validate_stage_outputs
 
 
 def sample_plan():

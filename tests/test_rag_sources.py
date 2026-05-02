@@ -29,8 +29,8 @@ if "requests" not in sys.modules:
 
 import requests
 
-from rag_sources import _finalize_sections, normalize_section_type, resolve_pmcid_for_pubmed
-from rag_types import RAGSection
+from rag.sources import _finalize_sections, normalize_section_type, resolve_pmcid_for_pubmed
+from rag.types import RAGSection
 
 
 class RagSourcesTests(unittest.TestCase):
@@ -49,7 +49,7 @@ class RagSourcesTests(unittest.TestCase):
     def test_normalize_section_type_maps_discussion(self):
         self.assertEqual(normalize_section_type("Discussion"), "discussion")
 
-    @patch("rag_sources._retry_get")
+    @patch("rag.sources._retry_get")
     def test_resolve_pmcid_for_pubmed_returns_empty_on_rate_limit(self, mock_retry_get):
         response = requests.Response()
         response.status_code = 429
