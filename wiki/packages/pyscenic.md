@@ -1,0 +1,23 @@
+---
+type: package
+id: pyscenic
+version: ">=0.12"
+citation: Aibar et al. 2017 Nature Methods; Van de Sande et al. 2020 Nature Protocols
+---
+
+pySCENIC is a Python implementation of the SCENIC algorithm for single-cell gene regulatory network inference. It infers transcription factor regulons from co-expression patterns and validates them against cis-regulatory motif databases.
+
+Install: `pip install pyscenic`
+
+pySCENIC runs in three stages:
+
+1. **GRN inference**: `pyscenic grn` — co-expression modules via GRNBoost2 or GENIE3; requires expression matrix and a list of TF names; outputs adjacency matrix
+2. **Regulon pruning**: `pyscenic ctx` — prunes modules using motif enrichment analysis against cisTarget databases; outputs regulons (TF + target genes with motif support)
+3. **AUC scoring**: `pyscenic aucell` — scores each cell for regulon activity using AUCell; outputs regulon activity matrix stored in `adata.obsm["X_pyscenic_auc"]`
+
+Required databases (download separately):
+- TF list: `allTFs_hg38.txt` or `allTFs_mm10.txt`
+- Motif rankings: `hg38_500bp_up_100bp_down_full_tx_v10_clust.genes_vs_motifs.rankings.feather`
+- Motif annotations: `motifs-v10nr_clust-nr.hgnc-m0.001-o0.0.tbl`
+
+pySCENIC is the most validated single-cell GRN method but requires significant compute (GRNBoost2 step). For large datasets, run the GRN step on a cluster. The AUCell step is memory-efficient and fast. [Aibar et al. 2017]

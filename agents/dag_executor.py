@@ -11,7 +11,7 @@ from typing import Any, Dict, List
 
 from agents.decision_schema import validate_dag_plan
 from backend.artifacts import ArtifactManifest
-from agents.tools import build_tool_executor_registry
+from backend.tools.executor import build_wiki_executor_registry
 from backend.cache import sha256_file
 from backend.objectives import score_metrics
 
@@ -26,8 +26,7 @@ class DagExecutor:
         self.backend = backend
         self.result_dir = Path(result_dir)
         self.result_dir.mkdir(parents=True, exist_ok=True)
-        registry = build_tool_executor_registry(backend)
-        self.tool_executor = registry.executor()
+        self.tool_executor = build_wiki_executor_registry()
 
     def execute(self, *, dag_plan: Dict[str, Any], session_tag: str = "dag") -> Dict[str, Any]:
         plan = validate_dag_plan(dag_plan, available_stages=self.tool_executor.keys())
