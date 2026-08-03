@@ -19,6 +19,7 @@ if "chromadb.utils.embedding_functions" not in sys.modules:
 
 
 from rag.store_backend import dedup_cross_source
+from rag.literature_retriever import rrf_fuse, DEFAULT_RRF_K
 from rag.types import RAGDocument
 
 
@@ -103,6 +104,42 @@ class CrossSourceDedupTests(unittest.TestCase):
         self.assertEqual(len(out), 1)
         self.assertEqual(out[0].doc_id, "pmc:1")
         self.assertEqual(out[0].doc_type, "core_full_text")
+
+
+class RRFPerDocumentAggregationTests(unittest.TestCase):
+    def test_rrf_aggregates_chunks_per_document(self):
+        # doc "full" has chunks at ranks 1,2,3; doc "abs" one chunk at rank 4.
+        # A multi-chunk document must not accumulate one RRF increment per
+        # chunk occurrence -- only its single best (first/lowest) rank counts.
+        ranked = [[("full", 0.9), ("full", 0.8), ("full", 0.7), ("abs", 0.6)]]
+
+        scores = rrf_fuse(ranked)
+
+        # "full" must not get 3x the increments of "abs"
+        self.assertLessEqual(scores["full"], 1.0 / (DEFAULT_RRF_K + 1) + 1e-9)
+        self.assertAlmostEqual(scores["full"], 1.0 / (DEFAULT_RRF_K + 1))
+        self.assertAlmostEqual(scores["abs"], 1.0 / (DEFAULT_RRF_K + 2))
+
+    def test_rrf_fuse_sums_across_multiple_ranked_lists(self):
+        ranked_lists = [
+            [("a", 0.9), ("b", 0.8)],
+            [("b", 0.95), ("a", 0.7)],
+        ]
+
+        scores = rrf_fuse(ranked_lists, k=1)
+
+        self.assertAlmostEqual(scores["a"], 1.0 / 2 + 1.0 / 3)
+        self.assertAlmostEqual(scores["b"], 1.0 / 3 + 1.0 / 2)
+
+    def test_rrf_fuse_ignores_repeat_doc_id_appearing_later_in_same_list(self):
+        # Even a non-consecutive repeat of a doc_id within one ranked list
+        # must not contribute a second increment.
+        ranked_lists = [[("x", 0.9), ("y", 0.8), ("x", 0.5)]]
+
+        scores = rrf_fuse(ranked_lists, k=1)
+
+        self.assertAlmostEqual(scores["x"], 1.0 / 2)
+        self.assertAlmostEqual(scores["y"], 1.0 / 3)
 
 
 if __name__ == "__main__":

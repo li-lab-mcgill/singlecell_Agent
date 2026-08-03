@@ -491,13 +491,15 @@ class LiteratureRetriever:
             hits = self.store.search_runtime(
                 collection_name, item["hyde_abstract"], n_results=DEFAULT_SEARCH_HITS
             )
-            ranked_lists.append([(h.doc_id, h.score) for h in hits])
+            # search_runtime returns CHUNK-level hits, so the same doc_id can
+            # appear at several consecutive ranks for multi-chunk (full-text)
+            # documents. Collapse to one entry per doc_id, keeping the best
+            # (lowest/first-seen) rank, before this list is fused with the
+            # others -- otherwise heavily-chunked papers get several RRF
+            # increments per subquery while abstract-only papers get one.
+            ranked_lists.append(_collapse_to_best_rank_per_doc([(h.doc_id, h.score) for h in hits]))
 
-        # RRF fusion
-        scores: dict[str, float] = {}
-        for ranked in ranked_lists:
-            for rank, (doc_id, _) in enumerate(ranked, start=1):
-                scores[doc_id] = scores.get(doc_id, 0.0) + 1.0 / (DEFAULT_RRF_K + rank)
+        scores = rrf_fuse(ranked_lists, k=DEFAULT_RRF_K)
 
         ordered = sorted(scores.items(), key=lambda x: -x[1])
         result: list[RAGDocument] = []
@@ -639,6 +641,47 @@ class LiteratureRetriever:
     def _collection_name(self, base_query: str, role: str) -> str:
         h = hashlib.sha256(f"{role}:{base_query}".encode()).hexdigest()[:12]
         return f"panelist_{role}_{h}"
+
+
+def _collapse_to_best_rank_per_doc(
+    ranked: list[tuple[str, float]],
+) -> list[tuple[str, float]]:
+    """Collapse a chunk-level ranked list to one entry per doc_id.
+
+    ``ranked`` is a list of ``(doc_id, score)`` pairs already ordered best
+    (lowest rank) first. When the same doc_id occurs more than once -- e.g. a
+    full-text document contributing several chunk hits -- only its first
+    (best-ranked) occurrence is kept.
+    """
+    seen: set[str] = set()
+    collapsed: list[tuple[str, float]] = []
+    for doc_id, score in ranked:
+        if doc_id in seen:
+            continue
+        seen.add(doc_id)
+        collapsed.append((doc_id, score))
+    return collapsed
+
+
+def rrf_fuse(
+    ranked_lists: list[list[tuple[str, float]]],
+    k: int = DEFAULT_RRF_K,
+) -> dict[str, float]:
+    """Reciprocal Rank Fusion over multiple ranked lists of ``(doc_id, score)``.
+
+    Each inner list is first collapsed to one entry per doc_id (keeping the
+    best/first-seen rank -- see :func:`_collapse_to_best_rank_per_doc`) so
+    that a document occupying several consecutive positions in one list
+    (e.g. multiple chunks of the same full-text paper) is not rewarded with
+    multiple RRF increments relative to a document that appears once.
+
+    Returns a mapping of doc_id -> fused RRF score, summed across lists.
+    """
+    scores: dict[str, float] = {}
+    for ranked in ranked_lists:
+        for rank, (doc_id, _) in enumerate(_collapse_to_best_rank_per_doc(ranked), start=1):
+            scores[doc_id] = scores.get(doc_id, 0.0) + 1.0 / (k + rank)
+    return scores
 
 
 def _extract_json(text: str) -> Any:
