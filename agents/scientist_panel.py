@@ -57,23 +57,25 @@ from agents.llm_utils import single_llm_call
 from agents.paper_judge import PaperJudge
 from agents.paper_md_writer import PaperMDWriter
 from agents.panelist_tools import build_panelist_tool_registry
-from agents.prompt_loader import load_updated_prompt
 from agents.runner import ToolCallingAgentRunner
 from agents.tool_base import AgentToolRegistry
 from rag.literature_retriever import LiteratureRetriever
 from rag.store_backend import RAGStore
 from wiki.index import query_tasks as _wiki_query_tasks
+from prompts.panelist_prompts import (
+    PANELIST_SHARED_SYSTEM,
+    BIOLOGIST_ROUND1_PROMPT,
+    STATISTICIAN_ROUND1_PROMPT,
+    BIOINFORMATICIAN_ROUND1_PROMPT,
+    PANELIST_CALLBACK_PROMPT,
+)
+from prompts.mediator_prompts import (
+    MEDIATOR_SHARED_SYSTEM,
+    MEDIATOR_FORMULATION_PROMPT,
+    MEDIATOR_POST_ANALYSIS_PROMPT,
+)
 
 _ROLES = ["biologist", "statistician", "bioinformatician"]
-
-PANELIST_SHARED_SYSTEM = load_updated_prompt("panelist_shared_system")
-BIOLOGIST_ROUND1_PROMPT = load_updated_prompt("biologist_formulation")
-STATISTICIAN_ROUND1_PROMPT = load_updated_prompt("statistician_formulation")
-BIOINFORMATICIAN_ROUND1_PROMPT = load_updated_prompt("bioinformatician_formulation")
-MEDIATOR_SHARED_SYSTEM = load_updated_prompt("mediator_shared_system")
-MEDIATOR_FORMULATION_PROMPT = load_updated_prompt("mediator_formulation")
-MEDIATOR_POST_ANALYSIS_PROMPT = load_updated_prompt("mediator_post_analysis")
-PANELIST_CALLBACK_PROMPT = load_updated_prompt("panelist_callback")
 
 _ROUND1_PROMPTS = {
     "biologist": BIOLOGIST_ROUND1_PROMPT,
@@ -606,7 +608,10 @@ class ScientistPanel:
         round_number: int,
     ) -> dict[str, Any]:
         callback_type = str(callback.get("callback_type") or "").strip()
-        context_str = json.dumps(context, indent=2, ensure_ascii=False)
+        # Compact (no indent): this JSON blob is concatenated straight into the
+        # LLM prompt below, not written to disk — pretty-printing it only burns
+        # input tokens without adding any information the model needs.
+        context_str = json.dumps(context, ensure_ascii=False)
         if callback_type == "ask_panelist_for_more_literature":
             registry = build_panelist_tool_registry(
                 role=role,
