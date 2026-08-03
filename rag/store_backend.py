@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Dict, Iterable, List, Optional
 from datetime import datetime
 
-from rag.types import RAGChunk, RAGDocument, RAGHit, RAGSection, dedup_key
+from rag.types import RAGChunk, RAGDocument, RAGHit, RAGSection, dedup_key, normalize_title
 
 try:
     import chromadb
@@ -122,6 +122,65 @@ def _publication_metadata(published: str) -> Dict[str, object]:
         else:
             metadata["publication_date_iso"] = f"{year:04d}-{month:02d}"
     return metadata
+
+
+_FULL_TEXT_STATUS_RANK = {
+    "pmc_xml": 4,
+    "preprint_jats": 3,
+    "open_pdf": 2,
+    "core_full_text": 2,
+    "abstract_only": 1,
+}
+
+
+def _full_text_status(document: RAGDocument) -> str:
+    status = str((document.metadata or {}).get("full_text_status") or "").strip()
+    if status:
+        return status
+    return "core_full_text" if document.doc_type == "core_full_text" else "abstract_only"
+
+
+def _document_richness(document: RAGDocument) -> tuple:
+    status_rank = _FULL_TEXT_STATUS_RANK.get(_full_text_status(document), 0)
+    has_sections = 1 if document.sections else 0
+    text_length = len(document.text or "")
+    return (status_rank, has_sections, text_length)
+
+
+def _cross_source_key(document: RAGDocument) -> str:
+    doi = str(document.doi or "").strip().lower()
+    if doi:
+        return f"doi:{doi}"
+    title = normalize_title(document.title)
+    if title:
+        return f"title:{title}"
+    return f"doc:{document.doc_id}"
+
+
+def dedup_cross_source(documents: Iterable[RAGDocument]) -> List[RAGDocument]:
+    """Collapse the same paper fetched from multiple sources (PubMed/S2/OpenAlex/...).
+
+    ``RAGStore.deduplicate_documents``/``dedup_key`` key on the full
+    ``(doc_id, doi, title)`` tuple, so the same paper fetched from three
+    different sources (each of which mints its own source-prefixed ``doc_id``)
+    survives as three separate documents. This function instead keys purely on
+    the normalized DOI when present, falling back to the normalized title, so
+    duplicates are collapsed across sources regardless of ``doc_id``. When
+    multiple copies of the same paper collide, the richest copy (full-text
+    over abstract-only) is kept.
+    """
+    best_by_key: Dict[str, RAGDocument] = {}
+    order: List[str] = []
+    for document in documents:
+        key = _cross_source_key(document)
+        existing = best_by_key.get(key)
+        if existing is None:
+            best_by_key[key] = document
+            order.append(key)
+            continue
+        if _document_richness(document) > _document_richness(existing):
+            best_by_key[key] = document
+    return [best_by_key[key] for key in order]
 
 
 class RAGStore:

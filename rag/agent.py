@@ -20,7 +20,7 @@ from rag.sources import (
     fetch_semantic_scholar_documents,
     fetch_openalex_documents,
 )
-from rag.store_backend import RAGStore
+from rag.store_backend import RAGStore, dedup_cross_source
 from rag.types import PromotedPaper, RAGDocument, RAGHit, dedup_key
 
 
@@ -543,12 +543,13 @@ class ConsultantRAGAgent:
             s2_documents = f_s2.result()
             oa_documents = f_oa.result()
 
-        all_candidates = self.store.deduplicate_documents(
-            pubmed_documents + s2_documents + oa_documents
+        all_candidates = dedup_cross_source(
+            self.store.deduplicate_documents(pubmed_documents + s2_documents + oa_documents)
         )
         print(
             f"retrieved {len(pubmed_documents)} PubMed + {len(s2_documents)} S2 + "
-            f"{len(oa_documents)} OpenAlex = {len(all_candidates)} unique candidates for {channel_name}"
+            f"{len(oa_documents)} OpenAlex = {len(all_candidates)} unique candidates "
+            f"(cross-source deduped by DOI/title) for {channel_name}"
         )
         eligible_documents = self._eligible_pmc_documents(all_candidates)
         print(f"resolved {len(eligible_documents)} full-text papers for {channel_name}")
