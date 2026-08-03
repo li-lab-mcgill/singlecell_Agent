@@ -14,7 +14,7 @@ Usage:
         paper_md_writer=writer,    # optional
         client=client,
         result_dir="results/panel",
-        max_rounds=3,
+        max_rounds=2,
     )
     result = adversary.run(
         user_question="...",
@@ -74,7 +74,7 @@ class AdversarialPanelist:
         paper_md_writer: Any | None = None,
         client: Any | None = None,
         result_dir: str | Path,
-        max_rounds: int = 3,
+        max_rounds: int = 2,
         max_schema_repair_attempts: int = 1,
     ):
         if client is None and OpenAI is None:
