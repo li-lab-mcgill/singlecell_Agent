@@ -152,6 +152,95 @@ class _LegacyScientistPanel:
         }
 
 
+class _LiveScientistPanel:
+    """Fake panel matching the live run_initial_panelists()/MediatorAgent contract."""
+
+    max_mediator_callback_rounds = 1
+    max_callbacks_per_round = 2
+
+    def run_initial_panelists(self, **_):
+        return {
+            "biologist": "bio evidence",
+            "statistician": "stat evidence",
+            "bioinformatician": "comp evidence",
+        }
+
+    def run_panelist_callback(self, role, callback_input):
+        raise AssertionError("not expected in this test")
+
+
+class _LiveMediator:
+    """Fake MediatorAgent: one formulate() call, then a scripted post_analysis() per phase."""
+
+    def __init__(self, post_decisions):
+        self.post_decisions = list(post_decisions)
+        self.post_contexts = []
+
+    def formulate(self, *, formulation_context):
+        return {
+            "formulation_status": "ready_for_adversary",
+            "selected_research_plan": {
+                "plan_id": "plan_a",
+                "summary": "Test plan.",
+                "steps": [
+                    {
+                        "step_id": "step_1",
+                        "biological_goal": "Answer the user question.",
+                        "statistical_requirement": "Use valid evidence.",
+                        "computational_approach": "Run a minimal DAG.",
+                    }
+                ],
+                "required_visualizations": [],
+            },
+            "trajectory_decision": {"action": "initialize_plan", "branch_from_node_id": None, "reason": "test"},
+            "evidence_state": {"analysis_claims": []},
+        }
+
+    def synthesize_callbacks(self, **_):
+        raise AssertionError("not expected in this test")
+
+    def revise_from_adversary(self, **_):
+        raise AssertionError("not expected in this test")
+
+    def post_analysis(self, *, post_analysis_context):
+        self.post_contexts.append(post_analysis_context)
+        return dict(self.post_decisions.pop(0))
+
+
+class _LiveAdversary:
+    """Fake AdversarialPanelist that always lets the candidate plan survive."""
+
+    max_rounds = 2
+
+    def run(self, *, adversary_context):
+        return {
+            "adversary_verdict": "survives",
+            "verdict": "survives",
+            "plan": adversary_context["candidate_plan"],
+        }
+
+
+class _BlockingToolConsultant(_FakeToolConsultant):
+    """Blocks execution on the first phase only, to exercise the skip-analyzer path."""
+
+    def decide(self, *, user_message, session_state, session_tag):
+        super().decide(user_message=user_message, session_state=session_state, session_tag=session_tag)
+        if len(self.calls) == 1:
+            return {
+                "dag_plan": {"layers": []},
+                "implementation_plan": None,
+                "output_retention_policy": [],
+                "execution_blocked": True,
+                "adversarial_alignment_review": {
+                    "verdict": "needs_tool_revision",
+                    "target": "implementation_plan",
+                    "failure_mode": "missing_analysis",
+                    "required_revision": "Add leakage-safe cell-level CV fallback.",
+                },
+            }
+        return {"dag_plan": {"layers": []}, "implementation_plan": None, "output_retention_policy": []}
+
+
 class AnalyzerPhaseUpdateTests(unittest.TestCase):
     def test_analyzer_prompt_and_normalizer_include_phase5_schema(self):
         self.assertIn("claim_updates", ANALYZER_MEDIATOR_PROMPT)
@@ -257,6 +346,74 @@ class AnalyzerPhaseUpdateTests(unittest.TestCase):
             )
 
         self.assertEqual(decision["decision_type"], "accept_and_conclude")
+
+    def test_blocked_execution_skips_analyzer_and_carries_decision_to_next_phase(self):
+        """Live-path regression: execution_status == "blocked" must skip AnalyzerPanel
+        and synthesize a _blocked_execution_report() instead (research_loop.py
+        ~line 359-364), and the resulting post-analysis decision must be carried
+        into the next phase's ToolConsultant session_state as
+        last_post_analysis_decision (research_loop.py ~line 548 / 1093-1094).
+        """
+        mediator = _LiveMediator(
+            [
+                {
+                    "decision": "self_revise_plan",
+                    "decision_type": "self_revise_plan",
+                    "rationale": "The adversarial critique blocks execution and must be repaired before analysis.",
+                    "updated_selected_research_plan": {
+                        "steps": [
+                            {
+                                "step_id": "step_1_revised",
+                                "biological_goal": "Answer the user question.",
+                                "statistical_requirement": "Use valid evidence.",
+                                "computational_approach": "Add leakage-safe cell-level CV fallback.",
+                            }
+                        ],
+                        "required_visualizations": [],
+                    },
+                    "evidence_state": {},
+                },
+                {
+                    "decision": "accept_and_conclude",
+                    "decision_type": "accept_and_conclude",
+                    "rationale": "Stop after the repaired phase.",
+                    "evidence_state": {},
+                },
+            ]
+        )
+        adversary = _LiveAdversary()
+        tool_consultant = _BlockingToolConsultant()
+        analyzer_panel = _FakeAnalyzerPanel()
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            loop = _make_loop(tmpdir, _LiveScientistPanel())
+            loop.analyzer_panel = analyzer_panel
+            loop.tool_consultant = tool_consultant
+            loop.mediator_agent = mediator
+            loop.adversarial_panelist = adversary
+            result = loop.run(user_question="Answer this.", pipeline_mode="full")
+
+        self.assertEqual(result["status"], "done")
+
+        # Phase 1's execution was blocked, so AnalyzerPanel must be skipped for it;
+        # only phase 2 (unblocked) invokes it.
+        self.assertEqual(len(analyzer_panel.calls), 1)
+
+        # Mediator.post_analysis() still receives a blocked-shaped analyzer_report
+        # (from _blocked_execution_report), not a real AnalyzerPanel report.
+        self.assertEqual(len(mediator.post_contexts), 2)
+        self.assertEqual(mediator.post_contexts[0]["analyzer_report"]["result_verdict"], "blocked")
+        self.assertEqual(
+            mediator.post_contexts[0]["analyzer_report"]["problem_localization"]["problem_stage"],
+            "implementation_plan",
+        )
+
+        # Phase 1's post-analysis decision (self_revise_plan) must be carried into
+        # phase 2's ToolConsultant session_state as last_post_analysis_decision.
+        self.assertEqual(
+            tool_consultant.calls[1]["session_state"]["last_post_analysis_decision"]["decision"],
+            "self_revise_plan",
+        )
 
 
 if __name__ == "__main__":
