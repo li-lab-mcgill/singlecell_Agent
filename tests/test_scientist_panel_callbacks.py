@@ -2,11 +2,9 @@ from __future__ import annotations
 
 import unittest
 
-from agents.prompt_loader import load_updated_prompt
 from agents.scientist_panel import ScientistPanel, _extract_callback_requests
-
-MEDIATOR_FORMULATION_PROMPT = load_updated_prompt("mediator_formulation")
-PANELIST_CALLBACK_PROMPT = load_updated_prompt("panelist_callback")
+from prompts.mediator_prompts import MEDIATOR_FORMULATION_PROMPT
+from prompts.panelist_prompts import PANELIST_CALLBACK_PROMPT
 
 
 class _CallbackPanel(ScientistPanel):

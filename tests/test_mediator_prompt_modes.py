@@ -4,13 +4,10 @@ from pathlib import Path
 from unittest import mock
 
 from agents.mediator_agent import MediatorAgent, _tag_done_handler
-from agents.prompt_loader import load_updated_prompt
 from agents.scientist_panel import _normalize_research_plan_schema
+from prompts.mediator_prompts import MEDIATOR_FORMULATION_PROMPT, MEDIATOR_SHARED_SYSTEM
+from prompts.panelist_prompts import PANELIST_SHARED_SYSTEM
 from prompts.session_router_prompts import SESSION_ROUTER_PROMPT, SESSION_ROUTER_SCHEMA_PROMPT
-
-MEDIATOR_FORMULATION_PROMPT = load_updated_prompt("mediator_formulation")
-MEDIATOR_SHARED_SYSTEM = load_updated_prompt("mediator_shared_system")
-PANELIST_SHARED_SYSTEM = load_updated_prompt("panelist_shared_system")
 
 
 class MediatorPromptModeTests(unittest.TestCase):
