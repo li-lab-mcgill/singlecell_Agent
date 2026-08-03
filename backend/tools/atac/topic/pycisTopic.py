@@ -165,7 +165,7 @@ def _run_pycisTopic(
         )
 
     # --- Single model: extract and store results ---
-    model = models[n_topics_list[0]]
+    model = models[0]
     cisTopic_obj.add_LDA_model(model)
 
     # cell × topic (model.cell_topic is already cell × topic)
