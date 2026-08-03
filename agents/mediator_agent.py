@@ -45,6 +45,7 @@ class MediatorAgent:
         self,
         *,
         engine_name: str,
+        fast_engine_name: str | None = None,
         client: Any | None = None,
         result_dir: str | Path,
         panelist_callback_executor: Callable[[str, dict[str, Any]], dict[str, Any]] | None = None,
@@ -57,6 +58,9 @@ class MediatorAgent:
             raise RuntimeError("openai package is required for MediatorAgent")
         self.client = client or OpenAI()
         self.engine_name = engine_name
+        # Falls back to engine_name when not wired, so behavior is unchanged
+        # unless a caller explicitly supplies a distinct fast engine.
+        self.fast_engine_name = fast_engine_name or engine_name
         self.result_dir = Path(result_dir)
         self.result_dir.mkdir(parents=True, exist_ok=True)
         self.panelist_callback_executor = panelist_callback_executor
@@ -225,7 +229,9 @@ class MediatorAgent:
                     invalid_output=current,
                     error=str(exc),
                 )
-                repair_text = single_llm_call(self.client, self.engine_name, repair_prompt, system=MEDIATOR_SHARED_SYSTEM)
+                # Mechanical re-emit of already-decided content into valid JSON —
+                # no new judgment is made here, so the fast engine is safe to use.
+                repair_text = single_llm_call(self.client, self.fast_engine_name, repair_prompt, system=MEDIATOR_SHARED_SYSTEM)
                 current = _extract_tag_json(str(repair_text), tag)
                 self._save(
                     f"{save_name}_schema_repair{attempt + 1}",

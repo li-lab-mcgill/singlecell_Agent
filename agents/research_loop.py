@@ -1159,9 +1159,13 @@ class ResearchLoop:
             return mediator
         client = getattr(self.scientist_panel, "client", None)
         engine_name = getattr(self.scientist_panel, "engine_name", None) or "gpt-4o"
+        # ScientistPanel already resolves fast_engine_name (falling back to its own
+        # engine_name), so reuse that instead of introducing a second source of truth.
+        fast_engine_name = getattr(self.scientist_panel, "fast_engine_name", None) or engine_name
         registry = build_paper_detail_tool_registry(retriever=self.scientist_panel.retriever)
         mediator = MediatorAgent(
             engine_name=engine_name,
+            fast_engine_name=fast_engine_name,
             client=client,
             result_dir=self.result_dir / "mediator",
             panelist_callback_executor=getattr(self.scientist_panel, "run_panelist_callback", None),

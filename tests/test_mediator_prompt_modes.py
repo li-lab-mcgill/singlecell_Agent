@@ -1,6 +1,9 @@
+import tempfile
 import unittest
+from pathlib import Path
+from unittest import mock
 
-from agents.mediator_agent import _tag_done_handler
+from agents.mediator_agent import MediatorAgent, _tag_done_handler
 from agents.prompt_loader import load_updated_prompt
 from agents.scientist_panel import _normalize_research_plan_schema
 from prompts.session_router_prompts import SESSION_ROUTER_PROMPT, SESSION_ROUTER_SCHEMA_PROMPT
@@ -102,6 +105,92 @@ class TagDoneHandlerAliasTests(unittest.TestCase):
 
         self.assertFalse(result["done"])
         self.assertIn("next_user_input", result)
+
+
+class MediatorFastEngineRoutingTests(unittest.TestCase):
+    """Task 2.3: JSON-repair retries should use the fast engine; the primary
+    mediation call must stay on the main engine regardless of what fast engine
+    is configured."""
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.result_dir = Path(self._tmp.name)
+
+    def tearDown(self):
+        self._tmp.cleanup()
+
+    def test_fast_engine_name_defaults_to_engine_name_when_omitted(self):
+        mediator = MediatorAgent(engine_name="main-engine", client=object(), result_dir=self.result_dir)
+        self.assertEqual(mediator.fast_engine_name, "main-engine")
+
+    def test_fast_engine_name_uses_explicit_override(self):
+        mediator = MediatorAgent(
+            engine_name="main-engine",
+            fast_engine_name="fast-engine",
+            client=object(),
+            result_dir=self.result_dir,
+        )
+        self.assertEqual(mediator.fast_engine_name, "fast-engine")
+
+    def test_json_repair_retry_uses_fast_engine_while_main_call_uses_main_engine(self):
+        """Non-vacuous: the first (primary formulation) call must be tagged with
+        an invalid formulation_status so the repair path is actually reached,
+        proving the two calls really are routed to different engines rather
+        than both being satisfied by the first response."""
+        captured_models: list[str] = []
+
+        def fake_single_llm_call(client, model, prompt, *, system=""):
+            captured_models.append(model)
+            if len(captured_models) == 1:
+                # Primary mediation call: deliberately invalid so validation
+                # fails and the schema-repair retry is triggered.
+                return '<MEDIATOR_OUTPUT>{"formulation_status": "not_a_real_status"}</MEDIATOR_OUTPUT>'
+            # Schema-repair retry: valid output.
+            return (
+                '<MEDIATOR_OUTPUT>{"formulation_status": "ready_for_adversary", '
+                '"selected_research_plan": {"plan_id": "p1", "summary": "s", "steps": []}}'
+                "</MEDIATOR_OUTPUT>"
+            )
+
+        with mock.patch("agents.mediator_agent.single_llm_call", fake_single_llm_call):
+            mediator = MediatorAgent(
+                engine_name="main-engine",
+                fast_engine_name="fast-engine",
+                client=object(),
+                result_dir=self.result_dir,
+                max_schema_repair_attempts=1,
+            )
+            result = mediator.formulate(formulation_context={"foo": "bar"})
+
+        self.assertEqual(result["formulation_status"], "ready_for_adversary")
+        self.assertEqual(captured_models, ["main-engine", "fast-engine"])
+
+    def test_json_repair_retry_falls_back_to_main_engine_when_fast_engine_not_wired(self):
+        """If fast_engine_name is never passed in, the repair call must still use
+        engine_name — confirming the default keeps behavior identical to before
+        this change for any caller that hasn't wired a fast engine."""
+        captured_models: list[str] = []
+
+        def fake_single_llm_call(client, model, prompt, *, system=""):
+            captured_models.append(model)
+            if len(captured_models) == 1:
+                return '<MEDIATOR_OUTPUT>{"formulation_status": "not_a_real_status"}</MEDIATOR_OUTPUT>'
+            return (
+                '<MEDIATOR_OUTPUT>{"formulation_status": "ready_for_adversary", '
+                '"selected_research_plan": {"plan_id": "p1", "summary": "s", "steps": []}}'
+                "</MEDIATOR_OUTPUT>"
+            )
+
+        with mock.patch("agents.mediator_agent.single_llm_call", fake_single_llm_call):
+            mediator = MediatorAgent(
+                engine_name="main-engine",
+                client=object(),
+                result_dir=self.result_dir,
+                max_schema_repair_attempts=1,
+            )
+            mediator.formulate(formulation_context={"foo": "bar"})
+
+        self.assertEqual(captured_models, ["main-engine", "main-engine"])
 
 
 if __name__ == "__main__":
