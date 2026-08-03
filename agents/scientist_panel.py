@@ -266,7 +266,7 @@ class ScientistPanel:
             transcript_path=str(self.result_dir / "formulate_lightweight_biologist_transcript.jsonl"),
             tool_trace_path=str(self.result_dir / "formulate_lightweight_biologist_tool_trace.jsonl"),
             client=self.client,
-            max_iterations=12,
+            max_iterations=10,
             max_tool_calls=20,
         )
         biologist_out = runner.run(initial_user_input=biologist_prompt, response_handler=None)
@@ -679,7 +679,7 @@ class ScientistPanel:
             transcript_path=str(self.result_dir / f"{role}_{tag.lower()}_transcript.jsonl"),
             tool_trace_path=str(self.result_dir / f"{role}_{tag.lower()}_tool_trace.jsonl"),
             client=self.client,
-            max_iterations=20,
+            max_iterations=10,
             max_tool_calls=16,
         )
 
