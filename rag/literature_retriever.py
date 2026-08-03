@@ -640,7 +640,9 @@ class LiteratureRetriever:
         return {
             "objective": abstract_text,
             "background": "",
+            "method_and_dataset": "",
             "analysis": "",
+            "benchmark_methods": "",
             "key_methods": "",
             "main_findings": "",
             "limitations": "",
