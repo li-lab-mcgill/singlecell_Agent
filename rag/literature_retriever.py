@@ -34,6 +34,7 @@ import json
 import logging
 import re
 import threading
+from collections import OrderedDict
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import Any
@@ -59,6 +60,10 @@ DEFAULT_N_SUBQUERIES = 4
 DEFAULT_TOP_K = 8
 DEFAULT_SEARCH_HITS = 20
 DEFAULT_RRF_K = 60
+# Bounds the HyDE-abstract cache (see LiteratureRetriever._hyde_cache) so it
+# cannot grow unbounded across a long-lived (process-lifetime) retriever
+# instance. Oldest entries are evicted FIFO once this cap is exceeded.
+_MAX_HYDE_CACHE_ENTRIES = 512
 
 # ---------------------------------------------------------------------------
 # Prompts (OpenAI client style — no textgrad)
@@ -164,37 +169,55 @@ class LiteratureRetriever:
         self.cache_dir.mkdir(parents=True, exist_ok=True)
         self._paper_documents_by_id: dict[str, RAGDocument] = {}
 
-        # Per-phase HyDE/search cache. Keyed on the normalized subquery text
-        # (the base_query a panelist issues to retrieve_literature — see
+        # HyDE-abstract cache. Keyed on the normalized subquery text (the
+        # base_query a panelist issues to retrieve_literature — see
         # RetrieveLiteratureTool.run in agents/panelist_tools.py), this
         # avoids redundantly regenerating HyDE abstracts (_generate_subqueries,
-        # an LLM call) and re-running search_runtime (a vector search) when
-        # the three panelists (biologist/statistician/bioinformatician) share
-        # this retriever instance and issue overlapping subqueries within one
-        # research phase. Panelists run concurrently in a ThreadPoolExecutor
-        # (agents/scientist_panel.py::_run_parallel), so this retriever
-        # instance -- and this cache -- is accessed from multiple threads at
-        # once; _cache_lock guards all reads/writes.
+        # an LLM call) when the three panelists (biologist/statistician/
+        # bioinformatician) share this retriever instance and issue
+        # overlapping subqueries. Panelists run concurrently in a
+        # ThreadPoolExecutor (agents/scientist_panel.py::_run_parallel), so
+        # this retriever instance -- and this cache -- is accessed from
+        # multiple threads at once; _cache_lock guards all reads/writes.
         #
-        # Scoping choice: no phase/round token is threaded through retrieve()
-        # today, and adding one would touch retrieve()'s signature, the
-        # retrieve_literature tool, and every caller in agents/scientist_panel.py
-        # -- well beyond this file. Instead, the cache is reset explicitly via
-        # reset_cache(), which the caller (e.g. ScientistPanel/ResearchLoop)
-        # must invoke at the start of each new research phase so a new
-        # research question never reads stale entries from a prior phase.
-        self._retrieval_cache: dict[str, dict[str, Any]] = {}
+        # IMPORTANT — what is (and is NOT) cached:
+        # Only the HyDE subquery/abstract *generation* result is cached here.
+        # `_generate_subqueries` is a pure function of (base_query,
+        # retrieval_intent, retrieval_goal, background, n) — it does not
+        # depend on the document index, on `role`, or on which research
+        # phase/question is in flight, so reusing it is always safe: two
+        # calls with the same normalized base_query always deserve the same
+        # HyDE abstracts, regardless of phase.
+        #
+        # Search results (`_rrf_search` / `store.search_runtime`) are
+        # deliberately NEVER cached. Each `retrieve()` call fetches its own
+        # fresh document set and builds/searches its own vector index
+        # (`_collection_name` is unique per role+base_query), so a cached
+        # ranked-document list could reference documents from a completely
+        # different research phase/question — that would be a real staleness
+        # bug (a prior question's results silently returned instead of the
+        # current one's), not a performance optimization. Search is also the
+        # cheap part of this pipeline; the LLM call is what's worth avoiding.
+        #
+        # Because this cache is a pure function of query text, it is safe for
+        # the lifetime of the process — no phase-boundary reset is required
+        # for correctness. `reset_cache()` remains available (e.g. for tests,
+        # or if a caller wants to bound memory more eagerly), and the cache
+        # is also bounded by `_MAX_HYDE_CACHE_ENTRIES` with FIFO eviction so
+        # it cannot grow unbounded across a long-lived process.
+        self._hyde_cache: "OrderedDict[str, list[dict[str, str]]]" = OrderedDict()
         self._cache_lock = threading.Lock()
 
     def reset_cache(self) -> None:
-        """Clear the per-phase HyDE/search cache.
+        """Clear the cached HyDE abstracts.
 
-        Call this at the start of a new research phase/question so that
-        `retrieve()` does not reuse HyDE abstracts or search hits generated
-        for a previous phase's subqueries.
+        Not required for correctness (see the cache-safety note in
+        `__init__`) since HyDE generation is a pure function of query text.
+        Provided for tests and for callers that want to bound memory more
+        eagerly than the built-in FIFO cap.
         """
         with self._cache_lock:
-            self._retrieval_cache.clear()
+            self._hyde_cache.clear()
 
     def retrieve(
         self,
@@ -246,22 +269,17 @@ class LiteratureRetriever:
         if not documents:
             return []
 
-        # Steps 3+4: HyDE subqueries + vector search/RRF, cached per phase.
+        # Step 3: generate HyDE subqueries — cached by normalized base_query.
         #
         # This retriever is shared across the three panelists, and the same
-        # (or an overlapping) base_query is frequently re-issued within one
-        # research phase. On a cache hit we skip both the HyDE-generation LLM
-        # call (_generate_subqueries) and the search_runtime vector search
-        # (_rrf_search) entirely -- including the runtime-index build, since
-        # nothing would query it either.
+        # (or an overlapping) base_query is frequently re-issued within a
+        # research phase. HyDE generation is a pure function of query text
+        # (see the cache-safety note in __init__), so on a cache hit we skip
+        # the _generate_subqueries LLM call and reuse the cached abstracts.
         cache_key = _normalize_subquery(base_query)
         with self._cache_lock:
-            cached_entry = self._retrieval_cache.get(cache_key)
-        if cached_entry is not None and cached_entry["top_k"] >= top_k:
-            subquery_items = cached_entry["subquery_items"]
-            ranked = cached_entry["ranked_documents"][:top_k]
-        else:
-            # Step 3: generate HyDE subqueries
+            subquery_items = self._hyde_cache.get(cache_key)
+        if subquery_items is None:
             subquery_items = self._generate_subqueries(
                 base_query=base_query,
                 retrieval_intent=retrieval_intent,
@@ -269,24 +287,27 @@ class LiteratureRetriever:
                 background=background,
                 n=n_subqueries,
             )
-
-            # Step 4: build index, search, RRF
-            collection_name = self._collection_name(base_query, role)
-            self.store.build_runtime_index(collection_name, documents, rebuild=True)
-            documents_by_id = {doc.doc_id: doc for doc in documents}
-
-            ranked = self._rrf_search(
-                collection_name=collection_name,
-                subquery_items=subquery_items,
-                documents_by_id=documents_by_id,
-                top_k=top_k,
-            )
             with self._cache_lock:
-                self._retrieval_cache[cache_key] = {
-                    "subquery_items": subquery_items,
-                    "ranked_documents": list(ranked),
-                    "top_k": top_k,
-                }
+                self._hyde_cache[cache_key] = subquery_items
+                while len(self._hyde_cache) > _MAX_HYDE_CACHE_ENTRIES:
+                    self._hyde_cache.popitem(last=False)
+
+        # Step 4: build index, search, RRF — always fresh, never cached.
+        # Each retrieve() call has its own freshly fetched document set and
+        # its own vector collection (_collection_name is unique per
+        # role+base_query); reusing a prior search result here would risk
+        # returning a different research phase/question's papers instead of
+        # the current call's freshly fetched ones.
+        collection_name = self._collection_name(base_query, role)
+        self.store.build_runtime_index(collection_name, documents, rebuild=True)
+        documents_by_id = {doc.doc_id: doc for doc in documents}
+
+        ranked = self._rrf_search(
+            collection_name=collection_name,
+            subquery_items=subquery_items,
+            documents_by_id=documents_by_id,
+            top_k=top_k,
+        )
 
         # Step 5: generate summaries
         summaries = []

@@ -1,18 +1,31 @@
-"""Tests for the per-phase HyDE/search cache in LiteratureRetriever.
+"""Tests for the HyDE-abstract cache in LiteratureRetriever.
 
 The three scientist panelists (biologist, statistician, bioinformatician)
 share one LiteratureRetriever instance (see ScientistPanel.__init__ and
 agents/panelist_tools.py::build_panelist_tool_registry) and run concurrently
-in a ThreadPoolExecutor (agents/scientist_panel.py::_run_parallel). Within a
-single research phase they often issue overlapping subqueries (the same
-base_query text), which previously caused LiteratureRetriever._generate_subqueries
-(the HyDE-abstract LLM call) and RAGStore.search_runtime (the vector search)
+in a ThreadPoolExecutor (agents/scientist_panel.py::_run_parallel). They often
+issue overlapping subqueries (the same base_query text), which previously
+caused LiteratureRetriever._generate_subqueries (the HyDE-abstract LLM call)
 to be redundantly re-run for identical retrieval requests.
 
+Design under test: ONLY the HyDE abstract/subquery generation result is
+cached, keyed on the normalized base_query. `_generate_subqueries` is a pure
+function of query text -- it does not depend on the document index, `role`,
+or which research phase/question is in flight -- so reusing it is always
+safe, with no staleness risk and no need for phase-boundary cache resets.
+
+Search (`_rrf_search` / `store.search_runtime`) is deliberately NEVER cached:
+each `retrieve()` call must fetch+search fresh against the current index, so
+a cache hit never discards freshly fetched documents in favor of stale
+results from a different phase/question -- the exact staleness bug this
+design avoids.
+
 These tests verify:
-1. Issuing the same normalized subquery (base_query) twice within a phase
-   only triggers HyDE generation + search once (second call is a cache hit).
-2. reset_cache() clears the per-phase cache so a new phase re-runs both.
+1. Issuing the same normalized subquery twice triggers HyDE generation only
+   once (second call is a cache hit), while search_runtime is invoked on
+   BOTH calls (search is never cached -- no staleness possible).
+2. reset_cache() clears the HyDE cache (available for tests / eager memory
+   bounding), even though it is not required for correctness.
 """
 
 from __future__ import annotations
@@ -98,8 +111,8 @@ def _make_retriever(tmp_path) -> tuple[LiteratureRetriever, _FakeStore]:
         cache_dir=tmp_path / "lit_cache",
     )
     # Stub steps 1-2 (keyword query generation + multi-source fetch): these
-    # are out of scope for the per-phase HyDE/search cache under test here,
-    # so replace them with cheap fakes that avoid real LLM/network calls.
+    # are unrelated to the HyDE cache under test here, so replace them with
+    # cheap fakes that avoid real LLM/network calls.
     retriever._generate_queries = lambda **kwargs: {  # type: ignore[method-assign]
         "pubmed_queries": ["q"],
         "natural_queries": ["q"],
@@ -108,63 +121,63 @@ def _make_retriever(tmp_path) -> tuple[LiteratureRetriever, _FakeStore]:
     return retriever, store
 
 
+def _wrap_with_counter(fn):
+    """Wrap a bound method with a call counter, returning (counter, wrapped)."""
+    counter = {"n": 0}
+
+    def wrapped(**kwargs):
+        counter["n"] += 1
+        return fn(**kwargs)
+
+    return counter, wrapped
+
+
 class LiteratureRetrieverCacheTests(unittest.TestCase):
-    def test_repeated_subquery_within_phase_is_a_cache_hit(self):
+    def test_repeated_subquery_caches_hyde_but_always_searches_fresh(self):
         import tempfile
         from pathlib import Path
 
         with tempfile.TemporaryDirectory() as tmp:
             retriever, store = _make_retriever(Path(tmp))
-
-            hyde_call_count = {"n": 0}
-            real_generate_subqueries = retriever._generate_subqueries
-
-            def counting_generate_subqueries(**kwargs):
-                hyde_call_count["n"] += 1
-                return real_generate_subqueries(**kwargs)
-
+            hyde_calls, counting_generate_subqueries = _wrap_with_counter(retriever._generate_subqueries)
             retriever._generate_subqueries = counting_generate_subqueries  # type: ignore[method-assign]
 
-            # First call: cache miss -- HyDE generation and search both run.
+            # First call: cache miss -- HyDE generation runs, search runs.
             retriever.retrieve(
                 base_query="  T cell exhaustion markers IBD  ",
                 background="8k PBMC cells, IBD vs healthy",
                 role="biologist",
             )
-            self.assertEqual(hyde_call_count["n"], 1)
+            self.assertEqual(hyde_calls["n"], 1)
             self.assertEqual(store.search_calls, 1)
 
             # Second call: same subquery after normalization (different case/
             # whitespace, different role -- as if a different panelist issued
-            # it). Must be a cache hit: no new HyDE generation, no new search.
+            # it). HyDE generation must be a cache hit (query-text-deterministic,
+            # always safe to reuse). Search must NOT be cached -- it must run
+            # again against the freshly fetched documents, so a different
+            # phase/question can never receive another phase's stale results.
             retriever.retrieve(
                 base_query="t cell exhaustion markers ibd",
                 background="8k PBMC cells, IBD vs healthy",
                 role="statistician",
             )
             self.assertEqual(
-                hyde_call_count["n"], 1,
-                "HyDE generator must not be invoked again for a repeated subquery in the same phase",
+                hyde_calls["n"], 1,
+                "HyDE generator must not be invoked again for a repeated normalized subquery",
             )
             self.assertEqual(
-                store.search_calls, 1,
-                "search_runtime must not be invoked again for a repeated subquery in the same phase",
+                store.search_calls, 2,
+                "search_runtime must run fresh on every retrieve() call -- it is never cached",
             )
 
-    def test_reset_cache_forces_regeneration_for_a_new_phase(self):
+    def test_reset_cache_clears_hyde_cache(self):
         import tempfile
         from pathlib import Path
 
         with tempfile.TemporaryDirectory() as tmp:
             retriever, store = _make_retriever(Path(tmp))
-
-            hyde_call_count = {"n": 0}
-            real_generate_subqueries = retriever._generate_subqueries
-
-            def counting_generate_subqueries(**kwargs):
-                hyde_call_count["n"] += 1
-                return real_generate_subqueries(**kwargs)
-
+            hyde_calls, counting_generate_subqueries = _wrap_with_counter(retriever._generate_subqueries)
             retriever._generate_subqueries = counting_generate_subqueries  # type: ignore[method-assign]
 
             retriever.retrieve(
@@ -172,10 +185,20 @@ class LiteratureRetrieverCacheTests(unittest.TestCase):
                 background="8k PBMC cells, IBD vs healthy",
                 role="biologist",
             )
-            self.assertEqual(hyde_call_count["n"], 1)
-            self.assertEqual(store.search_calls, 1)
+            self.assertEqual(hyde_calls["n"], 1)
 
-            # New research phase begins -- caller resets the cache.
+            # Cache hit without a reset: still just 1 HyDE call.
+            retriever.retrieve(
+                base_query="T cell exhaustion markers IBD",
+                background="8k PBMC cells, IBD vs healthy",
+                role="biologist",
+            )
+            self.assertEqual(hyde_calls["n"], 1)
+
+            # reset_cache() is not required for correctness (HyDE generation
+            # is a pure function of query text, so there is no staleness to
+            # guard against) but remains available, e.g. for eager memory
+            # bounding -- verify it actually clears the cache.
             retriever.reset_cache()
 
             retriever.retrieve(
@@ -184,12 +207,8 @@ class LiteratureRetrieverCacheTests(unittest.TestCase):
                 role="biologist",
             )
             self.assertEqual(
-                hyde_call_count["n"], 2,
-                "reset_cache() must force HyDE regeneration in a new phase",
-            )
-            self.assertEqual(
-                store.search_calls, 2,
-                "reset_cache() must force a fresh search in a new phase",
+                hyde_calls["n"], 2,
+                "reset_cache() must clear the HyDE cache so the next call regenerates",
             )
 
 
