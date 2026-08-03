@@ -11,7 +11,6 @@ from typing import Any, Dict, Iterable, List, Tuple
 
 import textgrad as tg
 
-from agents.prompt_loader import load_updated_prompt
 from pipelines.config import Config
 from rag.sources import (
     fetch_core_document,
@@ -22,6 +21,7 @@ from rag.sources import (
 )
 from rag.store_backend import RAGStore, dedup_cross_source
 from rag.types import PromotedPaper, RAGDocument, RAGHit, dedup_key
+from prompts.literature_prompts import RAG_CONTEXT_PAPER_SUMMARY as _PAPER_SUMMARY_PROMPT
 
 
 logger = logging.getLogger(__name__)
@@ -107,8 +107,6 @@ Requirements:
 - Keep each abstract concise, scientific, and specific to the subquery.
 - Do not invent citations, authors, or journal names.
 """
-
-_PAPER_SUMMARY_PROMPT = load_updated_prompt("rag_context_paper_summary")
 
 
 def _extract_json(text: str) -> object:

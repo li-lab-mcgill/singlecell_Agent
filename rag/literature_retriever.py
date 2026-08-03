@@ -39,7 +39,10 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import Any
 
-from agents.prompt_loader import load_updated_prompt
+from prompts.literature_prompts import (
+    LITERATURE_SUMMARY_SYSTEM as _SUMMARY_SYSTEM,
+    LITERATURE_SUMMARY_PROMPT as _SUMMARY_PROMPT,
+)
 from rag.store_backend import RAGStore
 from rag.sources import (
     fetch_pubmed_documents,
@@ -135,9 +138,6 @@ Requirements:
 - HyDE abstracts should be written as if they are real paper abstracts.
 - Do not invent citations, authors, or journal names.
 """
-
-_SUMMARY_SYSTEM = load_updated_prompt("literature_paper_summary_system")
-_SUMMARY_PROMPT = load_updated_prompt("literature_paper_summary")
 
 
 # ---------------------------------------------------------------------------
