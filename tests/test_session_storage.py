@@ -9,11 +9,24 @@ from agents.research_loop import ResearchLoop
 
 
 class _FakeScientistPanel:
-    def __init__(self):
-        self.post_calls = []
-
-    def formulate(self, *, user_question, data_summary, anchor_papers, mode):
+    def run_initial_panelists(self, **_):
         return {
+            "biologist": "bio evidence",
+            "statistician": "stat evidence",
+            "bioinformatician": "comp evidence",
+        }
+
+    def run_panelist_callback(self, role, callback_input):
+        return {"role": role, "gap_resolved": True, "callback_input": callback_input}
+
+
+class _FakeMediator:
+    def __init__(self):
+        self.post_contexts = []
+
+    def formulate(self, *, formulation_context):
+        return {
+            "formulation_status": "ready_for_adversary",
             "concrete_analysis_claim": "Stored claim.",
             "selected_research_plan": {
                 "plan_id": "plan_a",
@@ -35,14 +48,32 @@ class _FakeScientistPanel:
                     "why_not_selected_now": "Not needed first.",
                 }
             ],
+            "trajectory_decision": {"action": "initialize_plan", "branch_from_node_id": None, "reason": "test"},
+            "evidence_state": {"analysis_claims": []},
         }
 
-    def decide_after_analysis(self, **kwargs):
-        self.post_calls.append(kwargs)
+    def post_analysis(self, *, post_analysis_context):
+        self.post_contexts.append(post_analysis_context)
         return {
             "decision": "accept_and_conclude",
+            "decision_type": "accept_and_conclude",
             "rationale": "Enough evidence.",
             "evidence_state": {"current_belief": "complete"},
+        }
+
+
+class _FakeAdversary:
+    max_rounds = 2
+
+    def __init__(self):
+        self.contexts = []
+
+    def run(self, *, adversary_context):
+        self.contexts.append(adversary_context)
+        return {
+            "adversary_verdict": "survives",
+            "verdict": "survives",
+            "plan": adversary_context["candidate_plan"],
         }
 
 
@@ -101,6 +132,8 @@ class SessionStorageTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmpdir:
             scientist = _FakeScientistPanel()
             tool_consultant = _FakeToolConsultant()
+            mediator = _FakeMediator()
+            adversary = _FakeAdversary()
             loop = ResearchLoop.__new__(ResearchLoop)
             loop.scientist_panel = scientist
             loop.analyzer_panel = _FakeAnalyzerPanel()
@@ -120,6 +153,8 @@ class SessionStorageTests(unittest.TestCase):
             loop._prior_phase_metrics = {}
             loop.session_recorder = None
             loop.state_graph_manager = None
+            loop.mediator_agent = mediator
+            loop.adversarial_panelist = adversary
 
             result = loop.run(user_question="Store this discovery run.", pipeline_mode="full")
 
@@ -144,7 +179,7 @@ class SessionStorageTests(unittest.TestCase):
 
             session_state_seen = tool_consultant.calls[0]["session_state"]
             self.assertEqual(session_state_seen["state_graph_context"]["active_node"]["node_id"], "plan_001")
-            self.assertEqual(scientist.post_calls[0]["state_graph_context"]["active_node"]["node_id"], "plan_001")
+            self.assertEqual(mediator.post_contexts[0]["active_plan"]["node_id"], "plan_001")
 
 
 if __name__ == "__main__":

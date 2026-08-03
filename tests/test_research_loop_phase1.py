@@ -4,7 +4,7 @@ Question: "What are the major T cell subpopulations in this healthy PBMC dataset
 and how does their clustering stability compare across different Leiden resolutions?"
 
 What this tests:
-  - ScientistPanel.formulate() produces a valid research_plan
+  - ScientistPanel.run_initial_panelists() + MediatorAgent.formulate() produce a valid research_plan
   - ToolConsultantAgent.decide() produces a dag_plan or implementation_plan
   - DagExecutor.execute() (or CoderAgent.run()) runs without crashing
   - AnalyzerPanel.analyze() produces a report with results_summary + claim_updates

@@ -3,11 +3,14 @@
 The prompt source of truth is `updated_prompts/`.
 
 Flow:
-  formulate():
-    1. Biologist + Statistician + Bioinformatician formulate in parallel.
-    2. Mediator synthesizes a selected_research_plan and evidence_state.
-    3. Bounded Mediator-requested panelist callbacks run if needed.
-    4. AdversarialPanelist reviews the mediated research plan.
+  run_initial_panelists() + MediatorAgent.formulate():
+    1. Biologist + Statistician + Bioinformatician formulate in parallel
+       (run_initial_panelists()).
+    2. MediatorAgent synthesizes a selected_research_plan and evidence_state.
+    3. Bounded Mediator-requested panelist callbacks run if needed
+       (run_panelist_callback()).
+    4. AdversarialPanelist (owned by ResearchLoop) reviews the mediated
+       research plan.
 
   decide_after_analysis():
     Mediator reads Analyzer output and chooses one of the five post-analysis
@@ -23,12 +26,12 @@ Usage:
         client=client,
     )
 
-    brief = panel.formulate(
+    panelist_outputs = panel.run_initial_panelists(
         user_question="What cell types drive inflammation in my IBD dataset?",
         data_summary=data_summary_dict,
         anchor_papers=[],
     )
-    # brief["research_plan"] → goes to Planner
+    # panelist_outputs → passed to MediatorAgent.formulate() by ResearchLoop
 
 """
 
@@ -82,7 +85,9 @@ _ROUND1_PROMPTS = {
 class ScientistPanel:
     """Orchestrates the Scientist Panel debate.
 
-    formulate(): three panelists + mediator + callbacks + adversarial review.
+    run_initial_panelists(): three panelists formulate in parallel; the
+    resulting outputs are handed to MediatorAgent (owned by ResearchLoop) for
+    mediation, callbacks, and adversarial review.
     decide_after_analysis(): mediator-only post-analysis decision.
     """
 
@@ -186,93 +191,6 @@ class ScientistPanel:
             context=context,
             round_number=int(callback_input.get("round_number", 1) or 1),
         )
-
-    def formulate(
-        self,
-        *,
-        user_question: str,
-        data_summary: dict[str, Any] | str,
-        anchor_papers: list[dict[str, Any]] | None = None,
-        mode: str = "full",
-    ) -> dict[str, Any]:
-        """Formulate a research plan. Depth depends on mode.
-
-        Args:
-            user_question:  The scientific question for this session.
-            data_summary:   Workspace profile (dict or string).
-            anchor_papers:  Pre-retrieved papers to seed RAG.
-            mode:           Panel depth:
-                              "full"        — 4 rounds + adversarial (default)
-                              "brief"       — round1 + mediator only (no reconciler/confidence/adversarial)
-                              "lightweight" — single biologist panelist + mediator (fastest)
-                              "skip_panel"  — skip the panel, return minimal direct plan
-
-        Returns:
-            Consensus hypothesis + research plan dict.
-        """
-        self._last_adversarial_result = None
-        if mode == "skip_panel":
-            return self._formulate_skip_panel(user_question=user_question, data_summary=data_summary)
-        if mode == "lightweight":
-            return self._formulate_lightweight(
-                user_question=user_question,
-                data_summary=data_summary,
-                anchor_papers=anchor_papers,
-            )
-        if mode == "brief":
-            return self._formulate_brief(
-                user_question=user_question,
-                data_summary=data_summary,
-                anchor_papers=anchor_papers,
-            )
-        # Default: "full" — panelist formulation + mediator + callbacks + adversarial
-        return self._formulate_full(
-            user_question=user_question,
-            data_summary=data_summary,
-            anchor_papers=anchor_papers,
-        )
-
-    def _formulate_full(
-        self,
-        *,
-        user_question: str,
-        data_summary: dict[str, Any] | str,
-        anchor_papers: list[dict[str, Any]] | None = None,
-    ) -> dict[str, Any]:
-        """Full panel. Returns selected research plan + evidence state."""
-        data_summary_str = _to_str(data_summary)
-        anchor_str = _format_anchor_papers(anchor_papers or [])
-
-        # Round 1: all three panelists in parallel, all do RAG
-        round1_outputs = self._run_round1_formulate(
-            user_question=user_question,
-            data_summary_str=data_summary_str,
-            anchor_str=anchor_str,
-        )
-        self._save("formulate_round1", round1_outputs)
-
-        initial_draft = self._run_mediator_formulation(
-            user_question=user_question,
-            data_summary_str=data_summary_str,
-            panelist_outputs=round1_outputs,
-        )
-        self._save("formulate_mediator_draft", initial_draft)
-
-        initial_draft = self._run_mediator_callback_loop(
-            user_question=user_question,
-            data_summary_str=data_summary_str,
-            panelist_outputs=round1_outputs,
-            current_plan=initial_draft,
-        )
-        self._save("formulate_mediator_after_callbacks", initial_draft)
-
-        # Adversarial loop: challenge → defense → re-mediate (up to max_rounds)
-        result = self._run_adversarial_loop(
-            user_question=user_question,
-            initial_draft=initial_draft,
-        )
-        self._save("formulate_final", result)
-        return result
 
     def _formulate_brief(
         self,
@@ -389,24 +307,6 @@ class ScientistPanel:
         minimal_plan = _normalize_research_plan_schema(minimal_plan)
         self._save("formulate_skip_panel", minimal_plan)
         return minimal_plan
-
-    def _run_adversarial_loop(
-        self,
-        *,
-        user_question: str,
-        initial_draft: dict[str, Any],
-    ) -> dict[str, Any]:
-        """Adversarial review is now owned by ResearchLoop, not ScientistPanel.
-
-        ResearchLoop calls AdversarialPanelist directly after calling
-        run_initial_panelists(). This method is retained for API compatibility
-        but raises if called, to make the ownership boundary explicit.
-        """
-        raise RuntimeError(
-            "_run_adversarial_loop is no longer supported on ScientistPanel. "
-            "AdversarialPanelist is owned by ResearchLoop and is called after "
-            "run_initial_panelists() + MediatorAgent.formulate()."
-        )
 
     def decide_after_analysis(
         self,

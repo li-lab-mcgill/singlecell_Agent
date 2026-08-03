@@ -572,28 +572,6 @@ class ResearchLoop:
         mode: str,
     ) -> dict[str, Any]:
         """Run panelists, Mediator, adversary, and return an uncommitted candidate."""
-        if not hasattr(self.scientist_panel, "run_initial_panelists") and hasattr(self.scientist_panel, "formulate"):
-            legacy = self.scientist_panel.formulate(
-                user_question=user_question,
-                data_summary=self.data_summary,
-                anchor_papers=anchor_papers,
-                mode=mode,
-            )
-            research_context = _extract_research_context(legacy, user_question)
-            return {
-                "_legacy_scientist_panel_formulate": True,
-                "status": "accepted",
-                "selected_research_plan": research_context.get("selected_research_plan", {}),
-                "trajectory_decision": {"action": "initialize_plan", "branch_from_node_id": None, "reason": "legacy ScientistPanel.formulate compatibility"},
-                "mediator_output": legacy,
-                "adversary_result": {"adversary_verdict": legacy.get("_adversarial_verdict", "legacy")},
-                "panelist_outputs": legacy.get("panelist_outputs", {}),
-                "callback_history": legacy.get("_callback_history", []),
-                "research_gap_resolution": legacy.get("research_gap_resolution", []),
-                "limitations": legacy.get("limitations", []),
-                "evidence_state": research_context.get("evidence_state", {}),
-                "alternative_research_plans": research_context.get("alternative_research_plans", []),
-            }
         if mode == "skip_panel":
             plan = {
                 "plan_id": "operational_direct",
