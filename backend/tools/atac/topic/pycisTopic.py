@@ -21,6 +21,34 @@ from pathlib import Path
 logger = logging.getLogger(__name__)
 
 
+def _align_first_axis(arr, target_len: int, name: str):
+    """Orient a 2D array so its first axis has length ``target_len``.
+
+    pycisTopic's ``CistopicLDAModel.cell_topic``/``topic_region`` orientation
+    is not guaranteed to be stable across versions (some return
+    cells/regions x topics, others topics x cells/regions). pycisTopic is not
+    importable in this environment, so the true orientation cannot be probed
+    directly — instead of assuming a fixed transpose, align by shape against
+    the known AnnData axis length.
+    """
+    if arr.ndim != 2:
+        raise ValueError(f"{name} must be 2D, got shape {arr.shape}")
+    rows, cols = arr.shape
+    if rows == target_len and cols == target_len:
+        # Ambiguous square case (e.g. n_obs/n_vars == n_topics): shape alone
+        # can't disambiguate orientation. Assume pycisTopic's native
+        # orientation and leave the array untouched.
+        return arr
+    if rows == target_len:
+        return arr
+    if cols == target_len:
+        return arr.T
+    raise ValueError(
+        f"{name} has shape {arr.shape}; neither dimension matches the "
+        f"expected length {target_len}. Cannot determine orientation."
+    )
+
+
 def run(
     adata,
     *,
@@ -168,25 +196,39 @@ def _run_pycisTopic(
     model = models[0]
     cisTopic_obj.add_LDA_model(model)
 
-    # cell × topic (model.cell_topic is already cell × topic)
+    # cell x topic. model.cell_topic's orientation is not guaranteed stable
+    # across pycisTopic versions (cells x topics vs topics x cells), so align
+    # by shape against adata.n_obs rather than assuming a fixed transpose.
     cell_topic = model.cell_topic  # DataFrame or ndarray
     if hasattr(cell_topic, "values"):
         cell_topic = cell_topic.values
+    cell_topic = _align_first_axis(cell_topic, adata.n_obs, "model.cell_topic")
     adata.obsm["X_topic"] = cell_topic.astype(np.float32)
+    assert adata.obsm["X_topic"].shape[0] == adata.n_obs, (
+        f"X_topic first dim {adata.obsm['X_topic'].shape[0]} != adata.n_obs "
+        f"{adata.n_obs}; model.cell_topic orientation could not be resolved."
+    )
 
-    # peak × topic (model.topic_region is topic × peak → must transpose)
+    # peak x topic. Same orientation caveat as above, aligned to adata.n_vars.
     topic_region = model.topic_region
     if hasattr(topic_region, "values"):
         topic_region = topic_region.values
-    adata.varm["topic_peak_weights"] = topic_region.T.astype(np.float32)
+    topic_region = _align_first_axis(topic_region, adata.n_vars, "model.topic_region")
+    adata.varm["topic_peak_weights"] = topic_region.astype(np.float32)
+    assert adata.varm["topic_peak_weights"].shape[0] == adata.n_vars, (
+        f"topic_peak_weights first dim {adata.varm['topic_peak_weights'].shape[0]} "
+        f"!= adata.n_vars {adata.n_vars}; model.topic_region orientation could "
+        "not be resolved."
+    )
+    n_topics_aligned = topic_region.shape[1]
 
     # --- Topic region sets: top peaks per topic ---
     import pandas as pd
     n_top_peaks = 500  # standard pycisTopic default for region set construction
     topic_region_df = pd.DataFrame(
-        topic_region.T,
+        topic_region,
         index=adata.var_names,
-        columns=[f"Topic{i+1}" for i in range(n_topics_list[0])],
+        columns=[f"Topic{i+1}" for i in range(n_topics_aligned)],
     )
     topic_region_sets = {}
     for col in topic_region_df.columns:
