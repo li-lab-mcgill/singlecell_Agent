@@ -9,8 +9,8 @@ backend: backend/tools/rna/feature_selection/seurat_v3.py
 Selects highly variable genes using Seurat v3's variance-stabilized method. Equivalent to `sc.pp.highly_variable_genes(flavor="seurat_v3")` but exposes additional Seurat-compatible parameters.
 
 Key parameters:
-- `n_top_genes` (default 3000): Seurat default is 2000–3000 for 10x data
-- `span` (default 0.3): LOESS regression span for local polynomial fitting of mean-variance relationship
+- `n_top` (default 2000)
+- `batch_key` (default None)
 
 The Seurat v3 method selects the most variable genes after variance stabilization, which tends to pick up highly expressed but variable genes more reliably than the original Seurat method.
 

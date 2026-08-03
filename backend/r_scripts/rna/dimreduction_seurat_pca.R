@@ -57,7 +57,7 @@ read_h5ad <- function(path) {
   obs_names <- reticulate::py_to_r(ad$obs_names$to_list())
   var_names <- reticulate::py_to_r(ad$var_names$to_list())
   source <- NULL
-  if (reticulate::py_has_attr(ad$layers, "keys") && "counts" %in% reticulate::py_to_r(ad$layers$keys())) {
+  if (reticulate::py_has_attr(ad$layers, "keys") && "counts" %in% as.character(reticulate::py_to_r(ad$layers$keys()))) {
     source <- ad$layers$get("counts")
   } else {
     source <- ad$X

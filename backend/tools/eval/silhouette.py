@@ -20,6 +20,11 @@ def run(
 
     X = adata.obsm[embedding_key]
     labels = adata.obs[cluster_key].astype(str).values
+    n_labels = len(np.unique(labels))
+    if n_labels < 2 or n_labels >= len(labels):
+        raise ValueError(
+            f"silhouette requires 2 to n_obs-1 clusters; found {n_labels} labels for {len(labels)} cells."
+        )
 
     if subsample and adata.n_obs > subsample:
         idx = np.random.choice(adata.n_obs, subsample, replace=False)

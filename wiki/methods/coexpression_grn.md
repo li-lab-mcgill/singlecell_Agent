@@ -23,3 +23,4 @@ Output: adjacency matrix (for co-expression alone) or regulon dictionary `{TF: [
 Edges:
 - [[tools/rna_grn_grnboost2]] implements
 - [[tools/rna_grn_pyscenic]] implements
+- [[tools/rna_grn_pyscenic_aucell]] implements (AUCell stage)

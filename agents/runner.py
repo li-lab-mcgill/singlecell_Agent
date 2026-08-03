@@ -135,6 +135,7 @@ class ToolCallingAgentRunner:
             "model": self.model,
             "input": input_payload,
             "tools": self.tool_specs,
+            "parallel_tool_calls": False,
         }
         if previous_response_id:
             kwargs["previous_response_id"] = previous_response_id

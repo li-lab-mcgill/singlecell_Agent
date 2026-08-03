@@ -18,4 +18,5 @@ Computed using sklearn: `adjusted_rand_score`, `normalized_mutual_info_score`, `
 For silhouette score, pass the embedding (`adata.obsm["X_pca"]`) not UMAP coordinates. Silhouette on UMAP coordinates is biased by the non-linear projection.
 
 Edges:
-- [[tools/eval_clustering_metrics]] implements
+- [[tools/eval_ari_nmi]] implements
+- [[tools/eval_silhouette]] implements

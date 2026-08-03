@@ -23,7 +23,8 @@ Stages (in order):
 - [[stages/project]] [includes]
 
 Evaluated by:
-- [[tools/eval_batch_metrics]] [evaluated_by]
+- [[tools/eval_ilisi_clisi]] [evaluated_by]
+- [[tools/eval_kbet]] [evaluated_by]
 
 Key decisions for the consultant:
 - **Harmony** (default): fast, widely used; set `theta` lower (1.0–1.5) if batches have strong biological differences

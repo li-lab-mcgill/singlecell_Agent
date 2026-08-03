@@ -22,7 +22,11 @@ from prompts.tool_consultant_prompts import (
 
 
 class ToolConsultantAgent:
-    """Plan-only first-stage agent for tool/coder/research dispatch."""
+    """Plan-only first-stage agent for tool/coder/research dispatch.
+
+    When long_term_memory is provided, prior experience from earlier sessions is
+    injected into the planning prompt — enabling experience-guided planning.
+    """
 
     def __init__(
         self,
@@ -31,12 +35,14 @@ class ToolConsultantAgent:
         result_dir: str | Path,
         backend: Any | None = None,
         client: Any | None = None,
+        long_term_memory: Any | None = None,
     ):
         self.engine_name = engine_name
         self.result_dir = Path(result_dir) / "feedback"
         self.result_dir.mkdir(parents=True, exist_ok=True)
         self.backend = backend
         self.client = client
+        self.long_term_memory = long_term_memory  # LongTermMemory instance or None
 
     def decide(
         self,
@@ -53,15 +59,28 @@ class ToolConsultantAgent:
         # Build wiki tool registry — always available regardless of backend
         wiki_registry = build_wiki_tool_registry()
 
+        # Inject prior experience from long-term memory (if available)
+        prior_experience = ""
+        if self.long_term_memory is not None:
+            data_summary = session_state.get("data_summary")
+            prior_experience = self.long_term_memory.format_prior_experience(
+                user_question=str(user_message or ""),
+                data_summary=data_summary,
+                max_sessions=3,
+            )
+
+        decision_prompt = (
+            TOOL_CONSULTANT_DECISION_PROMPT.strip()
+            + "\n\nUSER REQUEST:\n\n" + str(user_message or "").strip()
+            + "\n\nSESSION STATE:\n\n" + json.dumps(session_state, indent=2, ensure_ascii=False)
+            + "\n\nPREVIOUS PLAN TYPE:\n\n" + previous_plan_type
+            + "\n\nPREVIOUS PLAN:\n\n" + previous_plan
+            + "\n\nAVAILABLE OBJECTIVES:\n\n" + json.dumps(list_objectives(), indent=2, ensure_ascii=False)
+            + (("\n\n" + prior_experience) if prior_experience else "")
+        )
         prompt = "\n\n".join(
             [
-                TOOL_CONSULTANT_DECISION_PROMPT.format(
-                    user_message=str(user_message or "").strip(),
-                    session_state=json.dumps(session_state, indent=2, ensure_ascii=False),
-                    previous_plan=previous_plan,
-                    previous_plan_type=previous_plan_type,
-                    objective_registry=json.dumps(list_objectives(), indent=2, ensure_ascii=False),
-                ).strip(),
+                decision_prompt,
                 TOOL_CONSULTANT_OUTPUT_SCHEMA_PROMPT.strip(),
             ]
         )

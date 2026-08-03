@@ -99,6 +99,69 @@ def _check_required_files(tf_list_path, db_paths, motif_annotations_path) -> Non
         )
 
 
+def _ensure_fork_start_method() -> None:
+    """Switch multiprocessing to 'fork' on macOS before any pyscenic work begins.
+
+    pyscenic's 'dask_multiprocessing' path calls .compute(scheduler='processes'),
+    which spawns worker processes. On macOS Python 3.10+, 'spawn' is the default
+    and causes bootstrap errors. Must be called before pyscenic imports any
+    multiprocessing primitives.
+    """
+    import multiprocessing
+    if multiprocessing.get_start_method(allow_none=True) != "fork":
+        multiprocessing.set_start_method("fork", force=True)
+
+
+def _patch_pyscenic_dask() -> None:
+    """Fix dask API incompatibilities in pyscenic + arboreto with newer dask.
+
+    Idempotent: each patch checks for a sentinel attribute and skips if already applied,
+    so repeated tool calls in the same process do not keep wrapping the wrapper.
+
+    Patches applied:
+      1. pyscenic.prune.from_delayed — pyscenic passes a generator but dask's new
+         expression API requires a list. Wrap to materialise the generator first.
+      2. arboreto.core.from_delayed — arboreto calls from_delayed with an empty list
+         when include_meta=False; dask >= 2024 raises TypeError for empty lists.
+    """
+    import pandas as pd
+    import dask.dataframe as dd
+
+    # Patch 1: pyscenic.prune passes a generator to from_delayed
+    import pyscenic.prune as _pyscenic_prune
+    if not getattr(_pyscenic_prune.from_delayed, "_sc_agent_patched", False):
+        _orig_pyscenic_fd = _pyscenic_prune.from_delayed
+
+        def _safe_pyscenic_from_delayed(dfs, meta=None, **kwargs):
+            dfs = list(dfs)  # materialise generator; dask new API requires a sequence
+            if not dfs:
+                col_names = list(meta.keys()) if isinstance(meta, dict) else []
+                return dd.from_pandas(pd.DataFrame(columns=col_names), npartitions=1)
+            if meta is not None:
+                return _orig_pyscenic_fd(dfs, meta=meta, **kwargs)
+            return _orig_pyscenic_fd(dfs, **kwargs)
+
+        _safe_pyscenic_from_delayed._sc_agent_patched = True
+        _pyscenic_prune.from_delayed = _safe_pyscenic_from_delayed
+
+    # Patch 2: arboreto passes empty list to from_delayed when include_meta=False
+    try:
+        import arboreto.core as _arb_core
+        if not getattr(_arb_core.from_delayed, "_sc_agent_patched", False):
+            _orig_arb_fd = _arb_core.from_delayed
+
+            def _safe_arboreto_from_delayed(dfs, meta=None, **kwargs):
+                if not dfs:
+                    col_names = list(meta.keys()) if isinstance(meta, dict) else []
+                    return dd.from_pandas(pd.DataFrame(columns=col_names), npartitions=1)
+                return _orig_arb_fd(dfs, meta=meta, **kwargs)
+
+            _safe_arboreto_from_delayed._sc_agent_patched = True
+            _arb_core.from_delayed = _safe_arboreto_from_delayed
+    except ImportError:
+        pass
+
+
 def _run_pyscenic(
     adata,
     *,
@@ -112,12 +175,17 @@ def _run_pyscenic(
     auc_threshold,
     nes_threshold,
 ) -> GRN:
+    # Set fork before any pyscenic/multiprocessing imports to avoid macOS spawn errors.
+    _ensure_fork_start_method()
+
     import pandas as pd
     import scipy.sparse as sp
-    from arboreto.algo import grnboost2
-    from arboreto.utils import load_tf_names
-    from pyscenic.ctx import df2regulons, load_motif_annotations
+    from pyscenic.prune import prune2df, df2regulons
+    from pyscenic.utils import modules_from_adjacencies
     from ctxcore.rnkdb import FeatherRankingDatabase
+
+    # Patch dask API incompatibilities after pyscenic modules are imported.
+    _patch_pyscenic_dask()
 
     # --- Pre-flight: verify all required files exist before starting ---
     _check_required_files(tf_list_path, db_paths, motif_annotations_path)
@@ -125,46 +193,71 @@ def _run_pyscenic(
     if output_dir is not None:
         output_dir.mkdir(parents=True, exist_ok=True)
 
-    # --- Stage 1: GRNBoost2 ---
-    X = adata.X
-    if sp.issparse(X):
-        X = X.toarray()
-    expr_df = pd.DataFrame(X, index=adata.obs_names, columns=adata.var_names)
-
-    tf_names = load_tf_names(str(tf_list_path))
-    tf_names = [t for t in tf_names if t in adata.var_names]
-    if not tf_names:
-        raise ValueError(
-            f"None of the TFs in '{tf_list_path}' were found in adata.var_names."
-        )
-
-    adjacencies = grnboost2(
-        expression_data=expr_df,
-        tf_names=tf_names,
-        verbose=False,
-        seed=seed,
-    )
-
+    # --- Stage 1: GRNBoost2 (skip if already computed by rna_grn_grnboost2) ---
     adj_path = None
+    if "grnboost2_adjacencies" in adata.uns:
+        import logging
+        logging.getLogger(__name__).info(
+            "Using existing GRNBoost2 adjacencies from adata.uns['grnboost2_adjacencies']. "
+            "Skipping Stage 1."
+        )
+        adjacencies = pd.DataFrame(adata.uns["grnboost2_adjacencies"])
+    else:
+        from arboreto.algo import grnboost2
+        from arboreto.utils import load_tf_names
+
+        X = adata.X
+        if sp.issparse(X):
+            X = X.toarray()
+        expr_df = pd.DataFrame(X, index=adata.obs_names, columns=adata.var_names)
+
+        tf_names = load_tf_names(str(tf_list_path))
+        tf_names = [t for t in tf_names if t in adata.var_names]
+        if not tf_names:
+            raise ValueError(
+                f"None of the TFs in '{tf_list_path}' were found in adata.var_names."
+            )
+
+        adjacencies = grnboost2(
+            expression_data=expr_df,
+            tf_names=tf_names,
+            verbose=False,
+            seed=seed,
+        )
+        adata.uns["grnboost2_adjacencies"] = adjacencies.to_dict("records")
+
     if output_dir is not None:
         adj_path = output_dir / "adjacencies.parquet"
         adjacencies.to_parquet(adj_path, index=False)
 
     # --- Stage 2: cisTarget motif pruning ---
+    X = adata.X
+    if sp.issparse(X):
+        X = X.toarray()
+    expr_df = pd.DataFrame(X, index=adata.obs_names, columns=adata.var_names)
+
+    # Convert adjacency matrix to co-expression modules (GeneSignature objects)
+    modules = modules_from_adjacencies(adjacencies, expr_df)
+
     dbs = [
         FeatherRankingDatabase(fname=str(p), name=p.stem)
         for p in db_paths
     ]
-    motif_annotations = load_motif_annotations(str(motif_annotations_path))
 
-    regulons = df2regulons(
-        adjacencies,
-        dbs=dbs,
-        motif_annotations=motif_annotations,
+    # prune2df runs cisTarget enrichment on modules and returns a DataFrame.
+    # num_workers controls the dask LocalCluster parallelism.
+    df = prune2df(
+        dbs,
+        modules,
+        str(motif_annotations_path),
         rank_threshold=rank_threshold,
         auc_threshold=auc_threshold,
         nes_threshold=nes_threshold,
+        num_workers=n_jobs,
     )
+
+    # Convert enriched DataFrame to Regulon objects
+    regulons = df2regulons(df) if not df.empty else []
 
     # Store regulons in adata
     adata.uns["pyscenic_regulons"] = {

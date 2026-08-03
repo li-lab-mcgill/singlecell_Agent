@@ -17,7 +17,15 @@ pySCENIC runs in three stages:
 
 Required databases (download separately):
 - TF list: `allTFs_hg38.txt` or `allTFs_mm10.txt`
-- Motif rankings: `hg38_500bp_up_100bp_down_full_tx_v10_clust.genes_vs_motifs.rankings.feather`
-- Motif annotations: `motifs-v10nr_clust-nr.hgnc-m0.001-o0.0.tbl`
+- Motif rankings: `hg38__refseq-r80__10kb_up_and_down_tss.mc9nr.feather` (standard v9 preset)
+- Motif annotations: `motifs-v9-nr.hgnc-m0.001-o0.0.tbl`
+
+See [[resources/pyscenic_databases]] for the full file list and download utility.
 
 pySCENIC is the most validated single-cell GRN method but requires significant compute (GRNBoost2 step). For large datasets, run the GRN step on a cluster. The AUCell step is memory-efficient and fast. [Aibar et al. 2017]
+
+## AUCell stage (stage 3)
+
+`pyscenic aucell` scores each cell for regulon activity. In this system, AUCell is run by `rna_grn_pyscenic_aucell` as a separate step after `rna_grn_pyscenic`. This allows re-scoring with different thresholds without re-running the expensive GRN inference.
+
+Output: `adata.obsm["X_pyscenic_auc"]` (cells × TF regulons; numpy array) with column names in `adata.uns["pyscenic_auc_tf_names"]`.

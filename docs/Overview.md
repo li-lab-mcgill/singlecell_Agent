@@ -1,257 +1,385 @@
-# Single-Cell Analysis Agent — Architecture Overview
+# Single-Cell Agent Architecture Overview
 
-## System Purpose
+## Purpose
 
-An LLM-powered agent system for automated single-cell genomics analysis. Users describe analysis goals in natural language (e.g., "cluster my PBMC data and annotate cell types with the best ARI") and the system plans, executes, evaluates, and summarizes multi-step bioinformatics pipelines — branching across methods and parameters when beneficial.
+`singlecell_Agent` is an LLM-orchestrated single-cell analysis system. It accepts natural-language requests, classifies the request intent, plans executable analysis, runs single-cell tools or generated code, interprets results, and records session artifacts for follow-up turns.
+
+The current implementation supports two major modes:
+
+- **Operational execution**: run a concrete workflow, such as QC, embedding, clustering, annotation, differential expression, or a custom script.
+- **Discovery/research execution**: formulate a scientific plan, stress-test it, execute one or more phases, analyze evidence, and decide whether to conclude, revise, ask the user, or continue.
 
 ---
 
-## Top-Level Directory Structure
+## Top-Level Structure
 
-```
+```text
 singlecell_Agent/
-  agents/           # Agent orchestration, planning, execution, state
-  backend/          # Computational backend (RNA, ATAC, multi-omic tools)
-  frontend/         # HTTP server + single-page chat UI
-  prompts/          # All LLM prompt templates
-  rag/              # Literature retrieval (PubMed, embeddings, RAG store)
-  docs/             # Tool documentation, architecture docs
-  tests/            # Unit and integration tests
-  data/             # Input datasets
+  agents/            # Routing, planning, research loop, panels, execution orchestration, state
+  backend/           # Single-cell computational tools, runners, refs, cache, evaluation
+  frontend/          # Local HTTP chat UI and API endpoints
+  prompts/           # Legacy/current Python prompt modules
+  updated_prompts/   # Current markdown prompt source used by panel/mediator agents
+  rag/               # Literature retrieval, paper storage, vector store contracts
+  wiki/              # Tool/task/stage/package/method/paper knowledge base
+  docs/              # Architecture and tool documentation
+  tests/             # Unit and integration tests
 ```
 
 ---
 
-## Agent Pipeline
+## Request Flow
 
-User messages flow through a chain of specialized agents:
-
+```text
+Frontend / API
+  |
+  v
+SessionStateStore.begin_turn()
+  |
+  v
+SessionDispatcher.handle()
+  |
+  v
+SessionRouter.route()
+  |
+  +-- direct_response
+  |     |
+  |     v
+  |   DeterministicResponder
+  |     - answers from route response, session state, or artifact lookup
+  |
+  +-- task + operational intent
+  |     |
+  |     v
+  |   ToolConsultantAgent.decide()
+  |     |
+  |     +-- DagExecutor.execute()
+  |     +-- CoderAgent.run()
+  |     +-- SubprocessResearchExecutor.execute() when research_brief is explicitly allowed
+  |     |
+  |     v
+  |   ResultSummarizer.summarize()
+  |
+  +-- task + discovery intent
+        |
+        v
+      ResearchWorkspace.resolve_research_state() when configured
+        |
+        v
+      ResearchLoop.run()
+        |
+        +-- ScientistPanel / MediatorAgent / AdversarialPanelist
+        +-- ToolConsultantAgent
+        +-- optional adversarial alignment review
+        +-- DagExecutor or CoderAgent
+        +-- AnalyzerPanel
+        +-- optional AttributingCritic / ShortTermMemory / ContextManager
+        +-- MediatorAgent post-analysis decision
 ```
-User Message
-    |
-    v
-SessionRouter          — Classify: "direct_response" or "task"
-    |
-    v (if task)
-ToolConsultant         — Produce an execution plan (dag_plan / implementation_plan / research_brief)
-    |
-    v
-SessionDispatcher      — Orchestrate execution of plan components
-    |
-    +-- DagExecutor        — Run ordered tool DAGs with branching variants
-    +-- CoderAgent         — Generate and execute custom Python scripts (TextGrad-optimized)
-    +-- ResearchExecutor   — Literature-grounded research pipeline
-    |
-    v
-ResultSummarizer       — LLM-generated user-facing summary of results
-    |
-    v
-Frontend (UI)
-```
 
-### agents/session_router.py — SessionRouter
-
-Classifies each user message as either:
-- **direct_response**: Simple questions answered without tool execution (e.g., "what is UMAP?")
-- **task**: Requires planning and execution
-
-### agents/tool_consultant.py — ToolConsultantAgent
-
-First-stage planning agent. Does NOT execute tools or write code. Reads tool documentation and session state to produce one or more plan components:
-
-| Plan Component | When Used |
-|---|---|
-| `dag_plan` | Pipeline execution with ordered tool stages |
-| `implementation_plan` | Custom Python script (standalone or post-DAG) |
-| `research_brief` | Literature-grounded method design |
-
-Plans can be composed: `dag_plan` + `implementation_plan` runs the DAG first, then passes output to custom code. `research_brief` is standalone.
-
-### agents/session_dispatcher.py — SessionDispatcher
-
-Central orchestrator. Receives the ToolConsultant's decision and executes components sequentially:
-
-1. **DAG execution** (if `dag_plan` present) via `DagExecutor`
-2. **Reference resolution** — resolves `dag_output.*` and `session_output.*` references in the implementation plan to concrete paths
-3. **Coder execution** (if `implementation_plan` present) via `CoderAgent`
-4. **Research execution** (if `research_brief` present) via `ResearchExecutor`
-5. **Result summarization** via `ResultSummarizer`
-6. **State recording** — updates `SessionStateStore` with turn results
-
-### agents/dag_executor.py — DagExecutor
-
-Executes ordered tool DAGs with Cartesian-product branching:
-
-- **Layers**: Ordered stages (qc -> normalize -> features -> embed -> cluster -> annotate)
-- **Variants**: Each layer can have multiple method/parameter choices
-- **Paths**: Every combination runs end-to-end (no pruning)
-- **Caching**: `StepCache` shares work across paths with identical prefixes
-- **Evaluation**: Each completed path is scored via `Evaluator` + `objectives`
-- **Output**: Best path + ranked comparison table of all paths
-
-Single-variant-per-layer degrades gracefully to linear execution (replaces the former one-shot mode).
-
-### agents/coder.py — CoderAgent
-
-Generates and executes Python scripts for custom analysis:
-
-- **TextGrad optimization**: Uses TextGrad to iteratively improve generated code
-- **Fix loop**: Automatic error diagnosis and retry (up to `max_fix_step`)
-- **Optimization loop**: Iterative quality improvement (up to `max_opt_step`)
-- **Image collection**: Discovers output images from plan outputs, run directory, and stdout parsing
-
-### agents/research_executor.py — SubprocessResearchExecutor
-
-Runs the literature research pipeline as a subprocess for deep method design tasks.
-
-### agents/result_summarizer.py — ResultSummarizer
-
-LLM-powered summarization of raw execution results into user-facing messages. Collects images from results for UI display.
-
-### agents/session_state.py — SessionStateStore
-
-JSON-backed persistent state across turns:
-
-- `active_h5ad_path` — final h5ad from last successful turn
-- `active_embedding_key` — current embedding key (e.g., `X_pca`)
-- `active_cluster_key` — current cluster key (e.g., `leiden_clusters`)
-- `last_artifacts` — all artifacts from last turn
-- Turn history with per-turn results
-
-Supports `session_output.*` references so follow-up turns can use prior results without re-running pipelines.
-
-### agents/runner.py — ToolCallingAgentRunner
-
-Generic LLM agent execution loop with:
-- Tool calling support (function-calling protocol)
-- Response handler callback pattern
-- Transcript and tool trace logging
-- Configurable iteration and tool call limits
-
-### agents/decision_schema.py
-
-Validation logic for all plan types. Validates DAG plans (layer structure, stage names, variant format, `$L` references), implementation plans (input references, dependency flags), and the overall decision envelope.
-
-### agents/tools.py
-
-Tool definitions and registry. Each tool wraps a backend method with:
-- Input/output schema
-- Parameter validation
-- Backend dispatch
-
-Registry builder `build_tool_executor_registry()` creates the mapping from tool names to executor functions used by `DagExecutor`.
+`SessionRouter` returns one of two routes (`direct_response`, `task`) plus an intent mode (`operational`, `discovery`, `ambiguous`). Ambiguous tasks are not executed; the dispatcher asks the user to choose operational execution or discovery.
 
 ---
 
-## Backend
+## Core Agent Components
 
-The computational engine. All bioinformatics methods live here.
+### `agents/session_router.py`
 
+Classifies each chat turn with an LLM runner and validates the result against the session-route schema:
+
+- `route`: `direct_response` or `task`
+- `intent_mode`: `operational`, `discovery`, or `ambiguous`
+- `resolved_intent`: normalized user request
+- `requires_artifact_lookup`: whether the direct response should read prior artifacts
+
+### `agents/session_dispatcher.py`
+
+The main frontend orchestration layer. It:
+
+- injects persistent session state into routing and planning context;
+- handles direct responses through `DeterministicResponder`;
+- routes operational tasks through ToolConsultant plus DAG/Coder execution;
+- routes discovery tasks through `ResearchLoop`;
+- resolves `dag_output.*` references into best-path artifacts;
+- resolves `session_output.*` references from prior turns;
+- builds the final frontend payload with status, message, images, raw results, and artifact paths.
+
+### `agents/tool_consultant.py`
+
+Plan-only agent. It uses wiki tools, available objective definitions, prior session context, and optional long-term memory to produce a composable `TOOL_DECISION`.
+
+Supported plan fields:
+
+- `dag_plan`: layered tool workflow for `DagExecutor`
+- `implementation_plan`: custom code plan for `CoderAgent`
+- `research_brief`: standalone research subprocess path
+
+The agent does not execute tools. `agents/decision_schema.py` validates all returned plans before dispatch.
+
+### `agents/dag_executor.py`
+
+Runs layered single-cell tool workflows by enumerating Cartesian products of layer variants.
+
+Key behavior:
+
+- validates plans against the available backend tool registry;
+- creates one run directory per `session_tag`;
+- enumerates every variant path;
+- auto-wires context keys such as `embedding_key`, `cluster_key`, `projection_key`, and velocity keys from upstream tool outputs;
+- caches reusable step directories through `backend.cache.StepCache`;
+- records trials in `backend.runs.TrialRegistry`;
+- evaluates completed paths with `backend.eval` and `backend.objectives.score_metrics`;
+- writes `dag_result.json` and an artifact manifest;
+- applies output retention so only selected artifacts are preserved when requested.
+
+### `agents/coder.py`
+
+Executes custom implementation plans. It generates scripts, runs them, repairs failures, optionally optimizes generated code, and collects output figures/files for frontend display.
+
+### `agents/result_summarizer.py`
+
+Summarizes operational raw results into a user-facing message and figure list. If unavailable, the dispatcher falls back to deterministic result text and image collection.
+
+---
+
+## Discovery Research Loop
+
+`agents/research_loop.py` implements the full research cycle:
+
+```text
+Formulate plan
+  -> ToolConsultant executable plan
+  -> Execute DAG/Coder
+  -> AnalyzerPanel report
+  -> Optional attribution/memory/context updates
+  -> Mediator post-analysis decision
+  -> conclude, revise, continue, ask user, or abstain
 ```
-SingleCellBackend
-  |- config      : BackendConfig          (paths, R executable, scratch dirs)
-  |- runners     : RunnerSuite            (R + CLI subprocess helpers)
-  |- refs        : ReferenceStore         (reference data download/cache)
-  |- api         : dict                   (Ensembl, JASPAR, CellxGene clients)
-  |- rna         : RnaBackend             (QC, normalize, features, embed, cluster, annotate, DE, 2D projection)
-  |- atac        : AtacBackend            (ATAC-seq processing)
-  |- multi       : MultiBackend           (multi-omic integration)
-  |- eval        : Evaluator              (ARI, NMI, silhouette, batch entropy)
-  |- runs        : TrialRegistry          (SQLite-backed leaderboard)
-  |- cache       : StepCache              (SHA256 content-addressed step caching)
+
+The loop runs up to `max_phases`. It terminates when the mediator returns a done-like action (`accept_and_conclude`), an abstain/unanswerable action, an ask-user action, or the phase cap is reached.
+
+### Formulation
+
+For non-`skip_panel` discovery runs:
+
+1. `ScientistPanel.run_initial_panelists()` runs biologist, statistician, and bioinformatician panelists.
+2. `MediatorAgent.formulate()` synthesizes a selected research plan, alternatives, evidence state, and trajectory decision.
+3. The mediator may request bounded panelist callbacks.
+4. `AdversarialPanelist.run()` stress-tests the uncommitted candidate plan.
+5. If needed, `MediatorAgent.revise_from_adversary()` revises the candidate before it is committed.
+6. `ResearchState.commit_initial_plan()` records the accepted plan into the state graph.
+
+`skip_panel` creates a direct operational research plan without panelist debate.
+
+### Execution Per Phase
+
+For each phase:
+
+1. `ToolConsultantAgent.decide()` converts the selected research plan into executable `dag_plan` and/or `implementation_plan`.
+2. An optional alignment reviewer can block or revise plans that do not satisfy the research plan.
+3. `_execute()` runs `DagExecutor` or `CoderAgent`.
+4. The best produced `.h5ad` becomes the next phase input when available.
+5. Results, tool plans, coder reports, and summaries are saved through `SessionRecorder`.
+
+### Analysis and Revision
+
+`AnalyzerPanel.analyze()` runs a structured analysis panel:
+
+- **ResultsInterpreter** reads outputs and figures first.
+- **LiteratureGrounder** and **DatabaseValidator** run in parallel using the results interpretation.
+- **AnalyzerMediator** synthesizes a final analyzer report.
+
+The mediator then runs post-analysis reasoning and chooses among:
+
+- `accept_and_conclude`
+- `continue_with_same_research_plan`
+- `self_revise_plan`
+- `ask_user`
+- `declare_unanswerable`
+
+The decision is applied to the `StateGraphManager`, which can conclude a node, mark it awaiting user input, or create a revised branch.
+
+---
+
+## Research State, Graphs, and Recording
+
+### `agents/research_state.py`
+
+Task-scoped source of truth for discovery runs. It stores:
+
+- original and resolved user questions;
+- profiled data summary;
+- selected and alternative research plans;
+- active evidence state;
+- panelist outputs, callbacks, mediator outputs, adversary outputs, tool decisions, analyzer reports;
+- context builders for mediator, adversary, and tool consultant prompts.
+
+### `agents/state_graph.py`
+
+Maintains a persistent plan graph in `state_graph.json`.
+
+It tracks:
+
+- active research or operational nodes;
+- selected and alternative plans;
+- plan, tool, execution, analyzer, and next-decision refs;
+- plan revisions and branches;
+- terminal statuses such as `concluded`, `unanswerable`, and `awaiting_user`.
+
+### `agents/session_recorder.py`
+
+Creates stable conversation/session storage:
+
+```text
+conversations/<conversation_id>/sessions/<session_id>/
+  session.json
+  progress.jsonl
+  state_graph.json
+  route/
+  nodes/
+  traces/
+  executions/
+  artifacts/files/
+  reports/
 ```
 
-### Key Backend Modules
+The recorder writes JSON/text artifacts for plans, decisions, executions, analyzer reports, final responses, and progress events.
 
-| Module | Purpose |
-|---|---|
-| `backend/rna/` | RNA-seq: QC (basic, scrublet), normalization (log1p), feature selection (seurat_v3, cellranger, scanpy_hvg), embedding (PCA, scVI, scanVI, Seurat PCA), clustering (Leiden, Louvain), annotation (GPT-4, CellMarker, CellTypist), DE, 2D projection |
-| `backend/atac/` | ATAC-seq processing pipeline |
-| `backend/multi/` | Multi-omic integration (references parent backend) |
-| `backend/eval/` | Metric computation: ARI, NMI, silhouette score, batch entropy |
-| `backend/objectives.py` | Named objective functions that combine metrics into scalar scores for path ranking |
-| `backend/runs/` | `TrialRegistry` — SQLite leaderboard for tracking/comparing pipeline runs |
-| `backend/cache/` | `StepCache` — content-addressed caching keyed by SHA256 of inputs; shares work across DAG paths |
-| `backend/refs/` | `ReferenceStore` — download, cache, and serve reference datasets and marker databases |
-| `backend/runners/` | `RunnerSuite` — subprocess wrappers for R scripts and CLI tools |
-| `backend/r_scripts/` | R scripts called via `RunnerSuite` (e.g., Seurat PCA) |
+### `agents/session_state.py`
+
+Frontend-local persistent state across turns. It records:
+
+- message history and current turn;
+- last route, decision, result, and error;
+- last artifacts;
+- active `.h5ad`, embedding key, cluster key, and work type;
+- enough prior context for follow-up requests and artifact lookup.
+
+---
+
+## Backend and Tool Registry
+
+The active DAG tool path uses `backend/tools/**/*.py`, not the older `backend/rna`, `backend/atac`, and `backend/multi` object APIs directly.
+
+### `backend/tools/registry.py`
+
+Discovers tool modules and exposes tool IDs.
+
+### `backend/tools/executor.py`
+
+Builds the executor registry used by `DagExecutor`:
+
+- loads input `.h5ad` with AnnData;
+- filters plan parameters against each tool's `run()` signature;
+- calls the tool;
+- persists the output `.h5ad`;
+- extracts standard context from `adata.uns`;
+- returns tool metadata, metrics, dataclass fields, and output context.
+
+Current tool families include:
+
+- RNA: QC, normalization, feature selection, embedding, batch integration, clustering, projection, annotation, differential expression, GRN, velocity.
+- ATAC: QC, feature selection, TF-IDF/LSI embedding, batch integration, clustering, projection, annotation, peak calling, motif enrichment, differential accessibility, peak-to-gene, topics.
+- Multi-omic: QC/intersection, joint embeddings, GRN/SCENIC+, velocity-related utilities.
+- Evaluation: ARI/NMI, silhouette, iLISI/cLISI, kBET.
+
+Supporting backend modules:
+
+- `backend/cache/`: content-addressed step caching.
+- `backend/runs/`: SQLite-backed task/trial registry.
+- `backend/eval/`: metric evaluation.
+- `backend/objectives.py`: objective definitions and scoring.
+- `backend/refs/`: reference-data manifest, loaders, and store.
+- `backend/runners/`: R and CLI subprocess helpers.
+- `backend/workspace_profiler.py`: profiles input workspaces for research-loop context.
+
+---
+
+## RAG and Wiki Knowledge
+
+### RAG
+
+`rag/literature_retriever.py` coordinates literature retrieval for panelists, analyzers, adversary, and mediator paper tools. Supporting modules include:
+
+- `rag/agent.py`: query/retrieval agent utilities.
+- `rag/paper_store.py`: paper storage.
+- `rag/store_backend.py`: vector-store contract.
+- `rag/sources.py`: source adapters and normalization.
+- `rag/types.py`: retrieval and paper datatypes.
+
+### Wiki
+
+`wiki/` is the structured knowledge base used by ToolConsultant and paper tooling:
+
+- `wiki/tasks/`: supported analysis tasks.
+- `wiki/stages/`: stage definitions.
+- `wiki/tools/`: tool documentation used for planning.
+- `wiki/methods/`: method-level background.
+- `wiki/packages/`: package notes.
+- `wiki/resources/`: resource notes.
+- `wiki/papers/`: paper markdown entries written during retrieval.
 
 ---
 
 ## Frontend
 
-### frontend/server.py
+`frontend/server.py` provides a local threaded HTTP server with an embedded chat UI.
 
-Single-file HTTP server with embedded HTML/CSS/JS chat UI:
+Important behavior:
 
-- `POST /chat` — accepts user message, dispatches through `SessionDispatcher`, returns response + images
-- `GET /state` — returns current session state
-- Image serving: converts local file paths to `/image?path=...` URLs for browser display
-- Constructs all agent components (`SessionRouter`, `ToolConsultantAgent`, `DagExecutor`, `CoderAgent`, `ResultSummarizer`) and wires them into `SessionDispatcher`
-
----
-
-## RAG System
-
-Literature retrieval for research-mode tasks:
-
-| File | Purpose |
-|---|---|
-| `rag/agent.py` | RAG agent: generates search queries, retrieves papers, builds context for method design |
-| `rag/paper_store.py` | Paper storage and retrieval |
-| `rag/store_backend.py` | `RAGStore` — vector store backend for embedding-based retrieval |
-| `rag/sources.py` | PubMed fetching, document normalization |
-| `rag/prepare.py` | Document preparation and chunking |
-| `rag/types.py` | Data types (`RAGDocument`, `RAGHit`, `PromotedPaper`) |
+- serves the single-page chat interface;
+- accepts chat requests and calls `SessionDispatcher.handle()`;
+- stores turn state through `SessionStateStore`;
+- serves local images through image URLs;
+- exposes session/progress state for the activity panel;
+- wires the router, consultant, DAG executor, coder, result summarizer, research loop, workspace resolver, backend, and RAG components.
 
 ---
 
-## Prompts
+## Prompt Sources
 
-All LLM prompt templates organized by agent:
+The current panel/mediator workflow primarily loads prompts from `updated_prompts/` through `agents/prompt_loader.py`.
 
-| File | Agent |
-|---|---|
-| `session_router_prompts.py` | SessionRouter |
-| `tool_consultant_prompts.py` | ToolConsultantAgent |
-| `coder_agent_prompts.py` | CoderAgent (generation, evaluation, fix) |
-| `result_summarizer_prompts.py` | ResultSummarizer |
-| `evaluator_prompts.py` | Evaluation prompts |
-| `analyst_prompts.py` | Analyst agent |
-| `consultant_prompts.py` | Consultant agent |
-| `generator_prompts.py` | Generator prompts |
+Examples:
 
----
+- `panelist_shared_system.md`
+- `biologist_formulation.md`
+- `statistician_formulation.md`
+- `bioinformatician_formulation.md`
+- `mediator_formulation.md`
+- `mediator_adversary_revision.md`
+- `mediator_post_analysis.md`
+- `adversary.md`
+- `analyzer.md`
+- `paper_md_writer.md`
 
-## Data Flow Example
-
-**"Cluster my PBMC data and find the best ARI"**
-
-1. **SessionRouter** classifies as `task`
-2. **ToolConsultant** produces a `dag_plan` with:
-   - Fixed layers: QC (basic), normalize (log1p)
-   - Branching: embed (PCA vs scVI), cluster (resolution 0.5 vs 1.0)
-   - Evaluation: ARI against ground truth labels
-3. **DagExecutor** enumerates 4 paths (2 embed x 2 resolution):
-   - Runs QC once (cached), normalize once (cached)
-   - Runs each embed method, then each cluster resolution
-   - Evaluates ARI for all 4 paths
-4. **ResultSummarizer** formats: best path config + comparison table
-5. **SessionStateStore** records `active_h5ad_path`, `active_cluster_key` for follow-up turns
-
-**Follow-up: "Now make a UMAP of the best result"**
-
-1. **ToolConsultant** produces `implementation_plan` with `depends_on_dag: false`, using `session_output.active_h5ad_path`
-2. **SessionDispatcher** resolves `session_output.*` references from stored state
-3. **CoderAgent** generates and runs a Python script to compute + save UMAP
-4. **ResultSummarizer** returns summary + collected UMAP image
+Python prompt modules in `prompts/` are still used by router, tool consultant, coder, summarizer, and some analyzer/adversary paths.
 
 ---
 
-## Key Design Decisions
+## Example Flows
 
-- **DAG replaces both one-shot and optimization**: A single execution model handles linear pipelines (1 variant per layer) and multi-path exploration (multiple variants). No separate Optuna/HPO system.
-- **LLM-driven variant selection**: The ToolConsultant decides where to branch based on the target objective, keeping the Cartesian product manageable.
-- **Content-addressed caching**: Paths sharing early stages (same QC + normalize) automatically share cached results.
-- **Composable plans**: `dag_plan` + `implementation_plan` can be combined in a single turn. `session_output.*` references enable multi-turn workflows without re-running pipelines.
-- **TextGrad code optimization**: The CoderAgent uses TextGrad for iterative script improvement rather than simple retry loops.
+### Operational Request
+
+User: "Cluster this PBMC dataset and compare PCA vs scVI."
+
+1. Router returns `task` + `operational`.
+2. ToolConsultant emits a `dag_plan` with variant layers.
+3. DagExecutor enumerates all paths.
+4. Backend tools write path outputs and metrics.
+5. ResultSummarizer reports the best path and figures.
+6. SessionStateStore records active artifacts for follow-up turns.
+
+### Discovery Request
+
+User: "Which immune cell populations may drive inflammation in this dataset?"
+
+1. Router returns `task` + `discovery`.
+2. ResearchLoop profiles the workspace and initializes/continues research state.
+3. Scientist panel and mediator formulate a research plan.
+4. Adversary critiques the plan; mediator revises if needed.
+5. ToolConsultant translates the plan into executable tools/code.
+6. Execution runs.
+7. AnalyzerPanel interprets results, literature support, and database evidence.
+8. Mediator decides to conclude, revise, continue, ask the user, or declare unanswerable.
+9. SessionRecorder and StateGraphManager persist the full trace.

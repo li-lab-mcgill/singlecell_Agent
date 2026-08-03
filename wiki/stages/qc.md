@@ -14,4 +14,3 @@ Common QC failure modes that this stage catches:
 Edges:
 - [[methods/basic_filter]] modality: rna, atac, multi
 - [[methods/doublet_detection]] modality: rna, multi
-- [[methods/atac_qc_filter]] modality: atac, multi

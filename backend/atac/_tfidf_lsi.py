@@ -18,6 +18,7 @@ def dispatch(
     binarize: bool = True,
     random_seed: int = 0,
     scale_factor: float = 10_000.0,
+    embedding_key: str = "X_lsi",
     **kwargs: Any,
 ):
     if method not in KNOWN_METHODS:
@@ -31,6 +32,7 @@ def dispatch(
             binarize=binarize,
             random_seed=random_seed,
             scale_factor=scale_factor,
+            embedding_key=embedding_key,
         )
     raise NotImplementedError(
         "atac.tfidf_lsi(method='snapatac2_svd') requires snapatac2-specific AnnData handling and is not implemented yet."
@@ -46,6 +48,7 @@ def _run_tfidf_lsi(
     binarize: bool,
     random_seed: int,
     scale_factor: float,
+    embedding_key: str = "X_lsi",
 ):
     import numpy as np
     from scipy import sparse
@@ -99,7 +102,7 @@ def _run_tfidf_lsi(
             corr = float(np.corrcoef(component, depth)[0, 1])
         depth_correlation.append(corr)
 
-    adata.obsm["X_lsi"] = lsi
+    adata.obsm[embedding_key] = lsi
     adata.uns["tfidf_lsi"] = {
         "method": method,
         "n_components": int(n_components),
@@ -109,11 +112,12 @@ def _run_tfidf_lsi(
         "binarize": bool(binarize),
         "random_seed": int(random_seed),
         "scale_factor": float(scale_factor),
-        "obsm_key": "X_lsi",
+        "obsm_key": embedding_key,
         "explained_variance_ratio": [float(x) for x in svd.explained_variance_ratio_],
         "singular_values": [float(x) for x in svd.singular_values_],
         "depth_correlation": depth_correlation,
     }
-    if adata.obsm["X_lsi"].shape != (adata.n_obs, lsi.shape[1]):
-        raise RuntimeError("TF-IDF/LSI completed but adata.obsm['X_lsi'] has an invalid shape.")
+    adata.uns["embedding"] = {"method": "lsi", "n_components": int(n_components), "obsm_key": embedding_key}
+    if adata.obsm[embedding_key].shape != (adata.n_obs, lsi.shape[1]):
+        raise RuntimeError(f"TF-IDF/LSI completed but adata.obsm['{embedding_key}'] has an invalid shape.")
     return adata

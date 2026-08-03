@@ -7,41 +7,20 @@ from pathlib import Path
 from unittest import mock
 
 
-if "pandas" not in sys.modules:
-    fake_pandas = types.ModuleType("pandas")
-
-    class _FakeSeries(list):
-        def astype(self, _dtype):
-            return _FakeSeries(str(item) for item in self)
-
-        def tolist(self):
-            return list(self)
-
-    fake_pandas.DataFrame = type("DataFrame", (), {})
-    fake_pandas.Series = lambda data: _FakeSeries(list(data))
-    fake_pandas.read_excel = lambda *args, **kwargs: None
-    fake_pandas.read_csv = lambda *args, **kwargs: None
-    sys.modules["pandas"] = fake_pandas
-
-if "numpy" not in sys.modules:
-    sys.modules["numpy"] = types.ModuleType("numpy")
-
 if "dotenv" not in sys.modules:
     fake_dotenv = types.ModuleType("dotenv")
     fake_dotenv.load_dotenv = lambda *args, **kwargs: None
     sys.modules["dotenv"] = fake_dotenv
 
 
-from agents.dag_executor import DagExecutor, _resolve_refs, validate_dag_plan
+from agents.dag_executor import DagExecutor, _auto_wire_params, _get_tool_accepted_params, validate_dag_plan
 from agents.decision_schema import DecisionValidationError, validate_tool_consultant_decision
 
 
-class _FakeRegistry:
-    def __init__(self, executor):
-        self._executor = executor
-
-    def executor(self):
-        return self._executor
+class _FakeRegistry(dict):
+    """Thin dict subclass so mock.patch(return_value=_FakeRegistry(tools)) works with
+    DagExecutor which calls self.tool_executor.keys() and self.tool_executor[tool_id]."""
+    pass
 
 
 class _FakeRuns:
@@ -139,7 +118,15 @@ def _copying_tool(*, input_h5ad_path, output_h5ad_path, output_dir=None, method,
         payload["score"] = params["score"]
     output = Path(output_h5ad_path)
     output.write_text(json.dumps(payload), encoding="utf-8")
-    return {"output_h5ad_path": str(output)}
+    # Mimic real tools: propagate output key params into output_context
+    output_context = {}
+    for key in ("cluster_key", "embedding_key"):
+        if key in params:
+            output_context[key] = params[key]
+    return {"output_h5ad_path": str(output), "output_context": output_context}
+
+
+_copying_tool._accepted_params = frozenset({"embedding_key", "score", "cluster_key"})
 
 
 def _maybe_failing_tool(*, input_h5ad_path, output_h5ad_path, output_dir=None, method, **params):
@@ -166,8 +153,8 @@ def _summary_tool(*, input_h5ad_path, output_h5ad_path, output_dir=None, method,
 class DagExecutorTests(unittest.TestCase):
     def test_validate_rejects_path_count_above_cap(self):
         layers = [
-            {"stage": "rna_quality_control", "variants": [{"method": f"m{i}"} for i in range(11)]},
-            {"stage": "rna_normalization", "variants": [{"method": f"m{i}"} for i in range(10)]},
+            {"tool": "rna_quality_control", "variants": [{"method": f"m{i}"} for i in range(11)]},
+            {"tool": "rna_normalization", "variants": [{"method": f"m{i}"} for i in range(10)]},
         ]
         with self.assertRaises(DecisionValidationError):
             validate_dag_plan(
@@ -185,7 +172,7 @@ class DagExecutorTests(unittest.TestCase):
                 {
                     "input_h5ad_path": "/tmp/input.h5ad",
                     "layers": [
-                        {"stage": "rna_quality_control", "variants": [{"method": "a"}, {"method": "b"}]},
+                        {"tool": "rna_quality_control", "variants": [{"method": "a"}, {"method": "b"}]},
                     ],
                 },
                 available_stages={"rna_quality_control"},
@@ -198,7 +185,7 @@ class DagExecutorTests(unittest.TestCase):
                     "task": "bad stage",
                     "dag_plan": {
                         "input_h5ad_path": "/tmp/input.h5ad",
-                        "layers": [{"stage": "not_a_tool", "variants": [{"method": "basic"}]}],
+                        "layers": [{"tool": "not_a_tool", "variants": [{"method": "basic"}]}],
                     },
                     "implementation_plan": None,
                     "research_brief": None,
@@ -214,7 +201,7 @@ class DagExecutorTests(unittest.TestCase):
                 "dag_plan": {
                     "input_h5ad_path": "/tmp/input.h5ad",
                     "layers": [
-                        {"stage": "rna_quality_control", "variants": [{"method": "a"}, {"method": "b"}]},
+                        {"tool": "rna_quality_control", "variants": [{"method": "a"}, {"method": "b"}]},
                     ],
                 },
                 "implementation_plan": None,
@@ -225,25 +212,23 @@ class DagExecutorTests(unittest.TestCase):
 
         self.assertEqual(decision["dag_plan"]["objective_name"], "cell_type_annotation_default")
 
-    def test_resolve_refs_uses_layer_outputs_and_recursive_declared_outputs(self):
-        path_config = [
-            {
-                "stage": "rna_dimensionality_reduction",
-                "method": "pca",
-                "declared_outputs": {"embedding_key": "X_pca", "suggested_cluster_key": "pca_clusters"},
-            },
-            {
-                "stage": "rna_clustering",
-                "method": "leiden",
-                "declared_outputs": {"cluster_key": "$L0.suggested_cluster_key"},
-            },
-        ]
-        path_config[1]["declared_outputs"] = _resolve_refs(path_config[1]["declared_outputs"], path_config, 1)
+    def test_auto_wire_injects_matching_context_keys(self):
+        def fake_tool(): pass
+        fake_tool._accepted_params = frozenset({"embedding_key", "resolution"})
+        context = {"embedding_key": "X_pca", "cluster_key": "leiden"}
+        params = {"resolution": 0.5}
+        result = _auto_wire_params(params, context, fake_tool)
+        self.assertEqual(result["embedding_key"], "X_pca")
+        self.assertEqual(result["resolution"], 0.5)
+        self.assertNotIn("cluster_key", result)
 
-        resolved = _resolve_refs({"embedding_key": "$L0.embedding_key", "cluster_key": "$L1.cluster_key"}, path_config, 2)
-
-        self.assertEqual(resolved["embedding_key"], "X_pca")
-        self.assertEqual(resolved["cluster_key"], "pca_clusters")
+    def test_auto_wire_explicit_params_override_context(self):
+        def fake_tool(): pass
+        fake_tool._accepted_params = frozenset({"embedding_key"})
+        context = {"embedding_key": "X_pca"}
+        params = {"embedding_key": "X_custom"}
+        result = _auto_wire_params(params, context, fake_tool)
+        self.assertEqual(result["embedding_key"], "X_custom")
 
     def test_composable_tool_decision_accepts_dag_plus_coder(self):
         decision = validate_tool_consultant_decision(
@@ -253,7 +238,7 @@ class DagExecutorTests(unittest.TestCase):
                 "dag_plan": {
                     "input_h5ad_path": "/tmp/input.h5ad",
                     "layers": [
-                        {"stage": "rna_quality_control", "variants": [{"method": "basic"}]},
+                        {"tool": "rna_quality_control", "variants": [{"method": "basic"}]},
                     ],
                 },
                 "implementation_plan": {
@@ -281,7 +266,7 @@ class DagExecutorTests(unittest.TestCase):
                 "rna_quality_control": _copying_tool,
                 "rna_clustering": _copying_tool,
             }
-            with mock.patch("agents.dag_executor.build_tool_executor_registry", return_value=_FakeRegistry(tools)):
+            with mock.patch("agents.dag_executor.build_wiki_executor_registry", return_value=_FakeRegistry(tools)):
                 executor = DagExecutor(backend=backend, result_dir=Path(tmpdir) / "dag")
                 result = executor.execute(
                     dag_plan={
@@ -289,31 +274,27 @@ class DagExecutorTests(unittest.TestCase):
                         "objective_name": "cell_type_annotation_default",
                         "evaluation": {
                             "metrics": ["ari", "nmi", "silhouette"],
-                            "cluster_key": "$L1.cluster_key",
                         },
                         "layers": [
                             {
-                                "stage": "rna_quality_control",
+                                "tool": "rna_quality_control",
                                 "variants": [
                                     {
                                         "method": "basic",
                                         "params": {},
-                                        "declared_outputs": {"embedding_key": "X_pca"},
                                     }
                                 ],
                             },
                             {
-                                "stage": "rna_clustering",
+                                "tool": "rna_clustering",
                                 "variants": [
                                     {
                                         "method": "leiden",
-                                        "params": {"score": 0.2, "embedding_key": "$L0.embedding_key"},
-                                        "declared_outputs": {"cluster_key": "low_clusters"},
+                                        "params": {"score": 0.2, "cluster_key": "low_clusters"},
                                     },
                                     {
                                         "method": "leiden",
-                                        "params": {"score": 0.9, "embedding_key": "$L0.embedding_key"},
-                                        "declared_outputs": {"cluster_key": "high_clusters"},
+                                        "params": {"score": 0.9, "cluster_key": "high_clusters"},
                                     },
                                 ],
                             },
@@ -329,8 +310,6 @@ class DagExecutorTests(unittest.TestCase):
         self.assertIn("output_h5ad_path", result["best_path"]["resolved_outputs"])
         self.assertNotIn("output_h5ad_path", result["best_path"]["artifacts"])
         self.assertNotIn("$L", json.dumps(result["comparison_table"]))
-        for row in result["comparison_table"]:
-            self.assertEqual(row["rna_clustering_embedding_key"], "X_pca")
         self.assertEqual(len(result["comparison_table"]), 2)
         self.assertEqual(len(backend.runs.completed), 2)
 
@@ -340,7 +319,7 @@ class DagExecutorTests(unittest.TestCase):
             input_path.write_text(json.dumps({"score": 0.5}), encoding="utf-8")
             backend = _FakeBackend()
             tools = {"rna_clustering": _copying_tool}
-            with mock.patch("agents.dag_executor.build_tool_executor_registry", return_value=_FakeRegistry(tools)):
+            with mock.patch("agents.dag_executor.build_wiki_executor_registry", return_value=_FakeRegistry(tools)):
                 executor = DagExecutor(backend=backend, result_dir=Path(tmpdir) / "dag")
                 result = executor.execute(
                     dag_plan={
@@ -348,7 +327,7 @@ class DagExecutorTests(unittest.TestCase):
                         "evaluation": {"metrics": ["ari", "nmi", "silhouette"]},
                         "layers": [
                             {
-                                "stage": "rna_clustering",
+                                "tool": "rna_clustering",
                                 "variants": [{"method": "leiden", "params": {"score": 0.5}}],
                             }
                         ],
@@ -369,7 +348,7 @@ class DagExecutorTests(unittest.TestCase):
                     "input_h5ad_path": "/tmp/input.h5ad",
                     "layers": [
                         {
-                            "stage": "rna_dimensionality_reduction",
+                            "tool": "rna_dimensionality_reduction",
                             "variants": [
                                 {
                                     "method": "seurat_pca",
@@ -377,7 +356,6 @@ class DagExecutorTests(unittest.TestCase):
                                         "input_h5ad_path": "/tmp/input.h5ad",
                                         "output_h5ad_path": "/tmp/out.h5ad",
                                     },
-                                    "declared_outputs": {"embedding_key": "X_seurat_pca"},
                                 }
                             ],
                         }
@@ -398,14 +376,14 @@ class DagExecutorTests(unittest.TestCase):
             input_path.write_text(json.dumps({"score": 0.0}), encoding="utf-8")
             backend = _FakeBackend()
             tools = {"read_dataset_summary": counted_summary_tool}
-            with mock.patch("agents.dag_executor.build_tool_executor_registry", return_value=_FakeRegistry(tools)):
+            with mock.patch("agents.dag_executor.build_wiki_executor_registry", return_value=_FakeRegistry(tools)):
                 executor = DagExecutor(backend=backend, result_dir=Path(tmpdir) / "dag")
                 result = executor.execute(
                     dag_plan={
                         "input_h5ad_path": str(input_path),
                         "layers": [
                             {
-                                "stage": "read_dataset_summary",
+                                "tool": "read_dataset_summary",
                                 "variants": [{"method": "default"}],
                             }
                         ],
@@ -417,7 +395,7 @@ class DagExecutorTests(unittest.TestCase):
                         "input_h5ad_path": str(input_path),
                         "layers": [
                             {
-                                "stage": "read_dataset_summary",
+                                "tool": "read_dataset_summary",
                                 "variants": [{"method": "default"}],
                             }
                         ],
@@ -455,7 +433,7 @@ class DagExecutorTests(unittest.TestCase):
                 "rna_quality_control": qc_tool,
                 "rna_clustering": cluster_tool,
             }
-            with mock.patch("agents.dag_executor.build_tool_executor_registry", return_value=_FakeRegistry(tools)):
+            with mock.patch("agents.dag_executor.build_wiki_executor_registry", return_value=_FakeRegistry(tools)):
                 executor = DagExecutor(backend=backend, result_dir=Path(tmpdir) / "dag")
                 result = executor.execute(
                     dag_plan={
@@ -464,11 +442,11 @@ class DagExecutorTests(unittest.TestCase):
                         "evaluation": {"metrics": ["ari", "nmi", "silhouette"]},
                         "layers": [
                             {
-                                "stage": "rna_quality_control",
+                                "tool": "rna_quality_control",
                                 "variants": [{"method": "basic", "params": {}}],
                             },
                             {
-                                "stage": "rna_clustering",
+                                "tool": "rna_clustering",
                                 "variants": [
                                     {"method": "leiden", "params": {"score": 0.1}},
                                     {"method": "leiden", "params": {"score": 0.8}},
@@ -495,7 +473,7 @@ class DagExecutorTests(unittest.TestCase):
 
             backend = _FakeBackend()
             tools = {"rna_quality_control": _copying_tool}
-            with mock.patch("agents.dag_executor.build_tool_executor_registry", return_value=_FakeRegistry(tools)):
+            with mock.patch("agents.dag_executor.build_wiki_executor_registry", return_value=_FakeRegistry(tools)):
                 executor = DagExecutor(backend=backend, result_dir=result_dir)
                 result = executor.execute(
                     dag_plan={
@@ -503,7 +481,7 @@ class DagExecutorTests(unittest.TestCase):
                         "evaluation": {"metrics": ["ari"]},
                         "layers": [
                             {
-                                "stage": "rna_quality_control",
+                                "tool": "rna_quality_control",
                                 "variants": [{"method": "basic", "params": {"score": 0.8}}],
                             }
                         ],
@@ -521,7 +499,7 @@ class DagExecutorTests(unittest.TestCase):
             input_path.write_text(json.dumps({"score": 0.0}), encoding="utf-8")
             backend = _FakeBackend()
             tools = {"rna_clustering": _copying_tool}
-            with mock.patch("agents.dag_executor.build_tool_executor_registry", return_value=_FakeRegistry(tools)):
+            with mock.patch("agents.dag_executor.build_wiki_executor_registry", return_value=_FakeRegistry(tools)):
                 executor = DagExecutor(backend=backend, result_dir=Path(tmpdir) / "dag")
                 result = executor.execute(
                     dag_plan={
@@ -530,7 +508,7 @@ class DagExecutorTests(unittest.TestCase):
                         "evaluation": {"metrics": ["ari", "nmi", "silhouette"]},
                         "layers": [
                             {
-                                "stage": "rna_clustering",
+                                "tool": "rna_clustering",
                                 "variants": [
                                     {"method": "leiden", "params": {"score": 0.7}},
                                     {"method": "louvain", "params": {"score": 0.7}},
@@ -550,7 +528,7 @@ class DagExecutorTests(unittest.TestCase):
             input_path.write_text(json.dumps({"score": 0.0}), encoding="utf-8")
             backend = _FakeBackend()
             tools = {"rna_clustering": _maybe_failing_tool}
-            with mock.patch("agents.dag_executor.build_tool_executor_registry", return_value=_FakeRegistry(tools)):
+            with mock.patch("agents.dag_executor.build_wiki_executor_registry", return_value=_FakeRegistry(tools)):
                 executor = DagExecutor(backend=backend, result_dir=Path(tmpdir) / "dag")
                 result = executor.execute(
                     dag_plan={
@@ -559,7 +537,7 @@ class DagExecutorTests(unittest.TestCase):
                         "evaluation": {"metrics": ["ari", "nmi", "silhouette"]},
                         "layers": [
                             {
-                                "stage": "rna_clustering",
+                                "tool": "rna_clustering",
                                 "variants": [
                                     {"method": "bad", "params": {"fail": True}},
                                     {"method": "good", "params": {"score": 0.9}},
@@ -591,7 +569,7 @@ class DagExecutorTests(unittest.TestCase):
                 "rna_dimensionality_reduction": _copying_tool,
                 "rna_celltype_annotation": _copying_tool,
             }
-            with mock.patch("agents.dag_executor.build_tool_executor_registry", return_value=_FakeRegistry(tools)):
+            with mock.patch("agents.dag_executor.build_wiki_executor_registry", return_value=_FakeRegistry(tools)):
                 executor = DagExecutor(backend=backend, result_dir=Path(tmpdir) / "dag")
                 result = executor.execute(
                     dag_plan={
@@ -600,14 +578,14 @@ class DagExecutorTests(unittest.TestCase):
                         "evaluation": {"metrics": ["ari", "nmi", "silhouette"]},
                         "layers": [
                             {
-                                "stage": "rna_quality_control",
+                                "tool": "rna_quality_control",
                                 "variants": [
                                     {"method": "basic", "params": {"score": 0.1}},
                                     {"method": "scrublet", "params": {"score": 0.2}},
                                 ],
                             },
                             {
-                                "stage": "rna_normalization",
+                                "tool": "rna_normalization",
                                 "variants": [
                                     {"method": "log1p", "params": {"score": 0.3}},
                                     {"method": "sctransform", "params": {"score": 0.4}},
@@ -615,14 +593,14 @@ class DagExecutorTests(unittest.TestCase):
                                 ],
                             },
                             {
-                                "stage": "rna_dimensionality_reduction",
+                                "tool": "rna_dimensionality_reduction",
                                 "variants": [
                                     {"method": "pca", "params": {"score": 0.6}},
                                     {"method": "scvi", "params": {"score": 0.7}},
                                 ],
                             },
                             {
-                                "stage": "rna_celltype_annotation",
+                                "tool": "rna_celltype_annotation",
                                 "variants": [
                                     {"method": "celltypist", "params": {"score": 0.8}},
                                     {"method": "cellmarker", "params": {"score": 0.85}},
@@ -650,7 +628,7 @@ class DagExecutorTests(unittest.TestCase):
                 "rna_quality_control": _copying_tool,
                 "rna_clustering": _copying_tool,
             }
-            with mock.patch("agents.dag_executor.build_tool_executor_registry", return_value=_FakeRegistry(tools)):
+            with mock.patch("agents.dag_executor.build_wiki_executor_registry", return_value=_FakeRegistry(tools)):
                 executor = DagExecutor(backend=backend, result_dir=Path(tmpdir) / "dag")
                 result = executor.execute(
                     dag_plan={
@@ -659,11 +637,11 @@ class DagExecutorTests(unittest.TestCase):
                         "evaluation": {"metrics": ["ari", "nmi", "silhouette"]},
                         "layers": [
                             {
-                                "stage": "rna_quality_control",
+                                "tool": "rna_quality_control",
                                 "variants": [{"method": "basic", "params": {}}],
                             },
                             {
-                                "stage": "rna_clustering",
+                                "tool": "rna_clustering",
                                 "variants": [
                                     {"method": "leiden", "params": {"score": 0.1}},
                                     {"method": "leiden", "params": {"score": 0.2}},
@@ -697,7 +675,7 @@ class DagExecutorTests(unittest.TestCase):
                 "rna_quality_control": _copying_tool,
                 "rna_clustering": _copying_tool,
             }
-            with mock.patch("agents.dag_executor.build_tool_executor_registry", return_value=_FakeRegistry(tools)):
+            with mock.patch("agents.dag_executor.build_wiki_executor_registry", return_value=_FakeRegistry(tools)):
                 executor = DagExecutor(backend=backend, result_dir=Path(tmpdir) / "dag")
                 result = executor.execute(
                     dag_plan={
@@ -705,8 +683,8 @@ class DagExecutorTests(unittest.TestCase):
                         "objective_name": "cell_type_annotation_default",
                         "evaluation": {"metrics": ["ari"]},
                         "layers": [
-                            {"stage": "rna_quality_control", "variants": [{"method": "basic"}]},
-                            {"stage": "rna_clustering", "variants": [{"method": "leiden", "params": {"score": 0.9}}]},
+                            {"tool": "rna_quality_control", "variants": [{"method": "basic"}]},
+                            {"tool": "rna_clustering", "variants": [{"method": "leiden", "params": {"score": 0.9}}]},
                         ],
                     },
                     session_tag="keep_intermediates",

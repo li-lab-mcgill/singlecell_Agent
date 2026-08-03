@@ -73,6 +73,15 @@ class ReferenceStore:
     def get_motifs(self, db: str) -> Any:
         return self._resolve(db)
 
+    def get_cistarget_db(self, name: str) -> Any:
+        return self._resolve(name)
+
+    def get_motif_annotations(self, name: str) -> Any:
+        return self._resolve(name)
+
+    def get_tf_list(self, name: str) -> Any:
+        return self._resolve(name)
+
     def get_atlas(self, name: str) -> Any:
         return self._resolve(name)
 

@@ -9,8 +9,8 @@ backend: backend/tools/rna/annotate/azimuth.py
 Annotates cells using Azimuth reference-based label transfer. Projects query cells onto a Seurat reference atlas and transfers cell type labels based on nearest neighbor assignment in the reference embedding.
 
 Key parameters:
-- `reference` (default "pbmcref"): Azimuth reference dataset; options include `"pbmcref"` (PBMC), `"bonemarrowref"`, `"lungref"`, `"kidneyref"`, `"heartref"`
-- `label_key` (default "predicted.celltype.l2"): annotation level to transfer; Azimuth provides hierarchical labels (l1 = coarse, l2 = fine, l3 = finest)
+- `refs` (required)
+- `runners` (required)
 
 Requires internet access to download reference data on first use. References are cached locally.
 

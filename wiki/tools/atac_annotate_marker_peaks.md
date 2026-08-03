@@ -9,10 +9,9 @@ backend: backend/tools/atac/annotate/marker_peaks.py
 Annotates ATAC clusters by identifying cluster-specific accessible peaks near known cell-type marker gene loci, then assigning cell types based on these accessibility patterns.
 
 Key parameters:
-- `cluster_key` (default "atac_leiden_clusters"): cluster column to annotate
-- `marker_genes` (required): dict mapping cell type names to lists of marker genes; e.g., `{"T cell": ["CD3D", "CD3E"], "B cell": ["CD79A", "MS4A1"]}`
-- `genome` (default "hg38"): reference genome for TSS coordinate lookup
-- `window` (default 50000): search window around marker gene TSS for accessible peaks
+- `group_key` (required)
+- `marker_peaks` (required)
+- `min_score` (default 0.0)
 
 For each cluster, scores the overlap between top-accessible peaks and peaks near each cell type's marker genes. Assigns the cell type with the highest overlap score.
 

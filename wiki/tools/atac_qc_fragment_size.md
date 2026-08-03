@@ -11,8 +11,8 @@ Computes and plots the fragment size distribution for ATAC QC. A high-quality AT
 This tool is diagnostic — it does not filter cells. Use it to assess library quality before proceeding with `atac_qc_basic`.
 
 Key parameters:
-- `max_fragment_length` (default 800): maximum fragment length to plot
-- `n_cells` (default 1000): number of cells to sample for the distribution plot (full dataset can be slow)
+- `gtf_path` (default None)
+- `exclude_chroms` (default None)
 
 Output: `adata.uns["fragment_size_distribution"]` with per-length counts; also generates a plot if `plot=True`.
 

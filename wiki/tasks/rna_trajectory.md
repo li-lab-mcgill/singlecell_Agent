@@ -21,7 +21,7 @@ Stages (in order):
 - [[stages/trajectory]] [includes]
 
 Evaluated by:
-- [[tools/eval_trajectory_metrics]] [evaluated_by]
+No dedicated executable trajectory evaluation tool is currently registered.
 
 Key decisions for the consultant:
 - The root cell must be specified by the user or inferred from known biology (progenitor marker expression)

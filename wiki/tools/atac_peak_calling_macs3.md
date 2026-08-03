@@ -9,11 +9,8 @@ backend: backend/tools/atac/peak_calling/macs3.py
 Calls peaks using MACS3 with per-cluster pseudo-bulk aggregation. Generates a consensus peak set across all clusters.
 
 Key parameters:
-- `cluster_key` (required): cluster column for pseudo-bulk grouping
-- `fragment_file` (required): path to the fragment file (BED/TSV with columns: chr, start, end, barcode, count)
-- `genome_size` (default "hs"): genome size for MACS3; "hs" (human), "mm" (mouse), or integer bp
-- `qvalue` (default 0.05): FDR threshold for peak calling
-- `output_dir` (default "peaks/"): directory to write per-cluster narrowPeak files and the merged consensus BED
+- `group_key` (default None)
+- `q_value` (default 0.05)
 
 Workflow:
 1. For each cluster: extract barcodes, filter fragment file → run MACS3 `--format BEDPE --nomodel --shift -100 --extsize 200`

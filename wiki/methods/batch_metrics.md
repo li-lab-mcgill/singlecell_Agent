@@ -22,4 +22,5 @@ Batch metrics evaluate two complementary properties of an integration: how well 
 Computed using scib-metrics package.
 
 Edges:
-- [[tools/eval_batch_metrics]] implements
+- [[tools/eval_ilisi_clisi]] implements
+- [[tools/eval_kbet]] implements

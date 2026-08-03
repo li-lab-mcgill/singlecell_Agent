@@ -9,9 +9,10 @@ backend: backend/tools/rna/de/edger.py
 Performs pseudobulk differential expression using edgeR's quasi-likelihood (QL) framework via R/rpy2. An alternative to PyDESeq2 with slightly different statistical properties.
 
 Key parameters:
-- `groupby`, `group`, `sample_key`, `condition_key`, `contrast`: same as `rna_de_pseudobulk`
-- `min_cpm` (default 1.0): filter genes with CPM below this threshold in fewer than `min_samples` samples
-- `min_samples` (default 2): minimum samples meeting CPM threshold for a gene to be included
+- `group_key` (required)
+- `sample_key` (required)
+- `reference` (default "rest")
+- `top_n` (default 50)
 
 edgeR QL pipeline:
 1. Estimate dispersion: `estimateDisp()` → common, trended, tagwise dispersion

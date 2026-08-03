@@ -34,12 +34,15 @@ def run(
     if group_key not in adata.obs:
         raise ValueError(f"group_key '{group_key}' not in adata.obs.")
 
+    adata.obs[group_key] = adata.obs[group_key].astype(str).astype("category")
+
     sc.tl.rank_genes_groups(
         adata,
         groupby=group_key,
         method="wilcoxon",
         reference=reference,
         key_added="rank_peaks_groups",
+        use_raw=False,
     )
 
     rank = adata.uns["rank_peaks_groups"]

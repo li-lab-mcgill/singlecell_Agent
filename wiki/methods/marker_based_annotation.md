@@ -20,4 +20,4 @@ Key considerations:
 Marker genes per cluster are stored in `adata.uns["rank_genes_groups"]`. Cell type assignments should be written to `adata.obs["cell_type"]`.
 
 Edges:
-- [[tools/rna_annotate_markers]] implements
+- [[tools/rna_annotate_cellmarker]] implements

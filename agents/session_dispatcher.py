@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import copy
+import inspect
 import json
 import re
 from pathlib import Path
@@ -25,6 +26,8 @@ class SessionDispatcher:
         result_dir: str | Path,
         dag_executor: Any | None = None,
         result_summarizer: Any | None = None,
+        research_loop: Any | None = None,
+        research_workspace: Any | None = None,
     ):
         self.router = router
         self.tool_consultant = tool_consultant
@@ -32,6 +35,8 @@ class SessionDispatcher:
         self.coder = coder
         self.research_executor = research_executor
         self.result_summarizer = result_summarizer
+        self.research_loop = research_loop
+        self.research_workspace = research_workspace
         self.tool_artifact_dir = Path(tool_artifact_dir)
         self.tool_artifact_dir.mkdir(parents=True, exist_ok=True)
         self.state_store = state_store
@@ -61,12 +66,28 @@ class SessionDispatcher:
         if route_name == "direct_response":
             payload = self._handle_direct_response(route)
         elif route_name == "task":
+            intent_mode = route.get("intent_mode", "ambiguous")
             planning_state = self._build_task_session_state(session_state)
-            payload = self._handle_task(
-                user_message=route.get("resolved_intent") or user_message,
-                session_state=planning_state,
-                session_tag=session_tag,
-            )
+            resolved_message = route.get("resolved_intent") or user_message
+            if intent_mode == "ambiguous":
+                payload = self._handle_ambiguous_task(
+                    user_message=resolved_message,
+                    route=route,
+                )
+            elif intent_mode == "discovery":
+                payload = self._handle_research_task(
+                    user_message=resolved_message,
+                    original_user_message=user_message,
+                    session_state=planning_state,
+                    session_tag=session_tag,
+                    route=route,
+                )
+            else:
+                payload = self._handle_task(
+                    user_message=resolved_message,
+                    session_state=planning_state,
+                    session_tag=session_tag,
+                )
         else:  # pragma: no cover - router validation prevents this
             payload = {"decision": {}, "result": {"status": "failed", "error": f"Unknown route: {route_name}"}}
 
@@ -82,6 +103,35 @@ class SessionDispatcher:
     def _handle_direct_response(self, route: Dict[str, Any]) -> Dict[str, Any]:
         return self.responder.respond(route)
 
+    def _handle_ambiguous_task(
+        self,
+        *,
+        user_message: str,
+        route: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        message = (
+            "I need to clarify the goal before running analysis.\n\n"
+            "Option 1: Treat this as operational execution: run a known workflow and produce files.\n"
+            "Option 2: Treat this as discovery: form a research plan, evaluate evidence, and interpret scientific claims.\n\n"
+            "Please choose one interpretation, and I will continue from there."
+        )
+        return {
+            "decision": {
+                "route": "clarification_required",
+                "intent_mode": "ambiguous",
+                "execution_path": "clarification",
+                "resolved_intent": user_message,
+                "router_reason": route.get("reason", ""),
+            },
+            "result": {
+                "status": "needs_input",
+                "loop_status": "awaiting_user",
+                "message": message,
+                "images": [],
+                "execution_path": "clarification",
+            },
+        }
+
     def _handle_task(
         self,
         *,
@@ -94,6 +144,140 @@ class SessionDispatcher:
             session_state=session_state,
             session_tag=session_tag,
         )
+
+    def _handle_research_task(
+        self,
+        *,
+        user_message: str,
+        original_user_message: str | None = None,
+        session_state: Dict[str, Any] | None = None,
+        session_tag: str = "session",
+        route: Dict[str, Any] | None = None,
+    ) -> Dict[str, Any]:
+        """Route exploratory tasks through ResearchLoop.
+
+        Requires self.research_loop to be configured. The ResearchLoop must already
+        know the input h5ad path (set at construction time). The session_state is
+        passed as context but the ResearchLoop owns its own data profiling.
+        """
+        session_state = dict(session_state or {})
+        intent_mode = (route or {}).get("intent_mode", "discovery")
+        pipeline_mode_map = {
+            "discovery": "full",
+            "ambiguous": "brief",
+        }
+        pipeline_mode = pipeline_mode_map.get(intent_mode)
+        if pipeline_mode is None:
+            return {
+                "decision": {
+                    "route": "research_loop",
+                    "intent_mode": intent_mode,
+                    "execution_path": "research_loop",
+                },
+                "raw_results": {
+                    "research_loop_result": {
+                        "status": "failed",
+                        "error": f"Unsupported research intent_mode: {intent_mode}",
+                    }
+                },
+                "result": {
+                    "status": "failed",
+                    "message": f"Unsupported research intent_mode: {intent_mode}",
+                    "images": [],
+                    "execution_path": "research_loop",
+                },
+            }
+
+        if self.research_loop is None:
+            message = (
+                "This request was classified as exploratory/discovery, but ResearchLoop is not configured "
+                "for this session. Configure ResearchLoop or rephrase the request as a concrete operational workflow."
+            )
+            return {
+                "decision": {
+                    "route": "research_loop_unavailable",
+                    "intent_mode": intent_mode,
+                    "pipeline_mode": pipeline_mode,
+                    "execution_path": "research_loop",
+                },
+                "raw_results": {
+                    "research_loop_result": {
+                        "status": "failed",
+                        "error": message,
+                    }
+                },
+                "result": {
+                    "status": "failed",
+                    "message": message,
+                    "images": [],
+                    "execution_path": "research_loop",
+                    "pipeline_mode": pipeline_mode,
+                },
+            }
+
+        workspace_decision: dict[str, Any] | None = None
+        research_state = None
+        if self.research_workspace is not None:
+            resolution = self.research_workspace.resolve_research_state(
+                user_message=original_user_message or user_message,
+                resolved_intent=user_message,
+                data_summary=getattr(self.research_loop, "data_summary", {}),
+                session_context=session_state,
+            )
+            research_state = resolution.research_state
+            workspace_decision = resolution.decision
+
+        try:
+            loop_result = _call_research_loop(
+                self.research_loop,
+                user_question=user_message,
+                original_user_message=original_user_message or user_message,
+                session_context=session_state,
+                research_state=research_state,
+                workspace_decision=workspace_decision,
+                pipeline_mode=pipeline_mode,
+            )
+        except Exception as exc:
+            loop_result = {"status": "failed", "error": str(exc), "phases_completed": 0}
+
+        loop_status = str(loop_result.get("status", "failed"))
+        final_report = loop_result.get("final_report") or {}
+        message = (
+            final_report.get("summary")
+            or final_report.get("conclusion")
+            or final_report.get("message")
+            or (
+                f"Research loop completed: {loop_status} "
+                f"after {loop_result.get('phases_completed', 0)} phase(s)."
+            )
+        )
+        status = _frontend_research_status(loop_status)
+        figures = _collect_images_from_raw_results({"research_loop_result": loop_result})
+
+        payload = {
+            "decision": {
+                "route": "research_loop",
+                "intent_mode": intent_mode,
+                "pipeline_mode": pipeline_mode,
+                "execution_path": "research_loop",
+            },
+            "raw_results": {"research_loop_result": loop_result},
+            "result": {
+                "status": status,
+                "message": message,
+                "figures": figures,
+                "images": figures,
+                "execution_path": "research_loop",
+                "pipeline_mode": pipeline_mode,
+                "loop_status": loop_status,
+                "workspace_decision": workspace_decision,
+                "raw_results": {"research_loop_result": loop_result},
+            },
+        }
+        out_path = self.feedback_dir / f"{session_tag}_research_task.json"
+        out_path.write_text(json.dumps(payload, indent=2, ensure_ascii=False, default=str), encoding="utf-8")
+        payload["research_task_path"] = str(out_path)
+        return payload
 
     def execute_task(
         self,
@@ -256,6 +440,7 @@ class SessionDispatcher:
                 "message": message,
                 "figures": figures,
                 "images": figures,
+                "execution_path": "tool_execution",
                 "raw_results": raw_results,
             },
             "tool_artifact_dir": str(self.tool_artifact_dir),
@@ -292,6 +477,7 @@ class DeterministicResponder:
                 "message": response,
                 "images": [],
                 "source": "deterministic_responder",
+                "execution_path": "direct_response",
             },
         }
 
@@ -318,6 +504,7 @@ class DeterministicResponder:
                 "images": content["images"],
                 "artifact_path": str(path),
                 "source": "artifact_lookup",
+                "execution_path": "direct_response",
             },
         }
 
@@ -340,7 +527,7 @@ class DeterministicResponder:
 
 
 def _message(status: str, message: str) -> Dict[str, Any]:
-    return {"decision": {}, "result": {"status": status, "message": message}}
+    return {"decision": {}, "result": {"status": status, "message": message, "execution_path": "direct_response"}}
 
 
 def _extract_previous_plan(persistent: Dict[str, Any]) -> tuple[str, str]:
@@ -816,6 +1003,26 @@ def _overall_status(raw_results: Dict[str, Any]) -> str:
     if any(status == "partial" for status in statuses):
         return "partial"
     return "completed"
+
+
+def _frontend_research_status(loop_status: str) -> str:
+    return {
+        "done": "completed",
+        "awaiting_user": "needs_input",
+        "abstain": "not_answerable",
+        "max_phases_reached": "partial",
+        "failed": "failed",
+    }.get(str(loop_status or "failed"), "failed")
+
+
+def _call_research_loop(research_loop: Any, **kwargs: Any) -> dict[str, Any]:
+    signature = inspect.signature(research_loop.run)
+    accepted = {
+        key: value
+        for key, value in kwargs.items()
+        if key in signature.parameters and value is not None
+    }
+    return research_loop.run(**accepted)
 
 
 def _fallback_composable_message(raw_results: Dict[str, Any]) -> str:

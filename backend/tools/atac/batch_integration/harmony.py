@@ -19,7 +19,15 @@ def run(
 
     output_key = f"{embedding_key}_harmony"
     ho = run_harmony(adata.obsm[embedding_key], adata.obs, batch_key, theta=theta)
-    adata.obsm[output_key] = ho.Z_corr.T
+    # harmonypy ≥2.0 returns Z_corr as (cells × dims); older versions returned (dims × cells)
+    corrected = ho.Z_corr
+    if corrected.shape[0] != adata.n_obs:
+        corrected = corrected.T
+    if corrected.shape[0] != adata.n_obs:
+        raise RuntimeError(
+            f"Harmony output has shape {corrected.shape}, expected first dimension n_obs={adata.n_obs}."
+        )
+    adata.obsm[output_key] = corrected
     adata.uns["batch_integration"] = {
         "method": "harmony",
         "batch_key": batch_key,

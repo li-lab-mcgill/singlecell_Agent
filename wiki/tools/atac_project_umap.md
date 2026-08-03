@@ -9,10 +9,11 @@ backend: backend/tools/atac/project/umap.py
 Computes UMAP 2D layout for ATAC data from the spectral embedding or existing neighbor graph.
 
 Key parameters:
-- `embedding_key` (default None): if provided, recomputes KNN graph from this embedding; if None, uses existing `adata.obsp["connectivities"]`
-- `n_neighbors` (default 15): KNN neighbors; only used if `embedding_key` is provided
-- `min_dist` (default 0.5): UMAP cluster separation; lower = more separated
-- `n_components` (default 2): dimensions of UMAP output
+- `embedding_key` (default "X_lsi")
+- `n_neighbors` (default 15)
+- `min_dist` (default 0.5)
+- `spread` (default 1.0)
+- `random_seed` (default 42)
 
 Stores result in `adata.obsm["X_umap"]`.
 

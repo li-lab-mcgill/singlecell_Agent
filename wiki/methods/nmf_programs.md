@@ -21,4 +21,4 @@ K selection: run cNMF for K = 5–15; plot instability vs. K and reconstruction 
 Programs are not cell types — a cell can express multiple programs simultaneously. Annotation of programs requires inspecting the top-weighted genes per program.
 
 Edges:
-- [[tools/rna_programs_cnmf]] implements
+No executable backend tool currently implements NMF gene programs.

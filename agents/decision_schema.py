@@ -9,6 +9,15 @@ from backend.objectives import get_objective
 
 MAX_DAG_PATHS = 100
 DAG_EXECUTOR_MANAGED_PARAM_KEYS = {"input_h5ad_path", "output_h5ad_path", "output_dir", "method"}
+VALID_RETENTION_INTENTS = {
+    "required_checkpoint",
+    "active_branch_output",
+    "candidate_until_evaluated",
+    "final_output",
+    "lightweight_summary",
+    "recomputable_intermediate",
+    "ephemeral",
+}
 
 
 class DecisionValidationError(ValueError):
@@ -58,6 +67,7 @@ def validate_composable_tool_decision(payload: Dict[str, Any], *, available_stag
         "dag_plan": validate_dag_plan(dag_plan, available_stages=available_stages) if dag_plan else None,
         "implementation_plan": validate_implementation_plan(implementation_plan) if implementation_plan else None,
         "research_brief": research_brief,
+        "output_retention_policy": validate_output_retention_policy(payload.get("output_retention_policy")),
     }
     return out
 
@@ -75,9 +85,9 @@ def validate_dag_plan(payload: Dict[str, Any], *, available_stages: Iterable[str
     for layer_idx, layer in enumerate(layers):
         if not isinstance(layer, dict):
             raise DecisionValidationError(f"layers[{layer_idx}] must be an object")
-        stage = _required_str(layer, "stage")
+        stage = _required_str(layer, "tool")
         if available and stage not in available:
-            raise DecisionValidationError(f"layers[{layer_idx}].stage is not a registered tool: {stage}")
+            raise DecisionValidationError(f"layers[{layer_idx}].tool is not a registered tool: {stage}")
         variants = layer.get("variants")
         if not isinstance(variants, list) or not variants:
             raise DecisionValidationError(f"layers[{layer_idx}].variants must be a non-empty list")
@@ -87,7 +97,6 @@ def validate_dag_plan(payload: Dict[str, Any], *, available_stages: Iterable[str
                 raise DecisionValidationError(f"layers[{layer_idx}].variants[{variant_idx}] must be an object")
             method = _required_str(variant, "method")
             params = variant.get("params") or {}
-            declared_outputs = variant.get("declared_outputs") or {}
             if not isinstance(params, dict):
                 raise DecisionValidationError(f"layers[{layer_idx}].variants[{variant_idx}].params must be an object")
             forbidden_params = sorted(set(params) & DAG_EXECUTOR_MANAGED_PARAM_KEYS)
@@ -98,13 +107,9 @@ def validate_dag_plan(payload: Dict[str, Any], *, available_stages: Iterable[str
                     "ToolConsultant must put method at variant.method and let DagExecutor provide "
                     "input_h5ad_path, output_h5ad_path, and output_dir."
                 )
-            if not isinstance(declared_outputs, dict):
-                raise DecisionValidationError(
-                    f"layers[{layer_idx}].variants[{variant_idx}].declared_outputs must be an object"
-                )
-            normalized_variants.append({"method": method, "params": params, "declared_outputs": declared_outputs})
+            normalized_variants.append({"method": method, "params": params})
         total_paths *= len(normalized_variants)
-        normalized_layers.append({"stage": stage, "variants": normalized_variants})
+        normalized_layers.append({"tool": stage, "variants": normalized_variants})
     if total_paths > MAX_DAG_PATHS:
         raise DecisionValidationError(f"DAG plan produces {total_paths} paths, exceeding the {MAX_DAG_PATHS}-path cap")
     objective_name = _optional_str(payload, "objective_name")
@@ -115,13 +120,55 @@ def validate_dag_plan(payload: Dict[str, Any], *, available_stages: Iterable[str
         if spec is None or not spec.available:
             raise DecisionValidationError(f"Multi-path DAG requires an available objective, got {objective_name!r}")
     evaluation = _dict_or_none(payload.get("evaluation")) or {}
+    _validate_evaluation_refs(evaluation, normalized_layers)
     return {
         "input_h5ad_path": input_h5ad_path,
         "output_dir": str(payload.get("output_dir") or "").strip(),
         "objective_name": objective_name,
         "evaluation": evaluation,
         "layers": normalized_layers,
+        "output_retention_policy": validate_output_retention_policy(payload.get("output_retention_policy")),
     }
+
+
+def validate_output_retention_policy(value: Any) -> list[dict[str, Any]]:
+    if value is None:
+        return []
+    if not isinstance(value, list):
+        raise DecisionValidationError("output_retention_policy must be a list")
+    normalized: list[dict[str, Any]] = []
+    for idx, item in enumerate(value):
+        if not isinstance(item, dict):
+            raise DecisionValidationError(f"output_retention_policy[{idx}] must be an object")
+        output_id = str(item.get("output_id") or "").strip()
+        semantic_type = str(item.get("semantic_type") or "unknown").strip() or "unknown"
+        retention_intent = str(item.get("retention_intent") or "").strip()
+        if not output_id:
+            raise DecisionValidationError(f"output_retention_policy[{idx}].output_id is required")
+        if retention_intent not in VALID_RETENTION_INTENTS:
+            raise DecisionValidationError(
+                f"output_retention_policy[{idx}].retention_intent must be one of {sorted(VALID_RETENTION_INTENTS)}"
+            )
+        normalized.append(
+            {
+                "output_id": output_id,
+                "semantic_type": semantic_type,
+                "retention_intent": retention_intent,
+                "reason": str(item.get("reason") or "").strip(),
+            }
+        )
+    return normalized
+
+
+def _validate_evaluation_refs(evaluation: Dict[str, Any], layers: list[dict[str, Any]]) -> None:
+    """Reject any $L{n}.key syntax in evaluation — outputs are auto-wired from declared_outputs."""
+    for field, value in evaluation.items():
+        if isinstance(value, str) and value.strip().startswith("$L"):
+            raise DecisionValidationError(
+                f"evaluation.{field} = {value!r} uses '$L{{n}}.key' syntax which is no longer "
+                "supported. Remove embedding_key and cluster_key from evaluation — they are "
+                "forwarded automatically from whichever step declared them."
+            )
 
 
 def validate_implementation_plan(payload: Dict[str, Any]) -> Dict[str, Any]:

@@ -22,7 +22,7 @@ Stages (in order):
 - [[stages/differential_abundance]] [includes]
 
 Evaluated by:
-- [[tools/eval_da_metrics]] [evaluated_by]
+No dedicated executable DA evaluation tool is currently registered.
 
 Key decisions for the consultant:
 - **Milo** (default when ≥3 donors per condition): neighborhood-based; detects continuous shifts; recommended

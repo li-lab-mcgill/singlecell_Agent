@@ -18,4 +18,4 @@ DESeq2 on ATAC pseudobulk has been validated in multiple benchmarking studies as
 Output: peak-level DataFrame with `log2FoldChange`, `pvalue`, `padj`, `baseMean`.
 
 Edges:
-- [[tools/atac_da_pseudobulk]] implements
+No executable backend tool currently implements ATAC pseudobulk DA.

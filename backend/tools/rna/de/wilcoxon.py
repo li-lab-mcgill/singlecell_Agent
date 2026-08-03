@@ -24,6 +24,8 @@ def _run_scanpy_de(adata, *, group_key, method, reference, output_dir, top_n) ->
     if group_key not in adata.obs:
         raise ValueError(f"group_key '{group_key}' not in adata.obs.")
 
+    adata.obs[group_key] = adata.obs[group_key].astype(str).astype("category")
+
     method_map = {"wilcoxon": "wilcoxon", "t": "t-test", "logreg": "logreg"}
     sc.tl.rank_genes_groups(adata, groupby=group_key, method=method_map[method], reference=reference)
     rank = adata.uns["rank_genes_groups"]

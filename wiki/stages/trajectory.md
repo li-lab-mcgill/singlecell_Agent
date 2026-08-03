@@ -15,4 +15,3 @@ Key concepts:
 
 Edges:
 - [[methods/diffusion_pseudotime]] modality: rna, multi
-- [[methods/velocity_trajectory]] modality: rna

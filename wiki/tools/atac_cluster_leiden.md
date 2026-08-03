@@ -9,11 +9,10 @@ backend: backend/tools/atac/cluster/leiden.py
 Clusters ATAC cells using Leiden community detection. Same algorithm as `rna_cluster_leiden` but operates on the spectral embedding.
 
 Key parameters:
-- `embedding_key` (required): e.g., `"X_spectral_harmony"` (batch-corrected) or `"X_spectral"` (no correction)
-- `resolution` (default 1.0): cluster granularity
-- `n_neighbors` (default 15): KNN neighbors
-- `cluster_key` (default "atac_leiden_clusters"): output `adata.obs` column
-- `label_key` (default None): optional ground-truth label for ARI/NMI computation
+- `embedding_key` (default "X_lsi")
+- `resolution` (default 1.0)
+- `n_neighbors` (default 15)
+- `label_key` (default None)
 
 Note: always use the spectral embedding that excludes component 1 (depth component). If `embedding_key="X_spectral"`, the tool internally skips component 0.
 

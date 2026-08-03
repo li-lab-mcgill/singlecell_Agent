@@ -10,6 +10,10 @@ def run(
     batch_key: str,
     subsample: int | None = 5_000,
 ) -> dict:
+    if embedding_key not in adata.obsm:
+        raise ValueError(f"embedding_key '{embedding_key}' not found in adata.obsm.")
+    if batch_key not in adata.obs:
+        raise ValueError(f"batch_key '{batch_key}' not found in adata.obs.")
     try:
         import scib_metrics
         return _run_scib(adata, embedding_key=embedding_key, batch_key=batch_key, subsample=subsample)
@@ -37,6 +41,8 @@ def _run_fallback(adata, *, embedding_key, batch_key, subsample):
     batch_labels, batch_counts = np.unique(batch, return_counts=True)
     expected_props = batch_counts / batch_counts.sum()
     k = min(30, adata.n_obs // 10)
+    if k < 1:
+        raise ValueError("kBET requires at least 10 cells for the fallback kNN approximation.")
 
     if subsample and adata.n_obs > subsample:
         idx = np.random.choice(adata.n_obs, subsample, replace=False)

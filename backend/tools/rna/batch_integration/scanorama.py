@@ -7,7 +7,7 @@ def run(
     adata,
     *,
     batch_key: str,
-    dimred: int = 50,
+    n_components: int = 50,
 ):
     import numpy as np
     import scanorama
@@ -17,7 +17,7 @@ def run(
 
     batches = adata.obs[batch_key].unique().tolist()
     splits = [adata[adata.obs[batch_key] == b].copy() for b in batches]
-    scanorama.integrate_scanpy(splits, dimred=dimred, return_dimred=True)
+    scanorama.integrate_scanpy(splits, dimred=n_components)
     out = np.vstack([s.obsm["X_scanorama"] for s in splits])
 
     order = []
@@ -26,6 +26,11 @@ def run(
     pos = {name: i for i, name in enumerate(order)}
     reorder = [pos[name] for name in adata.obs.index]
     adata.obsm["X_scanorama"] = out[reorder]
+    if adata.obsm["X_scanorama"].shape[0] != adata.n_obs:
+        raise RuntimeError(
+            f"Scanorama output has shape {adata.obsm['X_scanorama'].shape}, "
+            f"expected first dimension n_obs={adata.n_obs}."
+        )
     adata.uns["batch_integration"] = {
         "method": "scanorama",
         "batch_key": batch_key,

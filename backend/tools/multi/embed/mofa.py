@@ -22,6 +22,7 @@ def run(
     convergence_mode: str = "fast",
     use_gpu: bool = False,
     output_dir: Path | None = None,
+    embedding_key: str = "X_mofa",
 ) -> object:
     """Run MOFA+ on paired RNA+ATAC data.
 
@@ -85,8 +86,9 @@ def run(
     # Run MOFA+
     ent = entry_point()
     ent.set_data_options(scale_groups=False, scale_views=False)
+    # mofapy2 API: data[views][groups] — outer list = views (M), inner list = groups (G)
     ent.set_data_matrix(
-        [[rna_matrix, atac_matrix]],
+        [[rna_matrix], [atac_matrix]],
         likelihoods=["gaussian", "bernoulli"],
         views_names=["rna", "atac"],
         groups_names=["group1"],
@@ -123,14 +125,23 @@ def run(
     # Variance explained
     r2 = ent.model.calculate_variance_explained()
 
-    adata.obsm["X_mofa"] = factors
+    if factors.shape[0] != adata.n_obs:
+        factors = factors.T
+    if factors.shape[0] != adata.n_obs:
+        raise RuntimeError(f"MOFA+ factor shape {factors.shape} does not match n_obs={adata.n_obs}")
+    adata.obsm[embedding_key] = factors
     adata.varm["mofa_loadings_rna"] = _align_loadings(w_rna, adata, rna_var_names)
     adata.uns["mofa"] = {
         "n_factors": int(n_factors),
         "n_epochs": int(n_epochs),
-        "embedding_key": "X_mofa",
+        "embedding_key": embedding_key,
         "model_path": str(model_path) if model_path else None,
         "variance_explained": r2 if isinstance(r2, dict) else {},
+    }
+    adata.uns["embedding"] = {
+        "method": "mofa",
+        "n_factors": int(n_factors),
+        "obsm_key": embedding_key,
     }
     adata.uns["atac_h5ad_path"] = str(atac_path)
 

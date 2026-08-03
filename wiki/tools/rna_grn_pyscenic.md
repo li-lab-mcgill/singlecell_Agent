@@ -3,6 +3,7 @@ type: tool
 id: rna_grn_pyscenic
 modality: rna
 stage: grn_inference
+backend: backend/tools/rna/grn/pyscenic.py
 label: Full GRN with Regulons (pySCENIC)
 default: false
 params:
@@ -25,6 +26,16 @@ requires_resources:
 ---
 
 Full pySCENIC pipeline: GRNBoost2 co-expression inference + cisTarget motif pruning → validated regulons.
+
+Key parameters:
+- `tf_list_path` (required)
+- `cistarget_db_paths` (required)
+- `motif_annotations_path` (required)
+- `n_jobs` (default 4)
+- `seed` (default 42)
+- `rank_threshold` (default 1500)
+- `auc_threshold` (default 0.05)
+- `nes_threshold` (default 3.0)
 
 **Two stages:**
 1. **GRNBoost2**: scores all TF→gene co-expression pairs (weighted adjacency matrix)

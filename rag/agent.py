@@ -11,8 +11,15 @@ from typing import Any, Dict, Iterable, List, Tuple
 
 import textgrad as tg
 
+from agents.prompt_loader import load_updated_prompt
 from pipelines.config import Config
-from rag.sources import fetch_core_document, normalize_section_type, fetch_pubmed_documents
+from rag.sources import (
+    fetch_core_document,
+    normalize_section_type,
+    fetch_pubmed_documents,
+    fetch_semantic_scholar_documents,
+    fetch_openalex_documents,
+)
 from rag.store_backend import RAGStore
 from rag.types import PromotedPaper, RAGDocument, RAGHit, dedup_key
 
@@ -101,31 +108,7 @@ Requirements:
 - Do not invent citations, authors, or journal names.
 """
 
-_PAPER_SUMMARY_PROMPT = """You are summarizing a biomedical paper for a consultant agent.
-
-Return ONLY valid JSON:
-{{
-  "objective": "<string>",
-  "key_methods": "<string>",
-  "main_findings": "<string>",
-  "limitations": "<string>"
-}}
-
-Paper title: {title}
-Publication date: {published}
-
-Abstract:
-{abstract}
-
-Methods:
-{methods}
-
-Results:
-{results}
-
-Discussion:
-{discussion}
-"""
+_PAPER_SUMMARY_PROMPT = load_updated_prompt("rag_context_paper_summary")
 
 
 def _extract_json(text: str) -> object:
@@ -512,8 +495,15 @@ class ConsultantRAGAgent:
                 base_document.title,
                 exc,
             )
+            # Non-PubMed sources (semantic_scholar, openalex) can't be PMC-resolved.
+            # Keep them as abstract-only documents so they still contribute to retrieval.
+            if base_document.source in {"semantic_scholar", "openalex"} and base_document.abstract:
+                return base_document
             return None
         if enriched is None or not enriched.has_full_text or enriched.document.source != "pmc":
+            # Same fallback: keep S2/OA abstract-only documents rather than discarding them.
+            if base_document.source in {"semantic_scholar", "openalex"} and base_document.abstract:
+                return base_document
             return None
         core_doc = enriched.document
         core_doc.metadata = {
@@ -539,14 +529,29 @@ class ConsultantRAGAgent:
                     self._paper_documents_by_id[document.doc_id] = document
                 return cached_documents
 
+        queries = channel_plan["pubmed_queries"]
         print(f"fetching {channel_name} papers with queries:")
-        for idx, query in enumerate(channel_plan["pubmed_queries"], start=1):
+        for idx, query in enumerate(queries, start=1):
             print(f"  {idx}. {query}")
 
-        pubmed_documents = fetch_pubmed_documents(channel_plan["pubmed_queries"], MAX_PUBMED_RESULTS_PER_QUERY)
-        print(f"retrieved {len(pubmed_documents)} PubMed candidate papers for {channel_name}")
-        eligible_documents = self._eligible_pmc_documents(pubmed_documents)
-        print(f"resolved {len(eligible_documents)} PMC full-text papers for {channel_name}")
+        # Fetch from all three sources in parallel
+        with ThreadPoolExecutor(max_workers=3) as pool:
+            f_pubmed = pool.submit(fetch_pubmed_documents, queries, MAX_PUBMED_RESULTS_PER_QUERY)
+            f_s2 = pool.submit(fetch_semantic_scholar_documents, queries, MAX_PUBMED_RESULTS_PER_QUERY)
+            f_oa = pool.submit(fetch_openalex_documents, queries, MAX_PUBMED_RESULTS_PER_QUERY)
+            pubmed_documents = f_pubmed.result()
+            s2_documents = f_s2.result()
+            oa_documents = f_oa.result()
+
+        all_candidates = self.store.deduplicate_documents(
+            pubmed_documents + s2_documents + oa_documents
+        )
+        print(
+            f"retrieved {len(pubmed_documents)} PubMed + {len(s2_documents)} S2 + "
+            f"{len(oa_documents)} OpenAlex = {len(all_candidates)} unique candidates for {channel_name}"
+        )
+        eligible_documents = self._eligible_pmc_documents(all_candidates)
+        print(f"resolved {len(eligible_documents)} full-text papers for {channel_name}")
         if not eligible_documents:
             raise RuntimeError(f"Runtime RAG produced no PMC full-text documents for {channel_name}")
         self.store.save_documents(documents_path, eligible_documents)
@@ -678,6 +683,7 @@ class ConsultantRAGAgent:
             methods=_shorten(section_map.get("methods", ""), 3000),
             results=_shorten(section_map.get("results", ""), 3000),
             discussion=_shorten(section_map.get("discussion", ""), 2500),
+            figure_captions=_shorten(section_map.get("figure_captions", ""), 3000),
         )
         response = self.engine.generate(
             content=prompt,
@@ -689,9 +695,12 @@ class ConsultantRAGAgent:
             raise ValueError(f"Invalid paper summary payload for {document.doc_id}")
         summary = {
             "objective": _shorten(str(payload.get("objective", "")).strip(), 500),
+            "method_and_dataset": _shorten(str(payload.get("method_and_dataset", "")).strip(), 700),
             "key_methods": _shorten(str(payload.get("key_methods", "")).strip(), 600),
+            "benchmark_methods": _shorten(str(payload.get("benchmark_methods", "")).strip(), 600),
             "main_findings": _shorten(str(payload.get("main_findings", "")).strip(), 600),
             "limitations": _shorten(str(payload.get("limitations", "")).strip(), 500),
+            "figure_captions": _shorten(str(payload.get("figure_captions", "")).strip(), 700),
         }
         cache[document.doc_id] = summary
         _json_dump(cache, cache_path)
@@ -714,9 +723,12 @@ class ConsultantRAGAgent:
                     f"   paper_id={document.doc_id}",
                     f"   sections={', '.join(available_sections) or '<none>'}",
                     f"   Objective: {summary['objective'] or '<none>'}",
+                    f"   Method and dataset: {summary.get('method_and_dataset') or '<none>'}",
                     f"   Key methods: {summary['key_methods'] or '<none>'}",
+                    f"   Benchmark methods: {summary.get('benchmark_methods') or '<none>'}",
                     f"   Main findings: {summary['main_findings'] or '<none>'}",
                     f"   Limitations: {summary['limitations'] or '<none>'}",
+                    f"   Figure captions: {summary.get('figure_captions') or '<none>'}",
                     f"   url={document.url or '<none>'}",
                 ]
             )

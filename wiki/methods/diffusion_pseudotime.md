@@ -18,4 +18,4 @@ Output: `adata.obs["dpt_pseudotime"]` — pseudotime score per cell (0 = root, h
 DPT is appropriate for relatively simple, well-connected trajectories. For complex branching trees or RNA velocity-guided ordering, PAGA or scVelo are more appropriate.
 
 Edges:
-- [[tools/rna_trajectory_dpt]] implements
+No executable backend tool currently implements diffusion pseudotime.

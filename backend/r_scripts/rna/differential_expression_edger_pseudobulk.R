@@ -58,7 +58,7 @@ read_h5ad_components <- function(path) {
   scipy_sparse <- reticulate::import("scipy.sparse", convert = FALSE)
   ad <- anndata$read_h5ad(path)
   source <- NULL
-  if (reticulate::py_has_attr(ad$layers, "keys") && "counts" %in% reticulate::py_to_r(ad$layers$keys())) {
+  if (reticulate::py_has_attr(ad$layers, "keys") && "counts" %in% as.character(reticulate::py_to_r(ad$layers$keys()))) {
     source <- ad$layers$get("counts")
   } else {
     source <- ad$X

@@ -21,6 +21,7 @@ def run(
     n_neighbors: int = 20,
     n_pcs_rna: int = 30,
     n_pcs_atac: int = 30,
+    embedding_key: str = "X_wnn_umap",
 ) -> object:
     """Compute WNN joint graph and UMAP from paired RNA+ATAC embeddings.
 
@@ -64,26 +65,26 @@ def run(
     mdata["rna"].obsm[rna_embedding_key] = adata.obsm[rna_embedding_key]
     mdata["atac"].obsm[atac_embedding_key] = atac.obsm[atac_embedding_key]
 
-    # Compute per-modality neighbors
-    mu.pp.neighbors(
+    # Compute per-modality neighbors using scanpy
+    import scanpy as sc
+    sc.pp.neighbors(
         mdata["rna"],
         use_rep=rna_embedding_key,
         n_neighbors=n_neighbors,
         n_pcs=min(n_pcs_rna, adata.obsm[rna_embedding_key].shape[1]),
     )
-    mu.pp.neighbors(
+    sc.pp.neighbors(
         mdata["atac"],
         use_rep=atac_embedding_key,
         n_neighbors=n_neighbors,
         n_pcs=min(n_pcs_atac, atac.obsm[atac_embedding_key].shape[1]),
     )
 
-    # Compute WNN graph
-    mu.pp.neighbors(mdata, key="rna|atac")
+    # Compute WNN graph across modalities
+    mu.pp.neighbors(mdata)
 
-    # Compute UMAP on WNN graph
-    import scanpy as sc
-    sc.tl.umap(mdata, min_dist=0.3)
+    # Compute UMAP on WNN graph using muon's umap (compatible with MuData)
+    mu.tl.umap(mdata, min_dist=0.3)
 
     # Copy WNN results back into RNA adata
     adata.obsp["connectivities"] = mdata.obsp.get("connectivities", mdata.obsp.get("rna|atac:connectivities"))
@@ -91,13 +92,21 @@ def run(
     adata.uns["neighbors"] = mdata.uns.get("neighbors", {})
 
     if "X_umap" in mdata.obsm:
-        adata.obsm["X_wnn_umap"] = mdata.obsm["X_umap"]
+        adata.obsm[embedding_key] = mdata.obsm["X_umap"]
+    if embedding_key not in adata.obsm or adata.obsm[embedding_key].shape[0] != adata.n_obs:
+        raise RuntimeError(f"WNN UMAP output '{embedding_key}' was not created with n_obs={adata.n_obs} rows.")
 
     adata.uns["wnn"] = {
         "rna_embedding_key": rna_embedding_key,
         "atac_embedding_key": atac_embedding_key,
         "n_neighbors": n_neighbors,
-        "embedding_key": "X_wnn_umap",
+        "embedding_key": embedding_key,
+    }
+    adata.uns["embedding"] = {
+        "method": "wnn",
+        "rna_embedding_key": rna_embedding_key,
+        "atac_embedding_key": atac_embedding_key,
+        "obsm_key": embedding_key,
     }
     adata.uns["atac_h5ad_path"] = str(atac_path)
 

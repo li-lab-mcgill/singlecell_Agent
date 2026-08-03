@@ -43,30 +43,33 @@ def run(
 def _run_decoupler(adata, *, network, organism, min_n, output_dir) -> GRN:
     import decoupler as dc
 
-    # Load prior knowledge network
+    # Load prior knowledge network (decoupler v2 API: dc.op.collectri / dc.op.dorothea)
     if network == "collectri":
-        net = dc.get_collectri(organism=organism, split_complexes=False)
+        net = dc.op.collectri(organism=organism)
         net_label = "CollecTRI"
     elif network == "dorothea":
-        net = dc.get_dorothea(organism=organism)
+        net = dc.op.dorothea(organism=organism)
         # Keep only high-confidence interactions
-        net = net[net["confidence"].isin(["A", "B", "C"])]
+        if "confidence" in net.columns:
+            net = net[net["confidence"].isin(["A", "B", "C"])]
         net_label = "DoRothEA (A-C)"
     else:
         raise ValueError(f"Unknown network '{network}'. Choose 'collectri' or 'dorothea'.")
 
-    # Run ULM
-    dc.run_ulm(
-        mat=adata,
+    # Run ULM (decoupler v2 API: dc.mt.ulm stores results in adata.obsm)
+    dc.mt.ulm(
+        data=adata,
         net=net,
-        source="source",
-        target="target",
-        weight="weight",
-        verbose=False,
-        min_n=min_n,
-        use_raw=False,
+        tmin=min_n,
+        raw=False,
+        verbose=verbose if "verbose" in dir() else False,
     )
-    # Results land in adata.obsm["ulm_estimate"] and adata.obsm["ulm_pvals"]
+    # Results stored as adata.obsm["score_ulm"] and adata.obsm["padj_ulm"]
+    # Alias to expected keys for downstream compatibility
+    if "score_ulm" in adata.obsm:
+        adata.obsm["ulm_estimate"] = adata.obsm["score_ulm"]
+    if "padj_ulm" in adata.obsm:
+        adata.obsm["ulm_pvals"] = adata.obsm["padj_ulm"]
 
     acts = adata.obsm.get("ulm_estimate")
     n_tfs = int(acts.shape[1]) if acts is not None else 0

@@ -48,9 +48,12 @@ class PaperBackend:
                     if isinstance(summary, dict):
                         self._paper_summaries[doc_id] = {
                             "objective": str(summary.get("objective", "")).strip(),
+                            "method_and_dataset": str(summary.get("method_and_dataset", "")).strip(),
                             "key_methods": str(summary.get("key_methods", "")).strip(),
+                            "benchmark_methods": str(summary.get("benchmark_methods", "")).strip(),
                             "main_findings": str(summary.get("main_findings", "")).strip(),
                             "limitations": str(summary.get("limitations", "")).strip(),
+                            "figure_captions": str(summary.get("figure_captions", "")).strip(),
                         }
             for document in payload.get("documents", []):
                 if isinstance(document, RAGDocument):

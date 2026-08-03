@@ -13,12 +13,15 @@ def run(
     accelerator: str = "auto",
     devices: str | int = "auto",
     precision: str | int | None = None,
+    embedding_key: str = "X_scanvi",
 ):
     import scvi
-    from backend.rna.training import build_lightning_train_config
+    from backend.training import build_lightning_train_config
 
     if label_key not in adata.obs:
         raise ValueError(f"label_key '{label_key}' not found in adata.obs.")
+    if batch_key and batch_key not in adata.obs:
+        raise ValueError(f"batch_key '{batch_key}' not found in adata.obs.")
     if "counts" not in adata.layers:
         adata.layers["counts"] = adata.X.copy()
 
@@ -36,13 +39,18 @@ def run(
     if n_epochs is not None:
         train_kwargs["max_epochs"] = n_epochs
     model.train(**train_kwargs)
-    adata.obsm["X_scanvi"] = model.get_latent_representation()
+    adata.obsm[embedding_key] = model.get_latent_representation()
+    if adata.obsm[embedding_key].shape[0] != adata.n_obs:
+        raise RuntimeError(
+            f"scANVI latent representation has shape {adata.obsm[embedding_key].shape}, "
+            f"expected first dimension n_obs={adata.n_obs}."
+        )
     adata.uns["embedding"] = {
         "method": "scanvi",
         "n_latent": n_latent,
         "label_key": label_key,
         "batch_key": batch_key,
-        "obsm_key": "X_scanvi",
+        "obsm_key": embedding_key,
         "training": training,
     }
     return adata

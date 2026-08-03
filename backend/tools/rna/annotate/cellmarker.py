@@ -19,6 +19,7 @@ def run(
         raise RuntimeError("cellmarker requires refs (ReferenceStore) to load CellMarker v2.")
     if obs_cluster not in adata.obs:
         raise ValueError(f"obs_cluster '{obs_cluster}' not in adata.obs.")
+    adata.obs[obs_cluster] = adata.obs[obs_cluster].astype(str).astype("category")
 
     marker_df = refs.get_marker_db("cellmarker_v2")
     sc.tl.rank_genes_groups(adata, obs_cluster, method="wilcoxon")

@@ -24,6 +24,53 @@ from typing import Any, Dict, Optional
 from agents.tool_base import AgentTool, AgentToolRegistry, MultiToolBase
 
 
+def _normalize_pipeline_trial_inputs(
+    *,
+    backend: Any,
+    pipeline_name: str,
+    pipeline_config: Dict[str, Any],
+    evaluation: Dict[str, Any],
+) -> tuple[Dict[str, Any], Dict[str, Any]]:
+    """Compatibility helper for older composite pipeline tests.
+
+    The current planner prefers granular DAG tools, but older tests still exercise
+    this function to ensure method choices line up with generated embedding keys.
+    """
+    del pipeline_name  # retained for API compatibility
+    normalized_config = dict(pipeline_config or {})
+    normalized_eval = dict(evaluation or {})
+    supported = backend.supported_capabilities() if hasattr(backend, "supported_capabilities") else {}
+    rna_supported = supported.get("rna", {}) if isinstance(supported, dict) else {}
+
+    for stage, capability in (
+        ("normalize", "normalize"),
+        ("features", "features"),
+        ("feature_selection", "features"),
+        ("embed", "embed"),
+        ("cluster", "cluster"),
+        ("annotate", "annotate"),
+    ):
+        key = f"{stage}.method"
+        method = normalized_config.get(key)
+        choices = ((rna_supported.get(capability) or {}).get("supported_methods") or [])
+        if method is not None and choices and method not in choices:
+            normalized_config[key] = choices[0]
+
+    embed_method = normalized_config.get("embed.method")
+    if embed_method:
+        embedding_key = _dimensionality_output_key(str(embed_method)) or f"X_{embed_method}"
+        normalized_eval["embedding_key"] = embedding_key
+        normalized_config["cluster.embedding_key"] = embedding_key
+
+    cluster_method = normalized_config.get("cluster.method")
+    if cluster_method and not normalized_eval.get("cluster_key"):
+        normalized_eval["cluster_key"] = str(cluster_method)
+    if normalized_eval.get("cluster_key"):
+        normalized_config["cluster.cluster_key"] = normalized_eval["cluster_key"]
+
+    return normalized_config, normalized_eval
+
+
 # =====================================================================
 # Paper / RAG tools (existing — kept intact for backward compatibility)
 # =====================================================================

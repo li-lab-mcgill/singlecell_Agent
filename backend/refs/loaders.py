@@ -9,17 +9,39 @@ access (pyfaidx for FASTA, `backed='r'` for AnnData) to keep memory small.
 
 from __future__ import annotations
 
+import gzip
+import shutil
 from pathlib import Path
 from typing import Any
 
 
+def load_path(path: Path) -> Path:
+    """Return the local path without loading the file into memory."""
+    return path
+
+
+def load_text_lines(path: Path) -> list[str]:
+    """Return non-empty, non-comment text lines."""
+    return [
+        line.strip()
+        for line in path.read_text(encoding="utf-8").splitlines()
+        if line.strip() and not line.startswith("#")
+    ]
+
+
 def load_genome_fasta(path: Path) -> Any:
-    """Return a pyfaidx.Fasta handle. Keeps an open file + .fai index."""
+    """Return a pyfaidx.Fasta handle.
+
+    ReferenceStore keeps the downloaded FASTA exactly as distributed. If the
+    source is regular gzip, pyfaidx cannot index it directly, so the loader
+    materializes a derived uncompressed FASTA next to the cached .gz on demand.
+    """
     try:
         import pyfaidx
     except ImportError as exc:
         raise RuntimeError("pyfaidx is required for genome FASTA loading") from exc
-    return pyfaidx.Fasta(str(path), sequence_always_upper=True, as_raw=True)
+    fasta_path = _ensure_uncompressed_copy(path) if path.suffix == ".gz" else path
+    return pyfaidx.Fasta(str(fasta_path), sequence_always_upper=True, as_raw=True)
 
 
 def load_gtf(path: Path) -> Any:
@@ -95,12 +117,25 @@ def load_cellmarker(path: Path) -> Any:
 
 def load_panglao(path: Path) -> Any:
     import pandas as pd
-    return pd.read_csv(path, sep="\t")
+    return pd.read_csv(path, sep="\t", compression="infer")
 
 
 def load_lr_tsv(path: Path) -> Any:
     import pandas as pd
-    return pd.read_csv(path, sep="\t")
+    return pd.read_csv(path, sep="\t", compression="infer")
+
+
+def _ensure_uncompressed_copy(path: Path) -> Path:
+    if path.suffix != ".gz":
+        return path
+    dest = path.with_suffix("")
+    if dest.exists() and dest.stat().st_mtime >= path.stat().st_mtime:
+        return dest
+    tmp = dest.with_suffix(dest.suffix + ".part")
+    with gzip.open(path, "rb") as f_in, open(tmp, "wb") as f_out:
+        shutil.copyfileobj(f_in, f_out, length=1024 * 1024)
+    tmp.replace(dest)
+    return dest
 
 
 def load_gmt(path: Path) -> dict:

@@ -10,6 +10,12 @@ def run(
     batch_key: str,
     label_key: str | None = None,
 ) -> dict:
+    if embedding_key not in adata.obsm:
+        raise ValueError(f"embedding_key '{embedding_key}' not found in adata.obsm.")
+    if batch_key not in adata.obs:
+        raise ValueError(f"batch_key '{batch_key}' not found in adata.obs.")
+    if label_key and label_key not in adata.obs:
+        raise ValueError(f"label_key '{label_key}' not found in adata.obs.")
     try:
         import scib_metrics
         return _run_scib(adata, embedding_key=embedding_key, batch_key=batch_key, label_key=label_key)

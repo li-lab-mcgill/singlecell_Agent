@@ -18,6 +18,12 @@ VALID_SESSION_ROUTES = {
     "task",
 }
 
+VALID_INTENT_MODES = {
+    "operational",
+    "discovery",
+    "ambiguous",
+}
+
 
 class SessionRouter:
     """Classify a frontend chat turn before invoking task-planning agents."""
@@ -86,11 +92,15 @@ def validate_session_route(payload: Dict[str, Any]) -> Dict[str, Any]:
     route = str(payload.get("route") or "").strip()
     if route not in VALID_SESSION_ROUTES:
         raise DecisionValidationError(f"route must be one of {sorted(VALID_SESSION_ROUTES)}")
+    intent_mode = str(payload.get("intent_mode") or "ambiguous").strip()
+    if intent_mode not in VALID_INTENT_MODES:
+        raise DecisionValidationError(f"intent_mode must be one of {sorted(VALID_INTENT_MODES)}")
     response = payload.get("response")
     if response is not None:
         response = str(response).strip()
     return {
         "resolved_intent": str(payload.get("resolved_intent") or "").strip(),
+        "intent_mode": intent_mode,
         "route": route,
         "reason": str(payload.get("reason") or "").strip(),
         "response": response or None,

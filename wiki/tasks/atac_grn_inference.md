@@ -20,7 +20,7 @@ Stages (in order):
 - [[stages/grn_inference]] [includes]
 
 Evaluated by:
-- [[tools/eval_grn_metrics]] [evaluated_by]
+No dedicated executable GRN evaluation tool is currently registered.
 
 Key decisions for the consultant:
 - **decoupler with chromatin accessibility**: use motif scanning output as TF activity matrix — this is the ATAC analog of CollecTRI-based RNA activity scoring

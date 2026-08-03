@@ -1,3 +1,8 @@
+---
+type: schema
+id: schema
+---
+
 # Wiki Knowledge Graph Schema
 
 This document defines the structure of the singlecell_Agent wiki knowledge graph.
@@ -30,7 +35,7 @@ The ToolConsultant agent receives this schema at the start of every planning ses
 | `evaluated_by` | task → tool | Eval tools that score this task |
 | `package` | tool → package | Library this tool belongs to (metadata) |
 
-Edge syntax in markdown: `- [[type/id]] [edge_type]`
+Edge syntax in markdown: `- [[methods/basic_filter]] [edge_type]`
 
 Example:
 ```
@@ -176,7 +181,7 @@ The DagExecutor will run all variants and rank by eval score.
 
 Every non-trivial claim in a node body must cite a source:
 - Paper: `[Author Year]`
-- Run: `[[runs/<id>]]`
+- Run: `runs/<id>`
 - Docs: `[package docs]`
 
 Claims without citations are flagged during wiki review.

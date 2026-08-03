@@ -11,5 +11,4 @@ This stage requires paired RNA+ATAC data (10x Multiome or SHARE-seq) to compute 
 Output: a table of (peak, gene, correlation, p-value) triplets, which can be visualized as a regulatory network or used to prioritize regulatory elements for downstream motif analysis.
 
 Edges:
-- [[methods/correlation_peak2gene]] modality: multi
-- [[methods/distance_peak2gene]] modality: atac, multi
+- [[methods/correlation_peak2gene]] modality: atac, multi

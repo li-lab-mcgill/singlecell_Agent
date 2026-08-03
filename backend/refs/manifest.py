@@ -10,6 +10,9 @@ Category = Literal[
     "genome",
     "annotation",
     "motifs",
+    "motif_annotations",
+    "cistarget_db",
+    "tf_list",
     "atlas",
     "markers",
     "intervals",
@@ -61,8 +64,7 @@ MANIFEST: Dict[str, ResourceSpec] = {
         category="genome",
         loader=_L.load_genome_fasta,
         size_mb=3000.0,
-        local_filename="hg38.fa",
-        decompress=True,
+        local_filename="hg38.fa.gz",
     ),
     "mm10_genome": ResourceSpec(
         name="mm10_genome",
@@ -72,8 +74,7 @@ MANIFEST: Dict[str, ResourceSpec] = {
         category="genome",
         loader=_L.load_genome_fasta,
         size_mb=2600.0,
-        local_filename="mm10.fa",
-        decompress=True,
+        local_filename="mm10.fa.gz",
     ),
 
     # -------------------- Gene annotations --------------------
@@ -85,8 +86,7 @@ MANIFEST: Dict[str, ResourceSpec] = {
         category="annotation",
         loader=_L.load_gtf,
         size_mb=1000.0,
-        local_filename="gencode.v44.annotation.gtf",
-        decompress=True,
+        local_filename="gencode.v44.annotation.gtf.gz",
     ),
     "gencode_vM33_mouse": ResourceSpec(
         name="gencode_vM33_mouse",
@@ -96,8 +96,7 @@ MANIFEST: Dict[str, ResourceSpec] = {
         category="annotation",
         loader=_L.load_gtf,
         size_mb=800.0,
-        local_filename="gencode.vM33.annotation.gtf",
-        decompress=True,
+        local_filename="gencode.vM33.annotation.gtf.gz",
     ),
 
     # -------------------- Intervals --------------------
@@ -109,8 +108,7 @@ MANIFEST: Dict[str, ResourceSpec] = {
         category="intervals",
         loader=_L.load_bed,
         size_mb=0.1,
-        local_filename="hg38-blacklist.v2.bed",
-        decompress=True,
+        local_filename="hg38-blacklist.v2.bed.gz",
     ),
     "mm10_blacklist": ResourceSpec(
         name="mm10_blacklist",
@@ -120,8 +118,7 @@ MANIFEST: Dict[str, ResourceSpec] = {
         category="intervals",
         loader=_L.load_bed,
         size_mb=0.1,
-        local_filename="mm10-blacklist.v2.bed",
-        decompress=True,
+        local_filename="mm10-blacklist.v2.bed.gz",
     ),
     "encode_cCRE_hg38": ResourceSpec(
         name="encode_cCRE_hg38",
@@ -163,6 +160,77 @@ MANIFEST: Dict[str, ResourceSpec] = {
         extra={"species_filter": "Homo_sapiens"},
     ),
 
+    # -------------------- cisTarget / SCENIC resources --------------------
+    # These are intentionally path-loaded: ranking databases and motif
+    # annotation tables are consumed by pySCENIC / pycistarget as files and
+    # should not be read into memory by ReferenceStore.
+    "cistarget_hg38_10kb_v10_rankings": ResourceSpec(
+        name="cistarget_hg38_10kb_v10_rankings",
+        url="https://resources.aertslab.org/cistarget/databases/homo_sapiens/hg38/refseq_r80/mc_v10_clust/gene_based/hg38_10kbp_up_10kbp_down_full_tx_v10_clust.genes_vs_motifs.rankings.feather",
+        sha256=_PLACEHOLDER_SHA,
+        version="hg38_v10nr_clust",
+        category="cistarget_db",
+        loader=_L.load_path,
+        size_mb=297.0,
+        local_filename="hg38_10kbp_up_10kbp_down_full_tx_v10_clust.genes_vs_motifs.rankings.feather",
+        extra={"organism": "human", "assembly": "hg38", "scope": "gene_based", "annotation_version": "v10nr_clust"},
+    ),
+    "cistarget_hg38_500bp_v10_rankings": ResourceSpec(
+        name="cistarget_hg38_500bp_v10_rankings",
+        url="https://resources.aertslab.org/cistarget/databases/homo_sapiens/hg38/refseq_r80/mc_v10_clust/gene_based/hg38_500bp_up_100bp_down_full_tx_v10_clust.genes_vs_motifs.rankings.feather",
+        sha256=_PLACEHOLDER_SHA,
+        version="hg38_v10nr_clust",
+        category="cistarget_db",
+        loader=_L.load_path,
+        size_mb=298.0,
+        local_filename="hg38_500bp_up_100bp_down_full_tx_v10_clust.genes_vs_motifs.rankings.feather",
+        extra={"organism": "human", "assembly": "hg38", "scope": "gene_based", "annotation_version": "v10nr_clust"},
+    ),
+    "cistarget_hg38_screen_v10_rankings": ResourceSpec(
+        name="cistarget_hg38_screen_v10_rankings",
+        url="https://resources.aertslab.org/cistarget/databases/homo_sapiens/hg38/screen/mc_v10_clust/region_based/hg38_screen_v10_clust.regions_vs_motifs.rankings.feather",
+        sha256=_PLACEHOLDER_SHA,
+        version="hg38_v10nr_clust",
+        category="cistarget_db",
+        loader=_L.load_path,
+        size_mb=33792.0,
+        local_filename="hg38_screen_v10_clust.regions_vs_motifs.rankings.feather",
+        extra={"organism": "human", "assembly": "hg38", "scope": "region_based", "annotation_version": "v10nr_clust"},
+    ),
+    "cistarget_hg38_screen_v10_scores": ResourceSpec(
+        name="cistarget_hg38_screen_v10_scores",
+        url="https://resources.aertslab.org/cistarget/databases/homo_sapiens/hg38/screen/mc_v10_clust/region_based/hg38_screen_v10_clust.regions_vs_motifs.scores.feather",
+        sha256=_PLACEHOLDER_SHA,
+        version="hg38_v10nr_clust",
+        category="cistarget_db",
+        loader=_L.load_path,
+        size_mb=13312.0,
+        local_filename="hg38_screen_v10_clust.regions_vs_motifs.scores.feather",
+        extra={"organism": "human", "assembly": "hg38", "scope": "region_based", "annotation_version": "v10nr_clust"},
+    ),
+    "motif_annotations_hgnc_v10": ResourceSpec(
+        name="motif_annotations_hgnc_v10",
+        url="https://resources.aertslab.org/cistarget/motif2tf/motifs-v10nr_clust-nr.hgnc-m0.001-o0.0.tbl",
+        sha256=_PLACEHOLDER_SHA,
+        version="v10nr_clust",
+        category="motif_annotations",
+        loader=_L.load_path,
+        size_mb=94.0,
+        local_filename="motifs-v10nr_clust-nr.hgnc-m0.001-o0.0.tbl",
+        extra={"organism": "human", "symbol_namespace": "hgnc", "annotation_version": "v10nr_clust"},
+    ),
+    "tf_list_hg38": ResourceSpec(
+        name="tf_list_hg38",
+        url="https://resources.aertslab.org/cistarget/tf_lists/allTFs_hg38.txt",
+        sha256=_PLACEHOLDER_SHA,
+        version="hg38",
+        category="tf_list",
+        loader=_L.load_path,
+        size_mb=0.011,
+        local_filename="allTFs_hg38.txt",
+        extra={"organism": "human", "assembly": "hg38"},
+    ),
+
     # -------------------- Marker & ligand-receptor DBs --------------------
     "cellmarker_v2": ResourceSpec(
         name="cellmarker_v2",
@@ -181,8 +249,7 @@ MANIFEST: Dict[str, ResourceSpec] = {
         category="markers",
         loader=_L.load_panglao,
         size_mb=5.0,
-        local_filename="panglao_markers.tsv",
-        decompress=True,
+        local_filename="panglao_markers.tsv.gz",
     ),
     "omnipath_lr_human": ResourceSpec(
         name="omnipath_lr_human",

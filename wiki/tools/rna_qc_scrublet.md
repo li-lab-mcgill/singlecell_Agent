@@ -9,9 +9,7 @@ backend: backend/tools/rna/qc/scrublet.py
 Detects and removes predicted doublets using Scrublet. Simulates artificial doublets by combining pairs of real cell profiles, then scores each cell by similarity to the simulated doublets.
 
 Key parameters:
-- `expected_doublet_rate` (default 0.06): expected fraction of doublets; ~1% per 1000 cells captured
-- `threshold` (default None): doublet score cutoff; if None, auto-detected from score distribution bimodality
-- `filter_doublets` (default True): if True, removes predicted doublets; if False, only adds the score column
+- `expected_doublet_rate` (default 0.06)
 
 Stores results in `adata.obs["doublet_score"]` (float) and `adata.obs["predicted_doublet"]` (bool).
 

@@ -18,7 +18,7 @@ Stages (in order):
 - [[stages/annotate]] [includes]
 
 Evaluated by:
-- [[tools/eval_annotation_accuracy]] [evaluated_by]
+- [[tools/eval_ari_nmi]] [evaluated_by]
 
 Key decisions for the consultant:
 - **Gene activity score**: compute a pseudo-RNA profile by summing ATAC signal in gene body + promoter regions → then apply CellTypist or GPT-4 annotation on this pseudo-expression matrix

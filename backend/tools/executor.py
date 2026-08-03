@@ -55,6 +55,10 @@ def _make_adapter(tool_id: str, run_fn: Callable) -> Callable:
         filtered: dict[str, Any] = {k: v for k, v in params.items() if k in declared}
         if "output_dir" in declared:
             filtered["output_dir"] = output_dir
+        # Some annotation tools declare 'refs' — supply None so they raise a clean
+        # NotImplementedError rather than a missing-arg crash.
+        if "refs" in declared and "refs" not in filtered:
+            filtered["refs"] = None
 
         # --- 3. Call the tool ---
         result = run_fn(adata, **filtered)
@@ -69,13 +73,38 @@ def _make_adapter(tool_id: str, run_fn: Callable) -> Callable:
 
         out_adata.write_h5ad(output_h5ad_path)
 
-        # --- 5. Build return dict ---
+        # --- 5. Extract standard output context keys from adata.uns ---
+        # Tools write to well-known adata.uns locations; read them back so the
+        # executor can auto-wire outputs to downstream steps without the plan
+        # needing explicit declared_outputs.
+        output_context: dict[str, Any] = {}
+        uns = out_adata.uns
+        emb = uns.get("embedding") or {}
+        if emb.get("obsm_key"):
+            output_context["embedding_key"] = emb["obsm_key"]
+        clust = uns.get("clustering") or {}
+        if clust.get("cluster_key"):
+            output_context["cluster_key"] = clust["cluster_key"]
+        proj = uns.get("projection") or {}
+        if proj.get("obsm_key"):
+            output_context["projection_key"] = proj["obsm_key"]
+        bi = uns.get("batch_integration") or {}
+        if bi.get("obsm_key"):
+            output_context["embedding_key"] = bi["obsm_key"]  # overwrites PCA key
+        vel = uns.get("velocity") or {}
+        if vel.get("velocity_key"):
+            output_context["velocity_key"] = vel["velocity_key"]
+        if vel.get("latent_time_key"):
+            output_context["latent_time_key"] = vel["latent_time_key"]
+
+        # --- 6. Build return dict ---
         meta: dict[str, Any] = {
             "output_h5ad_path": output_h5ad_path,
             "status": "ok",
             "tool_id": tool_id,
             "n_obs": int(out_adata.n_obs),
             "n_vars": int(out_adata.n_vars),
+            "output_context": output_context,
         }
         # Merge metrics/stage results from dict or dataclass returns
         if isinstance(result, dict):
@@ -91,6 +120,7 @@ def _make_adapter(tool_id: str, run_fn: Callable) -> Callable:
 
         return meta
 
+    adapter._accepted_params = frozenset(declared)
     adapter.__name__ = f"adapter_{tool_id}"
     adapter.__doc__ = run_fn.__doc__
     return adapter

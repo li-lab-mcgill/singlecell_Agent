@@ -21,7 +21,7 @@ Stages (in order):
 - [[stages/annotate]] [includes]
 
 Evaluated by:
-- [[tools/eval_annotation_accuracy]] [evaluated_by]
+- [[tools/eval_ari_nmi]] [evaluated_by]
 
 Key decisions for the consultant:
 - **CellTypist** (default for immune cells): fast, high accuracy for PBMCs and immune tissues; use `majority_voting=True`

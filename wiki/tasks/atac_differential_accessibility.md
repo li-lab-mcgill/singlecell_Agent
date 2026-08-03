@@ -21,7 +21,7 @@ Stages (in order):
 - [[stages/da]] [includes]
 
 Evaluated by:
-- [[tools/eval_da_metrics]] [evaluated_by]
+No dedicated executable DA evaluation tool is currently registered.
 
 Key decisions for the consultant:
 - **Pseudobulk** (default when `donor_key` present and ≥3 donors per group): statistically valid; uses PyDESeq2 on raw peak counts

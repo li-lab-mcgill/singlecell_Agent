@@ -9,11 +9,10 @@ backend: backend/tools/rna/cluster/leiden.py
 Clusters cells using the Leiden community detection algorithm on a k-nearest neighbor graph.
 
 Key parameters:
-- `embedding_key` (required): which embedding to use for KNN graph construction (e.g., `"X_pca"`, `"X_harmony"`, `"X_scvi"`)
-- `resolution` (default 1.0): cluster granularity; 0.5 for broad types, 1.0–2.0 for subtypes
-- `n_neighbors` (default 15): number of neighbors for KNN graph; increase for larger datasets
-- `cluster_key` (default "leiden_clusters"): `adata.obs` column name for cluster labels
-- `label_key` (default None): if provided, computes ARI and NMI against this ground-truth label column
+- `embedding_key` (required)
+- `resolution` (default 1.0)
+- `n_neighbors` (default 15)
+- `label_key` (default None)
 
 Computes KNN graph (`sc.pp.neighbors()`), then runs Leiden (`sc.tl.leiden()`). Stores cluster labels as string integers ("0", "1", "2", ...).
 

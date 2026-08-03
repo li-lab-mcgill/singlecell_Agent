@@ -19,7 +19,7 @@ Stages (in order):
 - [[stages/gene_programs]] [includes]
 
 Evaluated by:
-- [[tools/eval_program_metrics]] [evaluated_by]
+No dedicated executable gene-program evaluation tool is currently registered.
 
 Key decisions for the consultant:
 - **cNMF** (default): consensus NMF; most commonly used for scRNA-seq gene programs

@@ -49,6 +49,42 @@ class RRunner:
         except Exception:
             return []
 
+    def ensure_packages(self, packages: list[str], bioc: bool = False) -> None:
+        """Auto-install missing R packages before running a tool.
+
+        Args:
+            packages: List of package names to check and install if missing.
+            bioc:     If True, install via BiocManager; otherwise via CRAN.
+        """
+        if not self.is_available():
+            raise RuntimeError(f"Rscript not found at {self.r_executable}")
+
+        installed = set(self.installed_packages())
+        missing = [p for p in packages if p not in installed]
+        if not missing:
+            return
+
+        missing_r = "c(" + ", ".join(f'"{p}"' for p in missing) + ")"
+        if bioc:
+            script = (
+                'if (!requireNamespace("BiocManager", quietly=TRUE)) '
+                'install.packages("BiocManager", repos="https://cloud.r-project.org"); '
+                f'BiocManager::install({missing_r}, ask=FALSE, update=FALSE)'
+            )
+        else:
+            script = f'install.packages({missing_r}, repos="https://cloud.r-project.org")'
+
+        result = subprocess.run(
+            [self.r_executable, "-e", script],
+            capture_output=True,
+            text=True,
+            timeout=600,
+        )
+        if result.returncode != 0:
+            raise RuntimeError(
+                f"Failed to install R packages {missing}:\n{result.stderr}"
+            )
+
     def run_script(
         self,
         script_name: str,

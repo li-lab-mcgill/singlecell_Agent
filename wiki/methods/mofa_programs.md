@@ -24,4 +24,4 @@ MOFA+ is preferred over NMF for multi-omic data because it explicitly handles mi
 Number of factors: start with 10–20; factors explaining < 1% of variance can be discarded.
 
 Edges:
-- [[tools/multi_programs_mofa]] implements
+- [[tools/multi_embed_mofa]] implements

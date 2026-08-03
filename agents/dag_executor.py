@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import copy
 import json
-import re
 import shutil
 import time
 from itertools import product
@@ -16,7 +15,24 @@ from backend.cache import sha256_file
 from backend.objectives import score_metrics
 
 
-REF_RE = re.compile(r"^\$L(\d+)\.([A-Za-z_][A-Za-z0-9_]*)$")
+def _get_tool_accepted_params(tool_fn: Any) -> frozenset:
+    """Return the set of semantic param names the tool's run() declares."""
+    accepted = getattr(tool_fn, "_accepted_params", None)
+    if accepted is not None:
+        return frozenset(accepted)
+    return frozenset()
+
+
+def _auto_wire_params(
+    stage_params: dict[str, Any],
+    auto_context: dict[str, Any],
+    tool_fn: Any,
+) -> dict[str, Any]:
+    """Inject auto_context keys the tool accepts that are absent from stage_params."""
+    accepted = _get_tool_accepted_params(tool_fn)
+    merged = {key: auto_context[key] for key in accepted if key in auto_context and key not in stage_params}
+    merged.update(stage_params)  # explicit params always win
+    return merged
 
 
 class DagExecutor:
@@ -65,13 +81,13 @@ class DagExecutor:
 
     def _enumerate_paths(self, layers: List[Dict[str, Any]]) -> list[list[dict[str, Any]]]:
         variant_lists = [layer["variants"] for layer in layers]
-        stage_names = [layer["stage"] for layer in layers]
+        tool_names = [layer["tool"] for layer in layers]
         paths: list[list[dict[str, Any]]] = []
         for combo in product(*variant_lists):
             path: list[dict[str, Any]] = []
-            for stage, variant in zip(stage_names, combo):
+            for tool, variant in zip(tool_names, combo):
                 step = copy.deepcopy(variant)
-                step["stage"] = stage
+                step["tool"] = tool
                 path.append(step)
             paths.append(path)
         return paths
@@ -102,16 +118,15 @@ class DagExecutor:
             current_input = input_path
             input_sha = sha256_file(current_input)
             stage_results: list[dict[str, Any]] = []
+            auto_context: dict[str, Any] = {}
 
             for layer_idx, step in enumerate(path_config):
-                stage = step["stage"]
+                stage = step["tool"]
                 stage_params = {"method": step["method"], **(step.get("params") or {})}
-                stage_params = _resolve_refs(stage_params, path_config, layer_idx)
+                fn = self.tool_executor[stage]
+                stage_params = _auto_wire_params(stage_params, auto_context, fn)
                 step["params"] = {key: value for key, value in stage_params.items() if key != "method"}
 
-                if step.get("declared_outputs"):
-                    step["declared_outputs"] = _resolve_refs(step["declared_outputs"], path_config, layer_idx)
-                    step["resolved_outputs"] = dict(step["declared_outputs"])
 
                 stage_dir = path_dir / f"{layer_idx:02d}_{stage}"
                 stage_dir.mkdir(parents=True, exist_ok=True)
@@ -123,10 +138,9 @@ class DagExecutor:
                 if self.backend.cache.has_dir(cache_key):
                     self.backend.cache.restore_dir_to(cache_key, stage_dir)
                     cached_meta = self.backend.cache.get_meta(cache_key)
-                    cached_outputs = cached_meta.get("resolved_outputs") if isinstance(cached_meta, dict) else {}
-                    if isinstance(cached_outputs, dict):
-                        step.setdefault("resolved_outputs", {})
-                        step["resolved_outputs"].update(cached_outputs)
+                    cached_context = cached_meta.get("output_context") if isinstance(cached_meta, dict) else {}
+                    if isinstance(cached_context, dict):
+                        auto_context.update(cached_context)
                     if output_h5ad_path.exists():
                         step.setdefault("resolved_outputs", {})
                         step["resolved_outputs"]["output_h5ad_path"] = str(output_h5ad_path)
@@ -141,13 +155,14 @@ class DagExecutor:
                     if cache_usable:
                         cache_hits.append(stage)
                 if not cache_usable:
-                    fn = self.tool_executor[stage]
                     result = fn(
                         input_h5ad_path=str(current_input),
                         output_h5ad_path=str(output_h5ad_path),
                         output_dir=str(stage_dir),
                         **stage_params,
                     )
+                    output_context = result.get("output_context", {}) if isinstance(result, dict) else {}
+                    auto_context.update(output_context)
                     stage_result = _json_safe(result)
                     if stage_result is not None:
                         step["result"] = stage_result
@@ -163,17 +178,21 @@ class DagExecutor:
                         meta={
                             "stage": stage,
                             "params": stage_params,
-                            "resolved_outputs": step.get("resolved_outputs", {}),
+                            "output_context": output_context,
                             "stage_result": stage_result,
                         },
                     )
 
-                outputs = step.get("resolved_outputs", {}) or step.get("declared_outputs", {})
-                if outputs.get("output_h5ad_path"):
-                    current_input = Path(outputs["output_h5ad_path"])
+                resolved = step.get("resolved_outputs", {})
+                if resolved.get("output_h5ad_path"):
+                    current_input = Path(resolved["output_h5ad_path"])
                     input_sha = sha256_file(current_input)
 
-            resolved_eval = _resolve_refs(plan.get("evaluation", {}) or {}, path_config, len(path_config))
+            raw_eval = plan.get("evaluation", {}) or {}
+            resolved_eval = dict(raw_eval)
+            for field in ("embedding_key", "cluster_key"):
+                if field not in resolved_eval and field in auto_context:
+                    resolved_eval[field] = auto_context[field]
             eval_h5ad = _find_primary_h5ad(path_config, default=input_path)
             eval_result = self.backend.eval.evaluate(
                 eval_h5ad,
@@ -204,6 +223,7 @@ class DagExecutor:
                 "stage_results": stage_results,
                 "cache_hits": cache_hits,
                 "trial_id": trial_id,
+                "auto_context": auto_context,
             }
         except Exception as exc:
             duration_s = time.time() - t_start
@@ -233,6 +253,7 @@ class DagExecutor:
                 "status": "failed",
                 "error": "All DAG paths failed",
                 "failed_paths": failed,
+                "output_retention_policy": plan.get("output_retention_policy", []),
                 "artifact_dir": str(run_dir),
                 "task_id": task_id,
             }
@@ -247,8 +268,10 @@ class DagExecutor:
 
         best = completed[0]
         resolved_outputs: dict[str, Any] = {}
+        # Start with auto-wired context (embedding_key, cluster_key, etc.)
+        resolved_outputs.update(best.get("auto_context", {}))
+        # Add output_h5ad_path from the last step that wrote one
         for step in best.get("config", []):
-            resolved_outputs.update(step.get("declared_outputs", {}) or {})
             resolved_outputs.update(step.get("resolved_outputs", {}) or {})
 
         return {
@@ -268,6 +291,7 @@ class DagExecutor:
             "paths_completed": len(completed),
             "paths_failed": len(failed),
             "objective_name": objective_name,
+            "output_retention_policy": plan.get("output_retention_policy", []),
             "artifact_dir": str(run_dir),
             "task_id": task_id,
         }
@@ -277,7 +301,7 @@ class DagExecutor:
         for result in results:
             row: dict[str, Any] = {"path_index": result["path_index"], "status": result["status"]}
             for step in result.get("config", []):
-                stage = step["stage"]
+                stage = step["tool"]
                 row[f"{stage}_method"] = step.get("method")
                 for param_name, param_value in (step.get("params") or {}).items():
                     row[f"{stage}_{param_name}"] = param_value
@@ -377,29 +401,6 @@ class DagExecutor:
             "deleted_bytes": deleted_bytes,
             "kept_h5ad_files": kept_h5ad,
         }
-
-
-def _resolve_refs(value: Any, path_config: list[dict[str, Any]], current_idx: int) -> Any:
-    if isinstance(value, dict):
-        return {key: _resolve_refs(item, path_config, current_idx) for key, item in value.items()}
-    if isinstance(value, list):
-        return [_resolve_refs(item, path_config, current_idx) for item in value]
-    if not isinstance(value, str):
-        return value
-    match = REF_RE.match(value.strip())
-    if not match:
-        return value
-    layer_idx = int(match.group(1))
-    output_key = match.group(2)
-    if layer_idx >= current_idx:
-        raise ValueError(f"Reference {value}: layer {layer_idx} is not before current layer {current_idx}")
-    source = path_config[layer_idx]
-    outputs = {}
-    outputs.update(source.get("declared_outputs", {}) or {})
-    outputs.update(source.get("resolved_outputs", {}) or {})
-    if output_key not in outputs:
-        raise ValueError(f"Reference {value}: output {output_key!r} not found in layer {layer_idx}")
-    return _resolve_refs(outputs[output_key], path_config, layer_idx)
 
 
 def _extract_output_h5ad(result: Any, stage_dir: Path) -> Path | None:

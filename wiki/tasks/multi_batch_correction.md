@@ -23,7 +23,8 @@ Stages (in order):
 - [[stages/project]] [includes]
 
 Evaluated by:
-- [[tools/eval_batch_metrics]] [evaluated_by]
+- [[tools/eval_ilisi_clisi]] [evaluated_by]
+- [[tools/eval_kbet]] [evaluated_by]
 
 Key decisions for the consultant:
 - **MultiVI with batch_key** (default): handles batch correction within the joint embedding; most principled for paired RNA+ATAC

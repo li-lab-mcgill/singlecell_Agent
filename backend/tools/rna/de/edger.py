@@ -3,13 +3,14 @@
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 import tempfile
 from pathlib import Path
 
 from backend.types import DEResult
 
-_R_SCRIPT = Path(__file__).parents[4] / "r_scripts" / "rna" / "differential_expression_edger_pseudobulk.R"
+_R_SCRIPT = Path(__file__).parents[3] / "r_scripts" / "rna" / "differential_expression_edger_pseudobulk.R"
 
 
 def run(
@@ -65,9 +66,10 @@ def run(
         args_json = tmp / "args.json"
         args_json.write_text(json.dumps(args))
 
+        env = {**os.environ, "KMP_DUPLICATE_LIB_OK": "TRUE", "OMP_NUM_THREADS": "1"}
         result = subprocess.run(
-            ["Rscript", str(_R_SCRIPT), "--args-json", str(args_json)],
-            capture_output=True, text=True,
+            ["Rscript", "--no-init-file", str(_R_SCRIPT), "--args-json", str(args_json)],
+            capture_output=True, text=True, env=env,
         )
         if result.returncode != 0:
             raise RuntimeError(f"edgeR failed:\n{result.stderr}")
@@ -100,7 +102,23 @@ def _parse_result(stdout: str, table_path: Path, group_key: str, top_n: int) -> 
 def _check_rscript() -> None:
     result = subprocess.run(["Rscript", "--version"], capture_output=True, text=True)
     if result.returncode != 0:
-        raise RuntimeError(
-            "Rscript not found on PATH. Install R from https://cran.r-project.org/\n"
-            "Then install edgeR: BiocManager::install('edgeR')"
-        )
+        raise RuntimeError("Rscript not found on PATH. Install R from https://cran.r-project.org/")
+    _ensure_r_packages(["BiocManager"], bioc=False)
+    _ensure_r_packages(["edgeR", "limma"], bioc=True)
+
+
+def _ensure_r_packages(packages: list[str], *, bioc: bool) -> None:
+    missing_r = "c(" + ", ".join(f'"{p}"' for p in packages) + ")"
+    check = f'missing <- {missing_r}[!sapply({missing_r}, requireNamespace, quietly=TRUE)]; cat(paste(missing, collapse=","))'
+    res = subprocess.run(["Rscript", "--no-init-file", "-e", check], capture_output=True, text=True, timeout=30)
+    missing = [p.strip() for p in res.stdout.strip().split(",") if p.strip()]
+    if not missing:
+        return
+    missing_r2 = "c(" + ", ".join(f'"{p}"' for p in missing) + ")"
+    if bioc:
+        install_cmd = f'BiocManager::install({missing_r2}, ask=FALSE, update=FALSE)'
+    else:
+        install_cmd = f'install.packages({missing_r2}, repos="https://cloud.r-project.org")'
+    res2 = subprocess.run(["Rscript", "--no-init-file", "-e", install_cmd], capture_output=True, text=True, timeout=600)
+    if res2.returncode != 0:
+        raise RuntimeError(f"Failed to install R packages {missing}:\n{res2.stderr}")

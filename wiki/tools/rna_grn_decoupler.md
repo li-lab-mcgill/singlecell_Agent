@@ -3,6 +3,7 @@ type: tool
 id: rna_grn_decoupler
 modality: rna
 stage: grn_inference
+backend: backend/tools/rna/grn/decoupler.py
 label: TF Activity Scoring (decoupler + CollecTRI)
 default: true
 params:
@@ -12,6 +13,11 @@ params:
 ---
 
 Estimates TF activity scores across cells using decoupler-py's ULM (Univariate Linear Model) with a curated prior knowledge network.
+
+Key parameters:
+- `network` (default "collectri")
+- `organism` (default "human")
+- `min_n` (default 5)
 
 Does NOT infer new TF–gene edges. Instead, scores how active each known TF is in each cell given its curated target genes (CollecTRI / DoRothEA).
 

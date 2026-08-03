@@ -17,4 +17,3 @@ Use BBKNN when:
 
 Edges:
 - [[tools/rna_batch_integration_bbknn]] implements
-- [[tools/atac_batch_integration_bbknn]] implements

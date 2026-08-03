@@ -21,4 +21,3 @@ Output: `adata.obsm["ulm_estimate"]` (activity scores) and `adata.obsm["ulm_pval
 
 Edges:
 - [[tools/rna_grn_decoupler]] implements
-- [[tools/atac_grn_decoupler]] implements

@@ -9,9 +9,8 @@ backend: backend/tools/eval/ari_nmi.py
 Computes ARI (Adjusted Rand Index) and NMI (Normalized Mutual Information) between predicted cluster labels and ground-truth cell type labels.
 
 Key parameters:
-- `cluster_key` (required): `adata.obs` column with predicted cluster labels
-- `label_key` (required): `adata.obs` column with ground-truth labels
-- `result_key` (default "clustering_eval"): `adata.uns` key for storing results
+- `cluster_key` (required)
+- `label_key` (required)
 
 Returns and stores:
 - `ari`: Adjusted Rand Index; range [-1, 1]; 1 = perfect agreement, 0 = random

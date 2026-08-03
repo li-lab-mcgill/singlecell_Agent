@@ -20,7 +20,7 @@ Stages (in order):
 - [[stages/annotate]] [includes]
 
 Evaluated by:
-- [[tools/eval_annotation_accuracy]] [evaluated_by]
+- [[tools/eval_ari_nmi]] [evaluated_by]
 
 Key decisions for the consultant:
 - **RNA-first annotation**: annotate using CellTypist on the RNA modality, then validate against ATAC accessibility at marker gene loci

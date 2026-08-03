@@ -21,7 +21,8 @@ Stages (in order):
 - [[stages/project]] [includes]
 
 Evaluated by:
-- [[tools/eval_clustering_metrics]] [evaluated_by]
+- [[tools/eval_ari_nmi]] [evaluated_by]
+- [[tools/eval_silhouette]] [evaluated_by]
 
 Key decisions for the consultant:
 - Peak calling (MACS3) should be run first if raw fragments are available and no peak matrix exists

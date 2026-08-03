@@ -11,6 +11,8 @@ def run(
 ):
     import scanpy as sc
 
+    if batch_key and batch_key not in adata.obs:
+        raise ValueError(f"batch_key '{batch_key}' not found in adata.obs.")
     kwargs = {"flavor": "seurat_v3", "n_top_genes": n_top, "batch_key": batch_key}
     if "counts" in getattr(adata, "layers", {}):
         kwargs["layer"] = "counts"

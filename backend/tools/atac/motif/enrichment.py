@@ -19,7 +19,7 @@ def run(
     genome_fasta_path: str | Path,
     motif_db: str = "JASPAR2024",
     organism: str = "human",
-    method: str = "hypergeometric",
+    test_method: str = "hypergeometric",
     output_dir: Path | None = None,
 ) -> object:
     """Run TF motif enrichment on differential accessibility peaks per group.
@@ -39,7 +39,7 @@ def run(
                            Required for motif scanning.
         motif_db: JASPAR database version — "JASPAR2024" (default) or "JASPAR2022".
         organism: "human" or "mouse" (default "human").
-        method: Enrichment test — "hypergeometric" (default) or "binomial".
+        test_method: Enrichment test — "hypergeometric" (default) or "binomial".
         output_dir: If provided, saves enrichment tables as parquet per group.
 
     Returns:
@@ -72,7 +72,7 @@ def run(
         motifs=motifs,
         regions=regions,
         genome_fasta=str(fasta),
-        method=method,
+        method=test_method,
     )
     # enrichment: dict of {group: DataFrame}
 

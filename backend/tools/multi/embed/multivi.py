@@ -21,6 +21,7 @@ def run(
     n_epochs: int = 500,
     use_gpu: bool = True,
     output_dir: Path | None = None,
+    embedding_key: str = "X_multivi",
 ) -> object:
     """Train MultiVI and compute joint RNA+ATAC embedding.
 
@@ -93,7 +94,7 @@ def run(
 
     # Extract joint latent representation
     latent = model.get_latent_representation()
-    adata.obsm["X_multivi"] = latent
+    adata.obsm[embedding_key] = latent
 
     if output_dir is not None:
         output_dir = Path(output_dir)
@@ -105,7 +106,13 @@ def run(
         "n_latent": n_latent,
         "n_epochs": n_epochs,
         "batch_key": batch_key,
-        "embedding_key": "X_multivi",
+        "embedding_key": embedding_key,
+    }
+    adata.uns["embedding"] = {
+        "method": "multivi",
+        "n_latent": n_latent,
+        "batch_key": batch_key,
+        "obsm_key": embedding_key,
     }
 
     return adata

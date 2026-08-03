@@ -44,6 +44,30 @@ def run(
     )
 
 
+def _patch_arboreto_dask() -> None:
+    """Patch arboreto.core.from_delayed to handle empty lists.
+
+    arboreto unconditionally calls from_delayed(delayed_meta_dfs) even when
+    include_meta=False, leaving an empty list. dask >= 2024 raises TypeError
+    for empty lists. We replace the reference in arboreto.core only.
+    """
+    import pandas as pd
+    try:
+        import arboreto.core as _arb_core
+        _orig = _arb_core.from_delayed
+
+        def _safe_from_delayed(dfs, meta=None, **kwargs):
+            if not dfs:
+                col_names = list(meta.keys()) if isinstance(meta, dict) else []
+                import dask.dataframe as dd
+                return dd.from_pandas(pd.DataFrame(columns=col_names), npartitions=1)
+            return _orig(dfs, meta=meta, **kwargs)
+
+        _arb_core.from_delayed = _safe_from_delayed
+    except ImportError:
+        pass
+
+
 def _run_grnboost2(adata, *, tf_list_path, n_jobs, seed, output_dir) -> GRN:
     import pandas as pd
     import scipy.sparse as sp
@@ -67,6 +91,7 @@ def _run_grnboost2(adata, *, tf_list_path, n_jobs, seed, output_dir) -> GRN:
                 "Check that gene names match (symbol vs Ensembl ID)."
             )
 
+    _patch_arboreto_dask()
     adjacencies = grnboost2(
         expression_data=expr_df,
         tf_names=tf_names,

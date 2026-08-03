@@ -19,6 +19,7 @@ if "pandas" not in sys.modules:
     sys.modules["pandas"] = fake_pandas
 
 from agents.session_dispatcher import SessionDispatcher
+from agents.decision_schema import DecisionValidationError
 from agents.session_router import SessionRouter, validate_session_route
 from agents.session_state import SessionStateStore
 from agents.tools import _normalize_pipeline_trial_inputs
@@ -114,6 +115,21 @@ class _FakeResearchExecutor:
         }
 
 
+class _FakeResearchLoop:
+    def __init__(self):
+        self.calls = []
+
+    def run(self, *, user_question, pipeline_mode):
+        self.calls.append({"user_question": user_question, "pipeline_mode": pipeline_mode})
+        return {
+            "status": "done",
+            "final_report": {"summary": f"ResearchLoop {pipeline_mode} completed."},
+            "phases_completed": 1,
+            "phase_log": [],
+            "pipeline_mode": pipeline_mode,
+        }
+
+
 class _FakeToolConsultant:
     def __init__(self, decision=None):
         self.calls = []
@@ -152,6 +168,17 @@ class SessionRoutingTests(unittest.TestCase):
         self.assertEqual(route["route"], "direct_response")
         self.assertEqual(route["resolved_intent"], "Explain ARI.")
         self.assertNotIn("instructions", route)
+
+    def test_validate_session_route_rejects_invalid_intent_mode(self):
+        with self.assertRaises(DecisionValidationError):
+            validate_session_route(
+                {
+                    "resolved_intent": "Explore the dataset.",
+                    "intent_mode": "research",
+                    "route": "task",
+                    "reason": "invalid enum",
+                }
+            )
 
     def test_direct_response_does_not_call_orchestrator(self):
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -199,6 +226,7 @@ class SessionRoutingTests(unittest.TestCase):
                         _route_response(
                             {
                                 "resolved_intent": "Find the best annotation workflow for /tmp/in.h5ad.",
+                                "intent_mode": "operational",
                                 "route": "task",
                                 "reason": "new analysis task",
                             }
@@ -226,6 +254,162 @@ class SessionRoutingTests(unittest.TestCase):
             self.assertIn("implementation_plan", result["decision"])
             self.assertIn("Status: completed.", result["result"]["message"])
 
+    def test_operational_task_bypasses_research_loop_when_configured(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            router = SessionRouter(
+                engine_name="gpt-test",
+                result_dir=tmpdir,
+                client=_FakeClient(
+                    [
+                        _route_response(
+                            {
+                                "resolved_intent": "Run cell type annotation on /tmp/in.h5ad.",
+                                "intent_mode": "operational",
+                                "route": "task",
+                                "reason": "known workflow",
+                            }
+                        )
+                    ]
+                ),
+            )
+            store = SessionStateStore(Path(tmpdir) / "session_state.json")
+            tool_consultant = _FakeToolConsultant()
+            research_loop = _FakeResearchLoop()
+            dispatcher = SessionDispatcher(
+                router=router,
+                tool_consultant=tool_consultant,
+                coder=_FakeCoder(),
+                research_executor=_FakeResearchExecutor(),
+                tool_artifact_dir=Path(tmpdir) / "artifacts",
+                state_store=store,
+                result_dir=tmpdir,
+                research_loop=research_loop,
+            )
+
+            result = dispatcher.handle(user_message="annotate cells", session_state={}, session_tag="turn_operational")
+
+            self.assertEqual(result["route"]["intent_mode"], "operational")
+            self.assertEqual(len(tool_consultant.calls), 1)
+            self.assertEqual(research_loop.calls, [])
+            self.assertEqual(result["result"]["execution_path"], "tool_execution")
+
+    def test_discovery_task_routes_to_research_loop_full(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            router = SessionRouter(
+                engine_name="gpt-test",
+                result_dir=tmpdir,
+                client=_FakeClient(
+                    [
+                        _route_response(
+                            {
+                                "resolved_intent": "Find what immune cell state drives disease severity.",
+                                "intent_mode": "discovery",
+                                "route": "task",
+                                "reason": "open biological question",
+                            }
+                        )
+                    ]
+                ),
+            )
+            store = SessionStateStore(Path(tmpdir) / "session_state.json")
+            tool_consultant = _FakeToolConsultant()
+            research_loop = _FakeResearchLoop()
+            dispatcher = SessionDispatcher(
+                router=router,
+                tool_consultant=tool_consultant,
+                coder=_FakeCoder(),
+                research_executor=_FakeResearchExecutor(),
+                tool_artifact_dir=Path(tmpdir) / "artifacts",
+                state_store=store,
+                result_dir=tmpdir,
+                research_loop=research_loop,
+            )
+
+            result = dispatcher.handle(user_message="what drives severity?", session_state={}, session_tag="turn_discovery")
+
+            self.assertEqual(tool_consultant.calls, [])
+            self.assertEqual(research_loop.calls[0]["pipeline_mode"], "full")
+            self.assertEqual(research_loop.calls[0]["user_question"], "Find what immune cell state drives disease severity.")
+            self.assertEqual(result["decision"]["route"], "research_loop")
+            self.assertEqual(result["result"]["pipeline_mode"], "full")
+
+    def test_ambiguous_task_requests_user_choice(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            router = SessionRouter(
+                engine_name="gpt-test",
+                result_dir=tmpdir,
+                client=_FakeClient(
+                    [
+                        _route_response(
+                            {
+                                "resolved_intent": "Analyze this dataset for interesting biology.",
+                                "intent_mode": "ambiguous",
+                                "route": "task",
+                                "reason": "analysis request but mode is unclear",
+                            }
+                        )
+                    ]
+                ),
+            )
+            store = SessionStateStore(Path(tmpdir) / "session_state.json")
+            research_loop = _FakeResearchLoop()
+            dispatcher = SessionDispatcher(
+                router=router,
+                tool_consultant=_FakeToolConsultant(),
+                coder=_FakeCoder(),
+                research_executor=_FakeResearchExecutor(),
+                tool_artifact_dir=Path(tmpdir) / "artifacts",
+                state_store=store,
+                result_dir=tmpdir,
+                research_loop=research_loop,
+            )
+
+            result = dispatcher.handle(user_message="analyze this", session_state={}, session_tag="turn_ambiguous")
+
+            self.assertEqual(research_loop.calls, [])
+            self.assertEqual(result["decision"]["route"], "clarification_required")
+            self.assertEqual(result["decision"]["intent_mode"], "ambiguous")
+            self.assertEqual(result["result"]["status"], "needs_input")
+            self.assertEqual(result["result"]["loop_status"], "awaiting_user")
+            self.assertIn("Option 1", result["result"]["message"])
+            self.assertIn("Option 2", result["result"]["message"])
+
+    def test_discovery_without_research_loop_fails_explicitly(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            router = SessionRouter(
+                engine_name="gpt-test",
+                result_dir=tmpdir,
+                client=_FakeClient(
+                    [
+                        _route_response(
+                            {
+                                "resolved_intent": "Find what immune cell state drives disease severity.",
+                                "intent_mode": "discovery",
+                                "route": "task",
+                                "reason": "open biological question",
+                            }
+                        )
+                    ]
+                ),
+            )
+            tool_consultant = _FakeToolConsultant()
+            dispatcher = SessionDispatcher(
+                router=router,
+                tool_consultant=tool_consultant,
+                coder=_FakeCoder(),
+                research_executor=_FakeResearchExecutor(),
+                tool_artifact_dir=Path(tmpdir) / "artifacts",
+                state_store=SessionStateStore(Path(tmpdir) / "session_state.json"),
+                result_dir=tmpdir,
+            )
+
+            result = dispatcher.handle(user_message="what drives severity?", session_state={}, session_tag="turn_no_loop")
+
+            self.assertEqual(result["result"]["status"], "failed")
+            self.assertEqual(result["decision"]["route"], "research_loop_unavailable")
+            self.assertEqual(result["decision"]["pipeline_mode"], "full")
+            self.assertEqual(tool_consultant.calls, [])
+
     def test_tool_result_ui_prefers_structured_dataset_summary(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             router = SessionRouter(
@@ -236,6 +420,7 @@ class SessionRoutingTests(unittest.TestCase):
                         _route_response(
                             {
                                 "resolved_intent": "Load /tmp/in.h5ad and summarize the dataset.",
+                                "intent_mode": "operational",
                                 "route": "task",
                                 "reason": "dataset overview request",
                             }
@@ -277,6 +462,7 @@ class SessionRoutingTests(unittest.TestCase):
                         _route_response(
                             {
                                 "resolved_intent": "Generate a QC plot.",
+                                "intent_mode": "operational",
                                 "route": "task",
                                 "reason": "new plotting task",
                             }
@@ -627,6 +813,7 @@ class SessionRoutingTests(unittest.TestCase):
                         _route_response(
                             {
                                 "resolved_intent": "Rerun the previous optimization with scVI instead of PCA.",
+                                "intent_mode": "operational",
                                 "route": "task",
                                 "reason": "user requested scVI",
                             }
@@ -801,6 +988,7 @@ class SessionRoutingTests(unittest.TestCase):
                         _route_response(
                             {
                                 "resolved_intent": "Design and evaluate a broader prior-guided method for this dataset.",
+                                "intent_mode": "operational",
                                 "route": "task",
                                 "reason": "broad research task",
                             }

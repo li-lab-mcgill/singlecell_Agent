@@ -25,7 +25,7 @@ Stages (in order):
 - [[stages/grn_inference]] [includes]
 
 Evaluated by:
-- [[tools/eval_grn_metrics]] [evaluated_by]
+No dedicated executable GRN evaluation tool is currently registered.
 
 Key decisions for the consultant:
 - **pySCENIC + ATAC peaks**: use peak-gene links as the cis-regulatory database instead of generic motif rankings; most comprehensive

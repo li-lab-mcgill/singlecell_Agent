@@ -9,9 +9,10 @@ backend: backend/tools/rna/project/tsne.py
 Computes t-SNE 2D coordinates for visualization.
 
 Key parameters:
-- `embedding_key` (default "X_pca"): embedding to use as input; t-SNE runs on the embedding, not the raw expression
-- `perplexity` (default 30): controls neighborhood size; typically 5–50; reduce for small datasets
-- `n_pcs` (default 30): number of PCA components to use
+- `embedding_key` (required)
+- `n_neighbors` (default 15)
+- `perplexity` (default 30.0)
+- `random_seed` (default 42)
 
 Stores result in `adata.obsm["X_tsne"]`.
 

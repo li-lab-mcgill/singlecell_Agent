@@ -19,7 +19,7 @@ Stages (in order):
 - [[stages/grn_inference]] [includes]
 
 Evaluated by:
-- [[tools/eval_grn_metrics]] [evaluated_by]
+No dedicated executable GRN evaluation tool is currently registered.
 
 Key decisions for the consultant:
 - **decoupler (CollecTRI)** (default): fast, no ATAC required; good for initial TF activity scoring; run first

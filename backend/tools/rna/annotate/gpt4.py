@@ -18,6 +18,7 @@ def run(
 
     if obs_cluster not in adata.obs:
         raise ValueError(f"obs_cluster '{obs_cluster}' not in adata.obs.")
+    adata.obs[obs_cluster] = adata.obs[obs_cluster].astype(str).astype("category")
     api_key = openai_api_key or os.environ.get("OPENAI_API_KEY")
     if not api_key:
         raise RuntimeError("OPENAI_API_KEY not set and no openai_api_key passed.")

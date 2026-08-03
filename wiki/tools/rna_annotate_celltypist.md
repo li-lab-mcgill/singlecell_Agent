@@ -9,10 +9,10 @@ backend: backend/tools/rna/annotate/celltypist.py
 Annotates cells using CellTypist pretrained logistic regression models. Downloads the specified model (cached after first use) and predicts cell type labels per cell.
 
 Key parameters:
-- `model` (default "Immune_All_Low.pkl"): pretrained model name; options include `"Immune_All_Low.pkl"` (fine-grained immune), `"Immune_All_High.pkl"` (coarse immune), `"Pan_Fetal_Human.pkl"` (fetal tissues)
-- `majority_voting` (default True): smooth predictions by cluster membership; recommended
-- `cluster_key` (default "leiden_clusters"): cluster label column for majority voting; must be present in `adata.obs`
-- `min_prob` (default 0.5): flag cells with confidence below this threshold
+- `model` (default "Immune_All_Low.pkl")
+- `majority_voting` (default True)
+- `cluster_key` (default None)
+- `output_key` (default "celltype")
 
 Outputs:
 - `adata.obs["celltypist_cell_type"]`: per-cell predicted label

@@ -9,8 +9,8 @@ backend: backend/tools/rna/feature_selection/cellranger.py
 Selects highly variable genes using the Cell Ranger-style dispersion method. Uses normalized dispersion (dispersion divided by mean) to rank genes.
 
 Key parameters:
-- `n_top_genes` (default 2000): number of genes to select
-- `n_bins` (default 20): number of expression bins for dispersion normalization
+- `n_top` (default 2000)
+- `batch_key` (default None)
 
 This is the original Seurat/Cell Ranger method and is now considered legacy. It tends to select more lowly expressed genes than the Seurat v3 method.
 

@@ -1,0 +1,386 @@
+{
+  "title": "ScientistPanel Schema Set",
+  "version": "1.0-draft",
+  "last_updated": "2026-05-17",
+  "purpose": "Canonical output schemas for the ScientistPanel system: three panelists (Biologist, Statistician, Bioinformatician), Mediator, Adversary, and Analyzer. Each schema defines the JSON shape the corresponding agent must return. Values shown are descriptive placeholders, not literal strings.",
+
+  "design_principles": {
+    "panelists_describe_mediator_decides": "Panelists report what the literature and reasoning show. They do not prescribe plan changes. The Mediator owns all plan-shaped decisions, including hypothesis formation, plan composition, and post-analysis routing.",
+    "parallel_perspectives_not_sequential_stages": "Biologist, Statistician, Bioinformatician operate as three independent angles on the same question. They run in parallel during formulation. Only the Reconciler (and Mediator) see all three outputs.",
+    "panelist_reasoning_is_bounded": "Each panelist may organize literature reasoning into up to three intent-like iterations inside the role prompt. There is no separate intent-wrapper prompt or final-wrapper prompt. Wiki is searched first; fresh retrieval is used only when wiki summaries are insufficient. Unresolved literature needs are surfaced as open_questions.",
+    "novelty_is_methodological_not_hypothesis_level": "Panelist novelty_candidates are methodological/analytical proposals (six moves). The Mediator forms the scientific hypothesis from the integrated synthesis.",
+    "human_readable_field_names": "Field names use plain English question-shaped forms where natural (how_to_test, why_testable_here, what_would_resolve). Enums kept minimal; free text preferred where it captures intent better."
+  },
+
+  "schemas": {
+
+    "panelist_formulation_output": {
+      "_description": "Returned by each of the three panelists during initial plan formulation. Compact role output with intent-like literature summaries, cross-paper synthesis, method adequacy, downstream analysis, benchmarks, and novelty candidates.",
+      "role": "biologist | statistician | bioinformatician",
+      "question": "the user's research question paraphrased from this role's perspective",
+      "reasoning_loop": {
+        "intents": [
+          {
+            "id": "intent_1",
+            "purpose": "what this iteration is trying to learn from the literature in this role's lane",
+            "papers_selected": ["paper_id_1", "paper_id_2"],
+            "summary": "how the selected papers answer the intent and what was learned from them"
+          }
+        ]
+      },
+      "cross_paper_synthesis": "multi-paragraph synthesis across intents and selected papers, preserving the concrete evidence needed for the top-level user question",
+      "method_adequacy": {
+        "verdict": "sufficient | sufficient_with_extension | partial | insufficient",
+        "rationale": "why this verdict from this role's perspective",
+        "method_requirements": [
+          "constraint that must hold from this role's perspective"
+        ]
+      },
+      "downstream_analysis": [
+        {
+          "title": "analysis on top of the main method output",
+          "description": "what output it consumes, what it produces, and why it matters for the user's top-level question"
+        }
+      ],
+      "benchmark": [
+        {
+          "title": "name of reference, comparator, benchmark, or validation pattern",
+          "task": "benchmark for which task",
+          "description": "how it is used and what result supports or weakens the plan"
+        }
+      ],
+      "novelty_candidates": [
+        {
+          "novelty_type": "failure_mode_root_cause | underexploited_signal | assumption_inversion | cross_field_transfer | output_reframing | modality_composition",
+          "from_perspective": "biological | statistical | computational",
+          "prior_limitation": "what limitation in prior work this targets",
+          "cited_work": "where the limitation is documented",
+          "proposed_change": "what specifically would be done differently",
+          "why_testable_here": "what about the user's data makes this testable",
+          "metric": "free text — metric name",
+          "how_to_test": "concrete steps to test if the novelty works",
+          "expected_outcome_and_falsification": "prose: what we expect if the novelty improves things, and what would refute it",
+          "confidence": 0.0
+        }
+      ],
+      "open_questions": [
+        {
+          "question": "what remains unresolved",
+          "what_would_resolve": "what paper, data, or analysis would close this"
+        }
+      ],
+      "overall_confidence": 0.0
+    },
+
+    "panelist_callback_output": {
+      "_description": "Returned by a panelist in response to a narrow gap from the Mediator (during plan formulation) or formulated by the Analyzer (post-execution). The panelist describes; the Mediator decides what to do with the response.",
+      "role": "biologist | statistician | bioinformatician",
+      "gap_addressed": "the question the Mediator or Analyzer asked",
+      "response": "the answer to the gap, drawing on prior synthesis and any new evidence (citations inline)",
+      "new_papers": [
+        "Citation — one sentence on what this paper contributes (only for literature callbacks)"
+      ]
+    },
+
+    "selected_research_plan": {
+      "_description": "Canonical research plan body. This is the plan-shaped object produced by the Mediator and carried in mediator_formulation_output.selected_research_plan, mediator_post_analysis_output.updated_selected_research_plan, and ResearchState.active_research_state.selected_research_plan.",
+      "hypothesis": {
+        "concrete_analysis_claim": "the specific testable claim the plan tests, formed by the Mediator from all three panelists' evidence",
+        "draws_from": {
+          "biological_evidence": "what from the biologist's synthesis supports this claim",
+          "statistical_evidence": "what from the statistician's synthesis supports this claim",
+          "computational_evidence": "what from the bioinformatician's synthesis supports this claim"
+        },
+        "falsification_criterion": "what result would refute the claim"
+      },
+      "background": {
+        "framing": "prose framing the question and modality, drawing from panelist syntheses",
+        "field_context": "prose on the state of the field, citing prior work",
+        "user_context": "what about the user's data and question shapes the plan"
+      },
+      "plan": {
+        "main_method": {
+          "verdict": "sufficient | sufficient_with_extension | partial | insufficient",
+          "verdict_reasoning": "integrating all three panelists' verdicts, why this is the consensus or how disagreement was resolved",
+          "core_steps": [
+            {
+              "step_id": "step_1",
+              "step_name": "joint integration and unified cell-state definition",
+              "biological_goal": "what biological question this step answers",
+              "statistical_requirement": "what must be true for this step's result to be valid",
+              "computational_approach": "abstract strategy (method class, not specific tool)",
+              "canonical_implementation": "Citation to the canonical paper for this step",
+              "acceptable_alternatives": ["..."],
+              "parameter_regime": {"param_name": "range_or_value"},
+              "constraints": ["constraint the implementation cannot violate"],
+              "decision_criterion": "what this step's output must satisfy to proceed",
+              "failure_branch": "where the plan goes if this step fails",
+              "interleaved_validation": "validation_id this step is gated by, or 'none'"
+            }
+          ],
+          "new_method_specification": null
+        },
+        "downstream_analyses": [
+          {
+            "analysis_id": "ds_1",
+            "analysis_name": "DORC calling on regulons",
+            "citation": "FigR, Kartha et al., 2022",
+            "builds_on": "main method output (regulon list)",
+            "biological_goal": "...",
+            "statistical_requirement": "...",
+            "computational_approach": "...",
+            "decision_criterion": "...",
+            "failure_branch": "...",
+            "what_it_produces": "DORC gene list with regulatory density scores",
+            "interleaved_validation": "validation_id | none"
+          }
+        ]
+      },
+      "supplemental_data": [
+        {
+          "data_source": "...",
+          "purpose": "what it's used for in the plan"
+        }
+      ],
+      "validation_metrics": [
+        {
+          "validation_id": "v_1",
+          "analysis_name": "motif consistency at TF-CRE edges",
+          "citation": "SCENIC+, Bravo González-Blas et al., 2023",
+          "required_data": "TF motif database",
+          "metric": "free text — e.g., 'hypergeometric p with FDR'",
+          "how_to_run": "concrete steps",
+          "how_to_interpret": "prose: what direction supports vs. weakens",
+          "expected_output": "what visualization or table"
+        }
+      ],
+      "novel_analysis_design": {
+        "selected": true,
+        "novelty_type": "failure_mode_root_cause | underexploited_signal | assumption_inversion | cross_field_transfer | output_reframing | modality_composition",
+        "from_perspective": "biological | statistical | computational",
+        "source_panelist": "biologist | statistician | bioinformatician",
+        "prior_limitation": "what limitation in prior work this targets",
+        "cited_work": "where the limitation is documented",
+        "proposed_change": "what specifically would be done differently",
+        "why_testable_here": "what about the user's data makes this testable",
+        "metric": "free text",
+        "how_to_test": "concrete steps to test if the novelty works",
+        "expected_outcome_and_falsification": "prose",
+        "integration_point": "replaces_main_method | runs_alongside_baseline | added_to_downstream_analyses",
+        "why_selected_over_others": "why this candidate over the other novelty candidates the panelists proposed"
+      },
+      "success_criteria": {
+        "supports": "what overall result supports the hypothesis",
+        "weakens": "what overall result weakens it",
+        "contradicts": "what overall result contradicts it",
+        "inconclusive": "what missing or ambiguous result is inconclusive"
+      },
+      "limitations": [
+        {
+          "limitation": "what this plan cannot claim",
+          "reason": "data | method | scope",
+          "scope_impact": "how this bounds the final claim"
+        }
+      ],
+      "future_research_directions": [
+        {
+          "direction": "novel candidate that didn't make the cut",
+          "source_novelty_type": "...",
+          "what_data_or_method_needed": "...",
+          "expected_finding": "...",
+          "why_worth_pursuing": "..."
+        }
+      ],
+      "alternative_plans": [
+        {
+          "plan_id": "plan_b",
+          "summary": "...",
+          "when_to_use": "condition under which this becomes active",
+          "why_not_selected_now": "..."
+        }
+      ],
+      "open_questions": [],
+      "literature_evidence": [],
+      "current_belief": "short prose summary of what the panel currently believes before execution",
+      "overall_confidence": 0.0
+    },
+
+    "trajectory_decision": {
+      "_description": "Candidate trajectory action proposed by the Mediator and committed by ResearchLoop only after adversarial acceptance.",
+      "action": "initialize_plan | create_revised_node | continue_same_node | declare_unanswerable",
+      "branch_from_node_id": "node id to branch from, active_node_id, or null for initialize_plan",
+      "reason": "why this trajectory action is appropriate"
+    },
+
+    "mediator_formulation_output": {
+      "_description": "Returned by the Mediator after integrating the three panelists' formulation outputs. This is a control envelope around selected_research_plan. The Mediator forms the hypothesis inside selected_research_plan; panelists do not.",
+      "formulation_status": "needs_panelist_callback | ready_for_adversary",
+      "selected_research_plan": "selected_research_plan schema; required when formulation_status = ready_for_adversary",
+      "callback_requests": [
+        {
+          "to_role": "biologist | statistician | bioinformatician",
+          "callback_type": "reasoning | literature",
+          "gap": "specific question to address",
+          "why_needed": "...",
+          "expected_output": "..."
+        }
+      ],
+      "evidence_completeness": "complete | partial",
+      "callback_budget_exhausted": false,
+      "limitations": [
+        {
+          "limitation": "what remains uncertain in the mediated plan",
+          "reason": "data | method | literature | scope",
+          "scope_impact": "how this limits execution or interpretation"
+        }
+      ],
+      "research_gap_resolution": [
+        {
+          "gap": "specific gap considered by the Mediator",
+          "why_it_matters": "why this gap affects the plan",
+          "first_try": "first reasonable attempt to resolve it",
+          "fallback_if_first_try_fails": "fallback",
+          "stop_condition": "when to stop pursuing the gap",
+          "target_owner": "mediator | panelist | tool_consultant | analyzer | orchestrator"
+        }
+      ],
+      "trajectory_decision": "trajectory_decision schema; required when formulation_status = ready_for_adversary",
+      "overall_confidence": 0.0
+    },
+
+    "mediator_post_analysis_output": {
+      "_description": "Returned by the Mediator after receiving the Analyzer report. Targeted panelist callbacks, if needed, are internal Mediator tool calls whose results are recorded in panelist_callback_findings. The final decision must not be call_panelists.",
+      "decision": "accept_and_conclude | self_revise_plan | continue_with_same_research_plan | ask_user | declare_unanswerable",
+      "rationale": "why this decision, integrating the Analyzer report with the active plan",
+      "evidence_state": {
+        "analysis_claims": [
+          {
+            "claim_id": "C1",
+            "claim_text": "claim being tracked",
+            "status": "pending | supported | refuted | inconclusive | partially_supported",
+            "support_summary": "",
+            "contradicting_evidence": [],
+            "unresolved_requirements": []
+          }
+        ],
+        "open_questions": [],
+        "literature_evidence": [],
+        "execution_evidence": [],
+        "current_belief": "short prose summary"
+      },
+      "updated_selected_research_plan": "selected_research_plan schema; revised when decision = self_revise_plan, otherwise unchanged active plan",
+      "trajectory_decision": "trajectory_decision schema; required when decision = self_revise_plan",
+      "rerun_intent": {
+        "reason": "why the same research plan should be executed again",
+        "changed_parameters": {},
+        "required_outputs": [],
+        "reuse_artifacts": []
+      },
+      "final_answer_summary": "for accept_and_conclude only — concise statement of what the loop has established",
+      "panelist_callback_findings": [
+        {
+          "role": "biologist | statistician | bioinformatician",
+          "callback_type": "reasoning | literature",
+          "gap_addressed": "specific gap the internal tool asked about",
+          "finding": "summary of the returned panelist evidence"
+        }
+      ],
+      "plan_revision": {
+        "incorrect_from_step": "step_id or downstream_analysis_id where the original plan first needed to change",
+        "what_was_wrong": "what about this step (and any subsequent steps) caused the plan to need revision, grounded in the Analyzer report"
+      },
+      "clarifying_questions": [
+        {
+          "question": "what to ask the user",
+          "why_needed": "what about the user's intent or data is unclear",
+          "options": ["concrete option 1", "concrete option 2"]
+        }
+      ],
+      "unanswerable_reason": "for declare_unanswerable only — why the data cannot answer the question",
+      "what_would_be_needed": "for declare_unanswerable only — what data, method, or scope change would be needed",
+      "overall_confidence": 0.0
+    },
+
+    "adversary_output": {
+      "_description": "Returned by the Adversary after reviewing the Mediator's formulation output. Verdict drives orchestration: survives → accept and proceed; needs_revision → back to Mediator; unsalvageable → plan replacement or panel restart.",
+      "round": 1,
+      "verdict": "survives | needs_revision | unsalvageable",
+      "verdict_rationale": "why this verdict, integrating the most consequential issues found",
+      "missing_analyses": [
+        {
+          "missing_analysis": "what prior work or methodological best practice implies should be present but isn't",
+          "citation": "prior work establishing this as standard",
+          "why_required": "why this is necessary for the claim to be credible",
+          "suggested_insertion_point": "where in the plan it should be added (step_id, 'as new downstream analysis', 'as new validation metric', etc.)"
+        }
+      ],
+      "challenges": [
+        {
+          "challenge_id": "c1",
+          "critique": "the challenge, naturally describing what part of the plan it targets and why it is wrong, in prose",
+          "weakest_assumption": "what assumption in the plan this challenge exploits",
+          "required_revision": "what must change to address this"
+        }
+      ],
+      "open_questions_for_panelists": [
+        {
+          "to_role": "biologist | statistician | bioinformatician",
+          "question": "the question the panelist needs to answer in the next round",
+          "why_needed": "what the adversary cannot resolve without panelist input"
+        }
+      ],
+      "agreements": [
+        "specific aspect of the plan the adversary affirms is sound"
+      ],
+      "overall_confidence": 0.0
+    },
+
+    "analyzer_output": {
+      "_description": "Returned by the Analyzer after a phase of execution. Interpretation is iterative — each iteration interprets one piece of the results and may formulate questions. The Mediator decides whether those questions require internal targeted panelist tool calls during post-analysis.",
+      "interpretation_loop": [
+        {
+          "iteration_id": "iter_1",
+          "what_was_interpreted": "free text — e.g., 'cell type prediction AUROC', 'regulon-marker enrichment for myeloid lineage', 'clustering robustness via subsampling'",
+          "interpretation": "prose: what this result shows",
+          "formulated_questions": [
+            "questions sent to panelists that can help resolve gaps from this interpretation"
+          ]
+        }
+      ],
+      "overall_interpretation": "single prose paragraph: the integrated interpretation (good or bad), the gaps that came up, and why they matter for the next decision",
+      "result_verdict": "supported | contradicted | inconclusive | invalid | missing_outputs",
+      "claim_updates": [
+        {
+          "claim_id": "C1",
+          "status": "supported | refuted | inconclusive | partially_supported",
+          "support_summary": "",
+          "contradicting_evidence": [],
+          "unresolved_requirements": []
+        }
+      ],
+      "missing_outputs": [],
+      "artifact_evidence_index": []
+    }
+
+  },
+
+  "flow_overview": {
+    "plan_formulation": [
+      "1. Three panelists run in parallel — each produces panelist_formulation_output",
+      "2. Mediator integrates → mediator_formulation_output (forms the hypothesis, reconciles cross-lane conflicts in synthesis, composes the plan)",
+      "3. Adversary reviews → adversary_output (verdict + challenges + missing_analyses + open_questions_for_panelists)",
+      "4. If verdict = needs_revision: back to Mediator. Mediator may call targeted panelist tools (panelist_callback_output) or self-revise the plan. Revised candidate plan goes back to Adversary. Repeat up to round budget.",
+      "5. If verdict = survives: plan accepted, move to ToolConsultant.",
+      "6. If verdict = unsalvageable: Mediator declares unanswerable or initiates panel restart."
+    ],
+    "post_execution": [
+      "1. ToolConsultant translates the accepted plan to a DAG. DAG executes.",
+      "2. Analyzer interprets results iteratively → analyzer_output (interpretation_loop + overall_interpretation + formulated_questions per iteration). The Analyzer is panel-agnostic; it does not route questions to specific panelists.",
+      "3. Mediator receives Analyzer output → mediator_post_analysis_output. If targeted panelist input is needed, Mediator calls internal tools before emitting the final decision.",
+      "4. If decision = self_revise_plan: Mediator emits a revised plan in updated_selected_research_plan; the revised plan goes back to Adversary before re-execution.",
+      "5. If decision = continue_with_same_research_plan: ResearchLoop appends a new iteration under the same research-state node.",
+      "6. If decision = accept_and_conclude: done. If decision = ask_user: session enters awaiting_user state. If decision = declare_unanswerable: session ends with the unanswerable_reason.",
+      "7. Across iterations, updated_selected_research_plan and evidence_state propagate the active plan and the current claim status."
+    ]
+  }
+}

@@ -115,6 +115,8 @@ def normalize_section_type(title: str) -> str:
     cleaned = _normalize_text(title).lower()
     if not cleaned:
         return "supplement"
+    if any(token in cleaned for token in ["figure caption", "figure captions", "figures"]):
+        return "figure_captions"
     if any(token in cleaned for token in ["abstract", "summary"]):
         return "abstract"
     if any(token in cleaned for token in ["introduction", "background"]):
@@ -156,6 +158,29 @@ def _extract_xml_sections(root: ET.Element) -> List[RAGSection]:
             )
         )
     return sections
+
+
+def _extract_xml_figure_captions(root: ET.Element) -> List[RAGSection]:
+    captions: List[str] = []
+    for idx, fig in enumerate(root.findall(".//fig"), start=1):
+        label = _normalize_text(_extract_text_recursive(fig.find("./label")))
+        caption = _normalize_text(_extract_text_recursive(fig.find("./caption")))
+        if not caption:
+            continue
+        prefix = label or f"Figure {idx}"
+        captions.append(f"{prefix}: {caption}")
+    if not captions:
+        return []
+    return [
+        RAGSection(
+            section_id="figure_captions:0",
+            section_type="figure_captions",
+            heading="Figure captions",
+            text="\n\n".join(captions),
+            order=10_000,
+            metadata={"source": "xml_fig_caption", "count": len(captions)},
+        )
+    ]
 
 
 def _finalize_sections(sections: List[RAGSection]) -> List[RAGSection]:
@@ -208,6 +233,8 @@ def _build_general_doc(
     categories: Optional[List[str]] = None,
     metadata: Optional[Dict[str, object]] = None,
 ) -> RAGDocument:
+    meta = dict(metadata or {})
+    meta.setdefault("full_text_status", "abstract_only")
     return RAGDocument(
         doc_id=_stable_doc_id(source, source_id),
         source=source,
@@ -221,7 +248,7 @@ def _build_general_doc(
         doi=_normalize_text(doi),
         doc_type="general",
         categories=[str(item) for item in (categories or []) if str(item).strip()],
-        metadata=dict(metadata or {}),
+        metadata=meta,
     )
 
 
@@ -290,7 +317,7 @@ def _pubmed_article_to_document(article: ET.Element) -> Optional[RAGDocument]:
         published=published,
         doi=doi,
         url=f"https://pubmed.ncbi.nlm.nih.gov/{pmid}/",
-        metadata={"journal": journal},
+        metadata={"journal": journal, "pmid": pmid, "full_text_status": "abstract_only"},
     )
 
 
@@ -532,6 +559,7 @@ def fetch_pmc_core_document(document: RAGDocument) -> Optional[CoreFetchResult]:
     xml_text = _fetch_pmc_xml(pmcid)
     root = ET.fromstring(xml_text)
     sections = _extract_xml_sections(root)
+    sections.extend(_extract_xml_figure_captions(root))
     if document.abstract:
         sections = [
             RAGSection(
@@ -568,7 +596,13 @@ def fetch_pmc_core_document(document: RAGDocument) -> Optional[CoreFetchResult]:
         doi=document.doi,
         doc_type="core_full_text",
         categories=list(document.categories),
-        metadata={"pmid": document.source_id, "origin_source": "pubmed", "has_methods": bool(methods_text)},
+        metadata={
+            "pmid": document.source_id,
+            "pmcid": pmcid,
+            "origin_source": "pubmed",
+            "has_methods": bool(methods_text),
+            "full_text_status": "pmc_xml",
+        },
         sections=sections,
     )
     return CoreFetchResult(
@@ -590,6 +624,7 @@ def fetch_biorxiv_core_document(document: RAGDocument) -> Optional[CoreFetchResu
         return None
     root = ET.fromstring(response.text)
     sections = _extract_xml_sections(root)
+    sections.extend(_extract_xml_figure_captions(root))
     if document.abstract:
         sections = [
             RAGSection(
@@ -631,6 +666,7 @@ def fetch_biorxiv_core_document(document: RAGDocument) -> Optional[CoreFetchResu
             "origin_source": "biorxiv",
             "has_methods": bool(methods_text),
             "jats_xml_path": xml_path,
+            "full_text_status": "preprint_jats",
         },
         sections=sections,
     )
@@ -650,7 +686,368 @@ def fetch_core_document(document: RAGDocument) -> Optional[CoreFetchResult]:
     return None
 
 
+def fetch_open_pdf_core_document(document: RAGDocument) -> Optional[CoreFetchResult]:
+    """Download and parse an open-access PDF into a lower-confidence full-text document.
+
+    PDF extraction is intentionally a fallback behind XML/JATS. The parser records
+    section recovery metadata so downstream judges can treat PDF-derived evidence
+    as weaker when structure is poor.
+    """
+    pdf_url = str(document.metadata.get("pdf_url") or "").strip()
+    if not pdf_url and str(document.url).lower().endswith(".pdf"):
+        pdf_url = document.url
+    if not pdf_url:
+        return None
+
+    parser_name = ""
+    text = ""
+    section_status = "failed"
+    try:
+        response = _retry_get(requests.Session(), pdf_url, timeout=60, base_delay=0.5, max_attempts=3)
+        pdf_bytes = response.content
+    except Exception:
+        return None
+
+    try:
+        import fitz  # type: ignore
+
+        parser_name = "pymupdf"
+        with fitz.open(stream=pdf_bytes, filetype="pdf") as doc:  # type: ignore[attr-defined]
+            text = "\n\n".join(page.get_text("text") for page in doc)
+    except Exception:
+        try:
+            import io
+            import pdfplumber  # type: ignore
+
+            parser_name = "pdfplumber"
+            with pdfplumber.open(io.BytesIO(pdf_bytes)) as pdf:
+                text = "\n\n".join(page.extract_text() or "" for page in pdf.pages)
+        except Exception:
+            return None
+
+    text = _chunk_text_blocks(text)
+    if not text:
+        return None
+
+    sections = _sections_from_plain_pdf_text(text)
+    if sections:
+        headings = {section.section_type for section in sections}
+        section_status = "structured_sections" if {"methods", "results"} & headings else "headings_detected"
+    else:
+        section_status = "plain_text_only"
+        sections = [
+            RAGSection(
+                section_id="full_text:0",
+                section_type="full_text",
+                heading="Full text",
+                text=text,
+                order=0,
+                metadata={"source": "pdf"},
+            )
+        ]
+
+    enriched_doc = RAGDocument(
+        doc_id=_stable_doc_id("open_pdf", document.doc_id),
+        source=document.source,
+        source_id=document.source_id,
+        title=document.title,
+        text=text,
+        abstract=document.abstract,
+        url=document.url,
+        authors=document.authors,
+        published=document.published,
+        doi=document.doi,
+        doc_type="core_full_text",
+        categories=list(document.categories),
+        metadata={
+            **dict(document.metadata),
+            "origin_source": document.source,
+            "full_text_status": "open_pdf",
+            "pdf_url": pdf_url,
+            "pdf_parser": parser_name,
+            "section_recovery_status": section_status,
+        },
+        sections=_finalize_sections(sections),
+    )
+    return CoreFetchResult(
+        document=enriched_doc,
+        enrichment_source="open_pdf",
+        has_full_text=True,
+        extracted_methods=any(section.section_type == "methods" for section in sections),
+    )
+
+
+def _sections_from_plain_pdf_text(text: str) -> List[RAGSection]:
+    headings = {
+        "abstract",
+        "introduction",
+        "background",
+        "methods",
+        "materials and methods",
+        "results",
+        "discussion",
+        "conclusion",
+        "conclusions",
+    }
+    lines = [line.strip() for line in str(text or "").splitlines()]
+    sections: List[RAGSection] = []
+    current_heading = ""
+    current_lines: List[str] = []
+
+    def flush() -> None:
+        nonlocal current_heading, current_lines
+        body = _chunk_text_blocks("\n".join(current_lines))
+        if current_heading and body:
+            section_type = normalize_section_type(current_heading)
+            sections.append(
+                RAGSection(
+                    section_id=f"{section_type}:{len(sections)}",
+                    section_type=section_type,
+                    heading=current_heading,
+                    text=body,
+                    order=len(sections),
+                    metadata={"source": "pdf_heading"},
+                )
+            )
+        current_lines = []
+
+    for line in lines:
+        cleaned = _normalize_text(line).lower().strip(":")
+        is_heading = cleaned in headings and len(line) <= 80
+        if is_heading:
+            flush()
+            current_heading = line
+            continue
+        if current_heading:
+            current_lines.append(line)
+    flush()
+    return sections
+
+
 def save_manifest(path: Path, payload: Dict[str, object]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     with open(path, "w", encoding="utf-8") as handle:
         json.dump(payload, handle, ensure_ascii=False, indent=2)
+
+
+# ---------------------------------------------------------------------------
+# Semantic Scholar
+# ---------------------------------------------------------------------------
+
+_S2_SESSION = requests.Session()
+_S2_BASE = "https://api.semanticscholar.org/graph/v1/paper/search"
+_S2_FIELDS = "paperId,title,abstract,authors,year,publicationDate,externalIds,openAccessPdf,venue"
+_S2_BATCH_PAUSE = 1.0   # seconds between queries (no key); halved when key present
+
+
+def _s2_headers() -> Dict[str, str]:
+    key = os.getenv("SEMANTIC_SCHOLAR_API_KEY", "").strip()
+    if key:
+        return {"x-api-key": key}
+    return {}
+
+
+def _s2_pause() -> float:
+    return 0.5 if os.getenv("SEMANTIC_SCHOLAR_API_KEY", "").strip() else _S2_BATCH_PAUSE
+
+
+def _s2_paper_to_document(paper: Dict[str, object]) -> Optional[RAGDocument]:
+    paper_id = str(paper.get("paperId", "")).strip()
+    title = _normalize_text(str(paper.get("title", "") or ""))
+    abstract = _normalize_text(str(paper.get("abstract", "") or ""))
+    if not paper_id or not title or not abstract:
+        return None
+
+    external_ids = paper.get("externalIds") or {}
+    doi = _normalize_text(str(external_ids.get("DOI", "") or ""))
+    pmid = _normalize_text(str(external_ids.get("PubMed", "") or ""))
+
+    pub_date = str(paper.get("publicationDate", "") or str(paper.get("year", "") or "")).strip()
+    venue = _normalize_text(str(paper.get("venue", "") or ""))
+
+    author_names: List[str] = []
+    for author in (paper.get("authors") or []):
+        name = _normalize_text(str(author.get("name", "") or ""))
+        if name:
+            author_names.append(name)
+
+    oa_pdf = paper.get("openAccessPdf") or {}
+    pdf_url = _normalize_text(str(oa_pdf.get("url", "") or ""))
+    url = pdf_url or f"https://www.semanticscholar.org/paper/{paper_id}"
+
+    return _build_general_doc(
+        source="semantic_scholar",
+        source_id=paper_id,
+        title=title,
+        abstract=abstract,
+        authors=", ".join(author_names),
+        published=pub_date,
+        doi=doi,
+        url=url,
+        metadata={
+            "pmid": pmid,
+            "venue": venue,
+            "s2_paper_id": paper_id,
+            "pdf_url": pdf_url,
+            "full_text_status": "abstract_only",
+        },
+    )
+
+
+def fetch_semantic_scholar_documents(
+    queries: Optional[Iterable[str]] = None,
+    max_results_per_query: int = 20,
+) -> List[RAGDocument]:
+    queries = [str(q).strip() for q in (queries or []) if str(q).strip()]
+    if not queries:
+        return []
+
+    headers = _s2_headers()
+    pause = _s2_pause()
+    documents: List[RAGDocument] = []
+
+    for query in queries:
+        try:
+            response = _retry_get(
+                _S2_SESSION,
+                _S2_BASE,
+                params={
+                    "query": query,
+                    "fields": _S2_FIELDS,
+                    "limit": min(max_results_per_query, 100),
+                },
+                timeout=30,
+                base_delay=pause,
+                max_attempts=4,
+                headers=headers,
+            )
+            data = response.json()
+            for paper in data.get("data", []):
+                doc = _s2_paper_to_document(paper)
+                if doc is not None:
+                    documents.append(doc)
+        except Exception:
+            pass
+        _sleep(pause)
+
+    return documents
+
+
+# ---------------------------------------------------------------------------
+# OpenAlex
+# ---------------------------------------------------------------------------
+
+_OA_SESSION = requests.Session()
+_OA_BASE = "https://api.openalex.org/works"
+
+
+def _oa_reconstruct_abstract(inverted_index: Optional[Dict[str, List[int]]]) -> str:
+    """Reconstruct abstract text from OpenAlex inverted index format."""
+    if not inverted_index or not isinstance(inverted_index, dict):
+        return ""
+    positions: Dict[int, str] = {}
+    for word, pos_list in inverted_index.items():
+        for pos in pos_list:
+            positions[pos] = word
+    if not positions:
+        return ""
+    return " ".join(positions[i] for i in sorted(positions))
+
+
+def _oa_work_to_document(work: Dict[str, object]) -> Optional[RAGDocument]:
+    work_id = str(work.get("id", "") or "").strip()
+    title = _normalize_text(str(work.get("title", "") or ""))
+    if not work_id or not title:
+        return None
+
+    abstract = _normalize_text(
+        _oa_reconstruct_abstract(work.get("abstract_inverted_index"))  # type: ignore[arg-type]
+    )
+    if not abstract:
+        return None
+
+    doi = _normalize_text(str(work.get("doi", "") or "").replace("https://doi.org/", ""))
+    pub_date = _normalize_text(str(work.get("publication_date", "") or ""))
+
+    primary_location = work.get("primary_location") or {}
+    source_info = primary_location.get("source") or {}
+    venue = _normalize_text(str(source_info.get("display_name", "") or ""))
+    pdf_url = _normalize_text(str(primary_location.get("pdf_url", "") or ""))
+    landing_url = _normalize_text(str(primary_location.get("landing_page_url", "") or ""))
+    url = pdf_url or landing_url or work_id
+
+    author_names: List[str] = []
+    for authorship in (work.get("authorships") or []):
+        author = authorship.get("author") or {}
+        name = _normalize_text(str(author.get("display_name", "") or ""))
+        if name:
+            author_names.append(name)
+
+    concepts: List[str] = [
+        _normalize_text(str(c.get("display_name", "") or ""))
+        for c in (work.get("concepts") or [])
+        if c.get("display_name")
+    ]
+
+    # Derive a stable source_id from the OpenAlex ID (strip URL prefix)
+    source_id = re.sub(r"^https://openalex\.org/", "", work_id).strip() or work_id
+
+    return _build_general_doc(
+        source="openalex",
+        source_id=source_id,
+        title=title,
+        abstract=abstract,
+        authors=", ".join(author_names),
+        published=pub_date,
+        doi=doi,
+        url=url,
+        categories=concepts[:8],
+        metadata={
+            "venue": venue,
+            "openalex_id": work_id,
+            "pdf_url": pdf_url,
+            "full_text_status": "abstract_only",
+        },
+    )
+
+
+def fetch_openalex_documents(
+    queries: Optional[Iterable[str]] = None,
+    max_results_per_query: int = 20,
+) -> List[RAGDocument]:
+    queries = [str(q).strip() for q in (queries or []) if str(q).strip()]
+    if not queries:
+        return []
+
+    mailto = os.getenv("NCBI_EMAIL", "").strip()  # reuse existing env var for polite pool
+    documents: List[RAGDocument] = []
+
+    for query in queries:
+        params: Dict[str, object] = {
+            "search": query,
+            "per-page": min(max_results_per_query, 200),
+            "select": "id,title,abstract_inverted_index,authorships,publication_date,primary_location,doi,concepts",
+            "sort": "relevance_score:desc",
+        }
+        if mailto:
+            params["mailto"] = mailto
+
+        try:
+            response = _retry_get(
+                _OA_SESSION,
+                _OA_BASE,
+                params=params,
+                timeout=30,
+                base_delay=0.3,
+                max_attempts=4,
+            )
+            data = response.json()
+            for work in data.get("results", []):
+                doc = _oa_work_to_document(work)
+                if doc is not None:
+                    documents.append(doc)
+        except Exception:
+            pass
+        _sleep(0.3)
+
+    return documents

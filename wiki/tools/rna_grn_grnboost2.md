@@ -3,6 +3,7 @@ type: tool
 id: rna_grn_grnboost2
 modality: rna
 stage: grn_inference
+backend: backend/tools/rna/grn/grnboost2.py
 label: Co-expression GRN Inference (GRNBoost2)
 default: false
 params:
@@ -11,6 +12,11 @@ params:
 ---
 
 Infers TF → gene importance scores from expression co-variation using GRNBoost2 (gradient-boosted trees). Produces a weighted adjacency matrix: each row is a (TF, target, importance) triple.
+
+Key parameters:
+- `tf_list_path` (default None)
+- `n_jobs` (default 4)
+- `seed` (default 42)
 
 GRNBoost2 is the co-expression engine inside pySCENIC, but runs here as a standalone step — no motif databases required. Use this when:
 - You want a co-expression network quickly without cisTarget databases

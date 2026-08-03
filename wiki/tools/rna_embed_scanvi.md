@@ -9,11 +9,13 @@ backend: backend/tools/rna/embed/scanvi.py
 Trains a scANVI model (semi-supervised scVI) using partial cell type labels as supervision. Produces a label-aware latent embedding that improves both batch correction and cluster separation when some cells have known labels.
 
 Key parameters:
-- `labels_key` (default "cell_type"): `adata.obs` column with known cell type labels; cells without labels should have value `"Unknown"`
-- `n_latent` (default 30): latent space dimensionality
-- `n_epochs_unsupervised` (default 200): initial unsupervised pre-training epochs (trains an scVI model first)
-- `n_epochs_semisupervised` (default 100): additional semi-supervised fine-tuning epochs
-- `batch_key` (default None): batch correction key; same as scVI
+- `label_key` (required)
+- `batch_key` (default None)
+- `n_latent` (default 30)
+- `n_epochs` (default None)
+- `accelerator` (default "auto")
+- `devices` (default "auto")
+- `precision` (default None)
 
 scANVI is a two-stage model: it first trains an unsupervised scVI model, then fine-tunes using the known labels. Only cells with known labels contribute to the supervised loss.
 

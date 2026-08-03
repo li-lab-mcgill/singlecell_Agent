@@ -14,13 +14,13 @@ Workflow:
 3. Permutation test or analytical correction for multiple testing
 4. Filter by correlation threshold (r > 0.2) and FDR (< 0.05)
 
-SnapATAC2 implements this as `snap.tl.link_peaks()`.
+The backend implements this directly with scipy correlations for portability.
 
 Key parameters:
 - `peak_gene_correlation_threshold`: minimum correlation to report a link (default 0.2)
 - `peak_gene_distance`: search window around TSS (default 500 kb)
 
-Output stored in `adata.uns["peak_gene_pairs"]` as a DataFrame with columns: peak, gene, correlation, pvalue, padj.
+Output stored in `adata.uns["peak_gene_links"]` as a list of records with peak, gene, correlation, and distance.
 
 Edges:
-- [[tools/multi_peak2gene_correlation]] implements
+- [[tools/atac_peak_to_gene_correlation]] implements

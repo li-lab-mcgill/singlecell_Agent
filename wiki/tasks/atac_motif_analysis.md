@@ -22,7 +22,7 @@ Stages (in order):
 - [[stages/motif]] [includes]
 
 Evaluated by:
-- [[tools/eval_motif_metrics]] [evaluated_by]
+No dedicated executable motif evaluation tool is currently registered.
 
 Key decisions for the consultant:
 - Motif enrichment requires DA peaks as input → DA analysis must precede motif analysis

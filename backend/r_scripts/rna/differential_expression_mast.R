@@ -58,7 +58,7 @@ read_h5ad_components <- function(path) {
   scipy_sparse <- reticulate::import("scipy.sparse", convert = FALSE)
   ad <- anndata$read_h5ad(path)
   source <- NULL
-  if (reticulate::py_has_attr(ad$layers, "keys") && "counts" %in% reticulate::py_to_r(ad$layers$keys())) {
+  if (reticulate::py_has_attr(ad$layers, "keys") && "counts" %in% as.character(reticulate::py_to_r(ad$layers$keys()))) {
     source <- ad$layers$get("counts")
   } else {
     source <- ad$X
@@ -132,7 +132,7 @@ for (target in targets) {
   counts_sub <- counts[, keep, drop = FALSE]
   lib_size <- Matrix::colSums(counts_sub)
   lib_size[lib_size == 0] <- 1
-  log_expr <- log1p(t(t(counts_sub) / lib_size * 1e6))
+  log_expr <- as.matrix(log1p(t(t(as.matrix(counts_sub)) / lib_size * 1e6)))
   well_ids <- colnames(counts_sub)
   if (is.null(well_ids)) {
     well_ids <- paste0("cell_", seq_len(ncol(counts_sub)))

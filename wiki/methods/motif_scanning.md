@@ -15,4 +15,4 @@ This "chromVAR" approach (or SnapATAC2's equivalent) produces a (cells × TF) ac
 Output stored in `adata.obsm["X_motif_accessibility"]` or in a separate TF AnnData.
 
 Edges:
-- [[tools/atac_motif_scan]] implements
+No executable backend tool currently exposes standalone motif scanning.

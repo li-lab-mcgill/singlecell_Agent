@@ -23,4 +23,5 @@ Output: gene-level DataFrame with `log2FoldChange`, `pvalue`, `padj` (BH-correct
 Pseudobulk is the gold standard for multi-sample DE. In benchmarks, it consistently outperforms cell-level tests in FDR control and power when donor replicates are available.
 
 Edges:
-- [[tools/rna_de_pseudobulk]] implements
+- [[tools/rna_de_deseq2]] implements
+- [[tools/rna_de_edger]] implements

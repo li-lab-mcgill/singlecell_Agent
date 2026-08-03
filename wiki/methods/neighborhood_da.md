@@ -20,5 +20,4 @@ Statistical model: quasi-binomial GLM handles overdispersion in count data. The 
 Requirements: ≥3 biological replicates per condition. The `design` formula can include covariates (e.g., `"~ condition + age"`).
 
 Edges:
-- [[tools/rna_da_milo]] implements
-- [[tools/atac_da_milo]] implements
+No executable backend tool currently implements neighborhood DA.

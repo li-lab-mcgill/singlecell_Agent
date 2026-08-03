@@ -19,4 +19,4 @@ Simple t-test on proportions: quick exploratory analysis; valid only when sample
 Requirements: multiple samples per condition (≥3). Single-cell data without biological replicates cannot provide valid DA testing.
 
 Edges:
-- [[tools/rna_da_composition]] implements
+No executable backend tool currently implements cluster-proportion DA.

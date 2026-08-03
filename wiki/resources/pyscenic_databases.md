@@ -92,3 +92,12 @@ All files are hosted at https://resources.aertslab.org/cistarget/
 | `mm10_motifs` | `motifs-v9-nr.mgi-m0.001-o0.0.tbl` | Mouse |
 | `hg38_tfs` | `allTFs_hg38.txt` | Human (~1800 TFs) |
 | `mm10_tfs` | `allTFs_mm.txt` | Mouse (~1600 TFs) |
+
+## SCENIC+ compatibility
+
+These same database files are used by **SCENIC+** (`multi_grn_pycistarget`, `multi_grn_scenicplus`). No additional download is needed if you have already downloaded databases for `rna_grn_pyscenic`.
+
+**Important — `annotation_version` must match your actual files:**
+- Files listed in this resource use `mc9nr` naming (e.g. `hg38__refseq-r80__10kb_up_and_down_tss.mc9nr.feather`). These are v9-era databases. Set `annotation_version='v9'` (the default) when using these files with `multi_grn_pycistarget`.
+- If you have downloaded separate `v10nr_clust` feather files (e.g. `hg38_10kbp_up_10kbp_down_full_tx_v10_clust.genes_vs_motifs.rankings.feather`), set `annotation_version='v10nr_clust'` instead.
+- **Setting the wrong version causes a silent annotation mismatch** — TF names will be looked up from the wrong version's annotation table, producing unreliable motif enrichment results.

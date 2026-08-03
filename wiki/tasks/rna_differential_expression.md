@@ -22,7 +22,7 @@ Stages (in order):
 - [[stages/de]] [includes]
 
 Evaluated by:
-- [[tools/eval_de_metrics]] [evaluated_by]
+No dedicated executable DE evaluation tool is currently registered.
 
 Key decisions for the consultant:
 - **Pseudobulk** (default when `donor_key` is present and ≥3 donors per group): most statistically valid; uses PyDESeq2

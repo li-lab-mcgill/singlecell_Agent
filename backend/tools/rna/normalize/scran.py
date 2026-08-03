@@ -7,10 +7,7 @@ import subprocess
 import tempfile
 from pathlib import Path
 
-import scipy.sparse as sp
-import numpy as np
-
-_R_SCRIPT = Path(__file__).parents[4] / "r_scripts" / "rna" / "normalization_scran.R"
+_R_SCRIPT = Path(__file__).parents[3] / "r_scripts" / "rna" / "normalization_scran.R"
 
 
 def run(adata) -> object:
@@ -41,9 +38,11 @@ def run(adata) -> object:
         out_genes_path = tmp / "out_genes.txt"
         out_cells_path = tmp / "out_cells.txt"
 
+        import scipy.sparse as sp
+
         X = adata.layers.get("counts", adata.X)
         if not sp.issparse(X):
-            X = sp.csc_matrix(X)
+            X = sp.csc_matrix(X.T)
         else:
             X = X.T.tocsc()  # genes × cells for MTX convention
 
@@ -64,7 +63,7 @@ def run(adata) -> object:
         args_json.write_text(json.dumps(args))
 
         result = subprocess.run(
-            ["Rscript", str(_R_SCRIPT), "--args-json", str(args_json)],
+            ["Rscript", "--no-init-file", str(_R_SCRIPT), "--args-json", str(args_json)],
             capture_output=True, text=True,
         )
         if result.returncode != 0:
@@ -72,7 +71,13 @@ def run(adata) -> object:
 
         # Read normalized matrix back
         import scipy.io
-        normalized = scipy.io.mmread(str(out_matrix_path)).T.toarray()  # back to cells × genes
+        mat = scipy.io.mmread(str(out_matrix_path)).toarray()
+        # R writes genes × cells; transpose to cells × genes if needed
+        if mat.shape[0] != adata.n_obs and mat.shape[1] == adata.n_obs:
+            mat = mat.T
+        if mat.shape[0] != adata.n_obs:
+            raise RuntimeError(f"scran output shape {mat.shape} does not match n_obs={adata.n_obs}")
+        normalized = mat
         adata = adata.copy()
         adata.X = normalized
         adata.uns["normalization"] = {"method": "scran"}
@@ -83,7 +88,23 @@ def run(adata) -> object:
 def _check_rscript() -> None:
     result = subprocess.run(["Rscript", "--version"], capture_output=True, text=True)
     if result.returncode != 0:
-        raise RuntimeError(
-            "Rscript not found on PATH. Install R from https://cran.r-project.org/\n"
-            "Then install scran: BiocManager::install('scran')"
-        )
+        raise RuntimeError("Rscript not found on PATH. Install R from https://cran.r-project.org/")
+    _ensure_r_packages(["BiocManager"], bioc=False)
+    _ensure_r_packages(["scran", "scuttle"], bioc=True)
+
+
+def _ensure_r_packages(packages: list[str], *, bioc: bool) -> None:
+    missing_r = "c(" + ", ".join(f'"{p}"' for p in packages) + ")"
+    check = f'missing <- {missing_r}[!sapply({missing_r}, requireNamespace, quietly=TRUE)]; cat(paste(missing, collapse=","))'
+    res = subprocess.run(["Rscript", "--no-init-file", "-e", check], capture_output=True, text=True, timeout=30)
+    missing = [p.strip() for p in res.stdout.strip().split(",") if p.strip()]
+    if not missing:
+        return
+    missing_r2 = "c(" + ", ".join(f'"{p}"' for p in missing) + ")"
+    if bioc:
+        install_cmd = f'BiocManager::install({missing_r2}, ask=FALSE, update=FALSE)'
+    else:
+        install_cmd = f'install.packages({missing_r2}, repos="https://cloud.r-project.org")'
+    res2 = subprocess.run(["Rscript", "--no-init-file", "-e", install_cmd], capture_output=True, text=True, timeout=600)
+    if res2.returncode != 0:
+        raise RuntimeError(f"Failed to install R packages {missing}:\n{res2.stderr}")

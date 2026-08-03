@@ -8,6 +8,12 @@ backend: backend/tools/atac/peak_calling/macs2.py
 
 Calls peaks using MACS2. Same workflow as `atac_peak_macs3` but uses the MACS2 binary. Use only when reproducing older analyses that specified MACS2.
 
+Key parameters:
+- `fragments_path` (default None)
+- `group_key` (default None)
+- `genome_size` (default "hs")
+- `q_value` (default 0.05)
+
 Key parameters: same as `atac_peak_macs3`.
 
 MACS2 uses `macs2` binary; MACS3 uses `macs3` binary. Output format is identical (narrowPeak). Minor differences in peak boundary detection between versions.

@@ -11,8 +11,13 @@ def run(
     n_pcs: int = 50,
     theta: float = 2.0,
 ):
+    import subprocess, sys
+    try:
+        from harmonypy import run_harmony
+    except ImportError:
+        subprocess.run([sys.executable, "-m", "pip", "install", "harmonypy"], check=True)
+        from harmonypy import run_harmony
     import scanpy as sc
-    from harmonypy import run_harmony
 
     if batch_key not in adata.obs:
         raise ValueError(f"batch_key '{batch_key}' not found in adata.obs.")
@@ -24,7 +29,15 @@ def run(
 
     output_key = "X_harmony" if embedding_key == "X_pca" else f"{embedding_key}_harmony"
     ho = run_harmony(adata.obsm[embedding_key], adata.obs, batch_key, theta=theta)
-    adata.obsm[output_key] = ho.Z_corr.T
+    # harmonypy ≥2.0 returns Z_corr as (cells × PCs); older versions returned (PCs × cells)
+    corrected = ho.Z_corr
+    if corrected.shape[0] != adata.n_obs:
+        corrected = corrected.T
+    if corrected.shape[0] != adata.n_obs:
+        raise RuntimeError(
+            f"Harmony output has shape {corrected.shape}, expected first dimension n_obs={adata.n_obs}."
+        )
+    adata.obsm[output_key] = corrected
     adata.uns["batch_integration"] = {
         "method": "harmony",
         "batch_key": batch_key,

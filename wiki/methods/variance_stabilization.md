@@ -15,4 +15,3 @@ Two implementations:
 For most datasets, log-normalization + HVG selection + PCA performs comparably to Pearson residuals. Pearson residuals are preferred when: (1) library sizes vary dramatically between cells, (2) downstream analysis uses linear regression that assumes constant variance.
 
 Edges:
-- [[tools/rna_normalize_sctransform]] implements

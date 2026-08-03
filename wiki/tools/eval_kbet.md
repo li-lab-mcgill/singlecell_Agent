@@ -9,11 +9,9 @@ backend: backend/tools/eval/kbet.py
 Computes kBET (k-nearest neighbor Batch Effect Test) acceptance rate to quantify batch mixing.
 
 Key parameters:
-- `batch_key` (required): `adata.obs` column for batch labels
-- `embedding_key` (required): `adata.obsm` key for the integrated embedding to evaluate
-- `k0` (default None): number of neighbors for each cell's test; if None, auto-set to `sqrt(n_cells)`
-- `testsize` (default 0.1): fraction of cells to test (random subsample); kBET is slow on full datasets
-- `alpha` (default 0.05): significance level for the chi-square test
+- `embedding_key` (required)
+- `batch_key` (required)
+- `subsample` (default 5000)
 
 kBET tests whether the batch label distribution in each cell's k-neighborhood matches the global distribution. The acceptance rate (fraction of cells passing the test) is the metric: higher = better batch mixing.
 
