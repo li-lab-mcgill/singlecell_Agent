@@ -49,6 +49,62 @@ def _align_first_axis(arr, target_len: int, name: str):
     )
 
 
+def _write_topic_outputs(adata, model, n_top_peaks: int = 500) -> dict:
+    """Extract a fitted LDA model's cell/topic and topic/region matrices,
+    orientation-align them to ``adata``'s axes, and write them into
+    ``adata.obsm``/``adata.varm``/``adata.uns``.
+
+    Deliberately free of any pycisTopic import — ``model`` only needs to
+    duck-type ``.cell_topic``/``.topic_region`` (ndarray or DataFrame, either
+    orientation) — so this is unit-testable without the package installed.
+
+    Returns the ``topic_region_sets`` dict ({topic_id: [peak_names]}) so the
+    caller can log it / attach it to ``adata.uns``.
+    """
+    import numpy as np
+    import pandas as pd
+
+    # cell x topic. model.cell_topic's orientation is not guaranteed stable
+    # across pycisTopic versions (cells x topics vs topics x cells), so align
+    # by shape against adata.n_obs rather than assuming a fixed transpose.
+    cell_topic = model.cell_topic  # DataFrame or ndarray
+    if hasattr(cell_topic, "values"):
+        cell_topic = cell_topic.values
+    cell_topic = _align_first_axis(cell_topic, adata.n_obs, "model.cell_topic")
+    adata.obsm["X_topic"] = cell_topic.astype(np.float32)
+    assert adata.obsm["X_topic"].shape[0] == adata.n_obs, (
+        f"X_topic first dim {adata.obsm['X_topic'].shape[0]} != adata.n_obs "
+        f"{adata.n_obs}; model.cell_topic orientation could not be resolved."
+    )
+
+    # peak x topic. Same orientation caveat as above, aligned to adata.n_vars.
+    topic_region = model.topic_region
+    if hasattr(topic_region, "values"):
+        topic_region = topic_region.values
+    topic_region = _align_first_axis(topic_region, adata.n_vars, "model.topic_region")
+    adata.varm["topic_peak_weights"] = topic_region.astype(np.float32)
+    assert adata.varm["topic_peak_weights"].shape[0] == adata.n_vars, (
+        f"topic_peak_weights first dim {adata.varm['topic_peak_weights'].shape[0]} "
+        f"!= adata.n_vars {adata.n_vars}; model.topic_region orientation could "
+        "not be resolved."
+    )
+    n_topics_aligned = topic_region.shape[1]
+
+    # --- Topic region sets: top peaks per topic ---
+    topic_region_df = pd.DataFrame(
+        topic_region,
+        index=adata.var_names,
+        columns=[f"Topic{i+1}" for i in range(n_topics_aligned)],
+    )
+    topic_region_sets = {}
+    for col in topic_region_df.columns:
+        top_peaks = topic_region_df[col].nlargest(n_top_peaks).index.tolist()
+        topic_region_sets[col] = top_peaks
+    adata.uns["topic_region_sets"] = topic_region_sets
+
+    return topic_region_sets
+
+
 def run(
     adata,
     *,
@@ -117,7 +173,6 @@ def _run_pycisTopic(
     tmp_path,
     output_dir,
 ):
-    import numpy as np
     import scipy.sparse as sp
     from pycisTopic.cistopic_class import create_cistopic_object, run_cgs_models
 
@@ -196,45 +251,10 @@ def _run_pycisTopic(
     model = models[0]
     cisTopic_obj.add_LDA_model(model)
 
-    # cell x topic. model.cell_topic's orientation is not guaranteed stable
-    # across pycisTopic versions (cells x topics vs topics x cells), so align
-    # by shape against adata.n_obs rather than assuming a fixed transpose.
-    cell_topic = model.cell_topic  # DataFrame or ndarray
-    if hasattr(cell_topic, "values"):
-        cell_topic = cell_topic.values
-    cell_topic = _align_first_axis(cell_topic, adata.n_obs, "model.cell_topic")
-    adata.obsm["X_topic"] = cell_topic.astype(np.float32)
-    assert adata.obsm["X_topic"].shape[0] == adata.n_obs, (
-        f"X_topic first dim {adata.obsm['X_topic'].shape[0]} != adata.n_obs "
-        f"{adata.n_obs}; model.cell_topic orientation could not be resolved."
-    )
-
-    # peak x topic. Same orientation caveat as above, aligned to adata.n_vars.
-    topic_region = model.topic_region
-    if hasattr(topic_region, "values"):
-        topic_region = topic_region.values
-    topic_region = _align_first_axis(topic_region, adata.n_vars, "model.topic_region")
-    adata.varm["topic_peak_weights"] = topic_region.astype(np.float32)
-    assert adata.varm["topic_peak_weights"].shape[0] == adata.n_vars, (
-        f"topic_peak_weights first dim {adata.varm['topic_peak_weights'].shape[0]} "
-        f"!= adata.n_vars {adata.n_vars}; model.topic_region orientation could "
-        "not be resolved."
-    )
-    n_topics_aligned = topic_region.shape[1]
-
-    # --- Topic region sets: top peaks per topic ---
-    import pandas as pd
-    n_top_peaks = 500  # standard pycisTopic default for region set construction
-    topic_region_df = pd.DataFrame(
-        topic_region,
-        index=adata.var_names,
-        columns=[f"Topic{i+1}" for i in range(n_topics_aligned)],
-    )
-    topic_region_sets = {}
-    for col in topic_region_df.columns:
-        top_peaks = topic_region_df[col].nlargest(n_top_peaks).index.tolist()
-        topic_region_sets[col] = top_peaks
-    adata.uns["topic_region_sets"] = topic_region_sets
+    # n_top_peaks=500 is the standard pycisTopic default for region set
+    # construction. See _write_topic_outputs for the orientation-alignment
+    # logic (kept separate so it's testable without pycisTopic installed).
+    topic_region_sets = _write_topic_outputs(adata, model, n_top_peaks=500)
 
     # --- Serialize CistopicObject (required by multi_grn_scenicplus) ---
     if output_dir is not None:
