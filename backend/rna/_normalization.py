@@ -1,4 +1,4 @@
-"""RNA normalization: log1p, SCTransform, scran."""
+"""RNA normalization: log1p, scran."""
 
 from __future__ import annotations
 
@@ -6,14 +6,12 @@ import tempfile
 from pathlib import Path
 from typing import Any, Optional
 
-KNOWN_METHODS = ("log1p", "sctransform", "scran")
+KNOWN_METHODS = ("log1p", "scran")
 
 
 def dispatch(adata, *, method: str, runners: Optional[Any] = None, target_sum: float = 1e4, **kwargs: Any):
     if method == "log1p":
         return _run_log1p(adata, target_sum=target_sum)
-    if method == "sctransform":
-        return _run_sctransform(adata, runners=runners, **kwargs)
     if method == "scran":
         return _run_scran(adata, runners=runners, **kwargs)
     raise ValueError(f"Unknown rna.normalize method: {method}. Choose from {KNOWN_METHODS}.")
@@ -28,15 +26,6 @@ def _run_log1p(adata, *, target_sum: float):
     sc.pp.log1p(adata)
     adata.uns["normalization"] = {"method": "log1p", "target_sum": target_sum}
     return adata
-
-
-def _run_sctransform(adata, *, runners, **_: Any):
-    return _run_r_normalization(
-        adata,
-        runners=runners,
-        script_name="rna/normalization_sctransform.R",
-        method="sctransform",
-    )
 
 
 def _run_scran(adata, *, runners, **_: Any):

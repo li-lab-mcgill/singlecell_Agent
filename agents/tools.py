@@ -665,12 +665,12 @@ class RnaQualityControl(AgentTool):
 
 class RnaNormalization(AgentTool):
     name = "rna_normalization"
-    description = "Normalize an scRNA-seq AnnData file. log1p (standard), SCTransform or scran (via R)."
+    description = "Normalize an scRNA-seq AnnData file. log1p (standard) or scran (via R)."
     parameters = {
         "type": "object",
         "properties": {
             **_IO_PATHS,
-            "method": {"type": "string", "enum": ["log1p", "sctransform", "scran"]},
+            "method": {"type": "string", "enum": ["log1p", "scran"]},
             "target_sum": {"type": "number", "exclusiveMinimum": 0},
         },
         "required": [*_IO_REQUIRED, "method"],
@@ -1837,7 +1837,7 @@ class RnaPreprocess(AgentTool):
             "max_pct_mito": {"type": "number", "minimum": 0},
             "min_cells": {"type": "integer", "minimum": 0},
             # Normalization
-            "normalize_method": {"type": "string", "enum": ["log1p", "sctransform", "scran"]},
+            "normalize_method": {"type": "string", "enum": ["log1p", "scran"]},
             "target_sum": {"type": "number", "exclusiveMinimum": 0},
             # Features
             "feature_method": {"type": "string", "enum": ["seurat_v3", "cellranger", "scanpy_hvg"]},

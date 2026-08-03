@@ -1022,45 +1022,6 @@ class AgentLayerTests(unittest.TestCase):
             f"runtime_{expected_session_key}_prior_methods",
         )
 
-    def test_sctransform_wrapper_uses_r_runner_and_sets_uns(self):
-        class _Runner:
-            def __init__(self):
-                self.calls = []
-
-            def run_script(self, script_name, args, returns="json", timeout=3600):
-                self.calls.append({"script_name": script_name, "args": args, "returns": returns})
-                Path(args["output_matrix"]).write_text("normalized", encoding="utf-8")
-                return {"status": "ok"}
-
-        class _RunnerSuite:
-            def __init__(self):
-                self.r = _Runner()
-
-        class _Adata:
-            def __init__(self):
-                self.layers = {"counts": "raw_counts"}
-                self.uns = {}
-                self.X = "old_x"
-
-            def write_h5ad(self, path):
-                Path(path).write_text("input", encoding="utf-8")
-
-            def copy(self):
-                copied = _Adata()
-                copied.layers = dict(self.layers)
-                copied.uns = dict(self.uns)
-                copied.X = self.X
-                return copied
-
-        with mock.patch.object(rna_normalization, "_write_r_count_matrix_inputs") as write_inputs, \
-                mock.patch.object(rna_normalization, "_read_cells_by_genes_matrix", return_value="normalized_x"):
-            result = rna_normalization._run_sctransform(_Adata(), runners=_RunnerSuite())
-
-        self.assertEqual(write_inputs.call_args.kwargs["method"], "sctransform")
-        self.assertEqual(result.uns["normalization"]["method"], "sctransform")
-        self.assertEqual(result.layers["counts"], "raw_counts")
-        self.assertEqual(result.X, "normalized_x")
-
     def test_scran_wrapper_uses_r_runner_and_sets_uns(self):
         class _Runner:
             def __init__(self):
@@ -1131,7 +1092,7 @@ class AgentLayerTests(unittest.TestCase):
         runners = _RunnerSuite()
         with mock.patch.object(rna_normalization, "_write_r_count_matrix_inputs"), \
                 mock.patch.object(rna_normalization, "_read_cells_by_genes_matrix", return_value="normalized_x"):
-            rna_normalization._run_sctransform(_Adata(), runners=runners)
+            rna_normalization._run_scran(_Adata(), runners=runners)
 
         args = runners.r.calls[0]["args"]
         self.assertIn("input_matrix", args)
