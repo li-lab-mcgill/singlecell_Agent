@@ -540,11 +540,19 @@ class _FrontendState:
                 root_dir=Path(self.config.result_dir) / "research_loop" / "runs",
                 conversation_id="C001",
             )
+            from agents.adversarial_panelist import AdversarialPanelist
+            adversarial_panelist = AdversarialPanelist(
+                engine_name=args.engine,
+                fast_engine_name=fast_engine,
+                retriever=scientist_panel.retriever,
+                judge=scientist_panel.judge,
+                paper_md_writer=scientist_panel.paper_md_writer,
+                result_dir=Path(self.config.result_dir) / "research_loop" / "scientist" / "adversarial",
+            )
             self.research_loop = ResearchLoop(
                 scientist_panel=scientist_panel,
                 analyzer_panel=analyzer_panel,
                 tool_consultant=self.tool_consultant,
-                alignment_reviewer=scientist_panel.adversarial_panelist,
                 dag_executor=self.dag_executor,
                 coder=self.coder,
                 short_term_memory=short_term_memory,
@@ -552,7 +560,7 @@ class _FrontendState:
                 data_paths=[args.input_mod2] if args.input_mod2 else None,
                 result_dir=Path(self.config.result_dir) / "research_loop",
                 max_phases=args.research_max_phases,
-                adversarial_panelist=scientist_panel.adversarial_panelist,
+                adversarial_panelist=adversarial_panelist,
             )
             self.research_workspace = research_workspace
         except Exception as exc:
