@@ -178,6 +178,13 @@ class ScientistPanel:
         """Run one targeted panelist callback for MediatorAgent internal tools."""
         callback = dict(callback_input.get("callback") or callback_input)
         callback.setdefault("role", role)
+        # MediatorAgent emits short callback_type aliases ("reasoning" /
+        # "literature"). Normalize here — the earliest common point before
+        # dispatch — using the same mapping _extract_callback_requests uses,
+        # so "literature" callbacks reliably hit _run_panelist_callback's
+        # retrieval-tool branch instead of silently falling back to the
+        # plain-LLM branch.
+        callback["callback_type"] = _canonical_callback_type(callback.get("callback_type"))
         context = callback_input.get("context")
         if not isinstance(context, dict):
             context = {
@@ -1242,6 +1249,27 @@ def _normalize_alternative_plan(plan: Any) -> dict[str, Any]:
     return normalized
 
 
+_CALLBACK_TYPE_ALIASES = {
+    "reasoning": "ask_panelist_for_more_reasoning",
+    "literature": "ask_panelist_for_more_literature",
+}
+
+
+def _canonical_callback_type(value: Any) -> str:
+    """Normalize short callback_type aliases to their full canonical form.
+
+    MediatorAgent (and post-analysis callbacks) emit short aliases
+    ("reasoning" / "literature"). This is the single source of truth for that
+    mapping — _normalize_callbacks, _extract_callback_requests, and the public
+    run_panelist_callback entry point (MediatorAgent's panelist_callback_executor)
+    all call this so a "literature" callback reliably resolves to
+    "ask_panelist_for_more_literature" and hits _run_panelist_callback's
+    retrieval-tool branch regardless of which caller normalizes it first.
+    """
+    text = str(value or "").strip()
+    return _CALLBACK_TYPE_ALIASES.get(text, text)
+
+
 def _normalize_callbacks(value: Any) -> tuple[list[dict[str, Any]], list[Any]]:
     raw_callbacks = _as_list(value)
     callbacks: list[dict[str, Any]] = []
@@ -1252,9 +1280,7 @@ def _normalize_callbacks(value: Any) -> tuple[list[dict[str, Any]], list[Any]]:
                 invalid.append(item)
             continue
         role = str(item.get("role") or item.get("to_role") or "").strip().lower()
-        callback_type = str(item.get("callback_type") or "").strip()
-        if callback_type in {"reasoning", "literature"}:
-            callback_type = f"ask_panelist_for_more_{callback_type}"
+        callback_type = _canonical_callback_type(item.get("callback_type"))
         assigned_gap = str(item.get("assigned_gap") or item.get("gap") or "").strip()
         if role not in _ROLES or callback_type not in {
             "ask_panelist_for_more_reasoning",
@@ -1306,9 +1332,7 @@ def _extract_callback_requests(
         role = str(item.get("role") or item.get("to_role") or "").strip().lower()
         if role not in _ROLES:
             continue
-        callback_type = str(item.get("callback_type") or "").strip()
-        if callback_type in {"reasoning", "literature"}:
-            callback_type = f"ask_panelist_for_more_{callback_type}"
+        callback_type = _canonical_callback_type(item.get("callback_type"))
         if callback_type not in {"ask_panelist_for_more_reasoning", "ask_panelist_for_more_literature"}:
             callback_type = "ask_panelist_for_more_reasoning"
         if role_counts.get(role, 0) >= max_per_role:

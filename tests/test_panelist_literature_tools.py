@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import unittest
+from pathlib import Path
 from unittest.mock import patch
 
 from agents.panelist_tools import (
@@ -12,6 +13,7 @@ from agents.panelist_tools import (
     build_paper_detail_tool_registry,
     _deduplicate_papers,
 )
+from agents.scientist_panel import ScientistPanel
 
 
 class _FakeRetriever:
@@ -388,6 +390,136 @@ class PanelistLiteratureToolTests(unittest.TestCase):
 
         self.assertEqual(len(papers), 1)
         self.assertEqual(papers[0]["doc_id"], "pmc:9915567")
+
+
+class _FakeCallbackRunner:
+    """Stand-in for ToolCallingAgentRunner that records nothing itself; the
+    surrounding panel subclass records that it was constructed/invoked."""
+
+    def __init__(self, text: str):
+        self._text = text
+
+    def run(self, *, initial_user_input, response_handler=None):
+        if response_handler is not None:
+            response_handler(self._text)
+        return self._text
+
+
+class _RoutingProbePanel(ScientistPanel):
+    """Lightweight ScientistPanel stand-in for exercising callback-type
+    dispatch in _run_panelist_callback without any real LLM/tool I/O.
+
+    Mirrors the bypass-heavy-__init__ pattern used in
+    tests/test_scientist_panel_callbacks.py's _CallbackPanel.
+    """
+
+    def __init__(self):
+        self.engine_name = "test-engine"
+        self.client = object()
+        self.retriever = object()
+        self.judge = object()
+        self.paper_md_writer = None
+        self.short_term_memory = None
+        self.result_dir = Path(".")
+        self.runner_calls: list[dict] = []
+
+    def _make_runner(self, role, registry, tag="ROUND1"):
+        self.runner_calls.append({"role": role, "registry": registry, "tag": tag})
+        return _FakeCallbackRunner('<CALLBACK>{"gap_resolved": true}</CALLBACK>')
+
+    def _log_retrieval_evidence(self, **kwargs):
+        pass
+
+
+class RunPanelistCallbackLiteratureRoutingTests(unittest.TestCase):
+    """Task 2.1: MediatorAgent emits callback_type="literature"/"reasoning",
+    but _run_panelist_callback's retrieval-tool branch only matched the exact
+    string "ask_panelist_for_more_literature". run_panelist_callback (the
+    entry point wired as MediatorAgent's panelist_callback_executor) must
+    normalize the incoming callback_type the same way _extract_callback_requests
+    does, so mediator-driven literature callbacks actually retrieve.
+    """
+
+    def test_literature_alias_takes_retrieval_tool_branch(self):
+        panel = _RoutingProbePanel()
+
+        with patch(
+            "agents.scientist_panel.build_panelist_tool_registry",
+            return_value="FAKE_REGISTRY",
+        ) as mock_build_registry, patch(
+            "agents.scientist_panel.single_llm_call",
+            return_value='<CALLBACK>{"gap_resolved": true}</CALLBACK>',
+        ) as mock_single_llm_call:
+            result = panel.run_panelist_callback(
+                "biologist",
+                {
+                    "callback": {
+                        "callback_type": "literature",
+                        "assigned_gap": "Need more supporting papers.",
+                    },
+                    "round_number": 1,
+                },
+            )
+
+        mock_build_registry.assert_called_once_with(
+            role="biologist",
+            retriever=panel.retriever,
+            judge=panel.judge,
+            paper_md_writer=panel.paper_md_writer,
+        )
+        mock_single_llm_call.assert_not_called()
+        self.assertEqual(len(panel.runner_calls), 1)
+        self.assertEqual(panel.runner_calls[0]["role"], "biologist")
+        self.assertTrue(result["gap_resolved"])
+
+    def test_canonical_literature_type_is_idempotent(self):
+        panel = _RoutingProbePanel()
+
+        with patch(
+            "agents.scientist_panel.build_panelist_tool_registry",
+            return_value="FAKE_REGISTRY",
+        ) as mock_build_registry, patch(
+            "agents.scientist_panel.single_llm_call"
+        ) as mock_single_llm_call:
+            panel.run_panelist_callback(
+                "statistician",
+                {
+                    "callback": {
+                        "callback_type": "ask_panelist_for_more_literature",
+                        "assigned_gap": "Need more supporting papers.",
+                    },
+                    "round_number": 1,
+                },
+            )
+
+        mock_build_registry.assert_called_once()
+        mock_single_llm_call.assert_not_called()
+        self.assertEqual(len(panel.runner_calls), 1)
+
+    def test_reasoning_alias_still_uses_plain_llm_branch(self):
+        panel = _RoutingProbePanel()
+
+        with patch(
+            "agents.scientist_panel.build_panelist_tool_registry"
+        ) as mock_build_registry, patch(
+            "agents.scientist_panel.single_llm_call",
+            return_value='<CALLBACK>{"gap_resolved": true}</CALLBACK>',
+        ) as mock_single_llm_call:
+            result = panel.run_panelist_callback(
+                "bioinformatician",
+                {
+                    "callback": {
+                        "callback_type": "reasoning",
+                        "assigned_gap": "Clarify the statistical unit.",
+                    },
+                    "round_number": 1,
+                },
+            )
+
+        mock_build_registry.assert_not_called()
+        mock_single_llm_call.assert_called_once()
+        self.assertEqual(panel.runner_calls, [])
+        self.assertTrue(result["gap_resolved"])
 
 
 if __name__ == "__main__":
