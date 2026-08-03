@@ -33,6 +33,7 @@ import hashlib
 import json
 import logging
 import re
+import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import Any
@@ -163,6 +164,38 @@ class LiteratureRetriever:
         self.cache_dir.mkdir(parents=True, exist_ok=True)
         self._paper_documents_by_id: dict[str, RAGDocument] = {}
 
+        # Per-phase HyDE/search cache. Keyed on the normalized subquery text
+        # (the base_query a panelist issues to retrieve_literature — see
+        # RetrieveLiteratureTool.run in agents/panelist_tools.py), this
+        # avoids redundantly regenerating HyDE abstracts (_generate_subqueries,
+        # an LLM call) and re-running search_runtime (a vector search) when
+        # the three panelists (biologist/statistician/bioinformatician) share
+        # this retriever instance and issue overlapping subqueries within one
+        # research phase. Panelists run concurrently in a ThreadPoolExecutor
+        # (agents/scientist_panel.py::_run_parallel), so this retriever
+        # instance -- and this cache -- is accessed from multiple threads at
+        # once; _cache_lock guards all reads/writes.
+        #
+        # Scoping choice: no phase/round token is threaded through retrieve()
+        # today, and adding one would touch retrieve()'s signature, the
+        # retrieve_literature tool, and every caller in agents/scientist_panel.py
+        # -- well beyond this file. Instead, the cache is reset explicitly via
+        # reset_cache(), which the caller (e.g. ScientistPanel/ResearchLoop)
+        # must invoke at the start of each new research phase so a new
+        # research question never reads stale entries from a prior phase.
+        self._retrieval_cache: dict[str, dict[str, Any]] = {}
+        self._cache_lock = threading.Lock()
+
+    def reset_cache(self) -> None:
+        """Clear the per-phase HyDE/search cache.
+
+        Call this at the start of a new research phase/question so that
+        `retrieve()` does not reuse HyDE abstracts or search hits generated
+        for a previous phase's subqueries.
+        """
+        with self._cache_lock:
+            self._retrieval_cache.clear()
+
     def retrieve(
         self,
         *,
@@ -213,26 +246,47 @@ class LiteratureRetriever:
         if not documents:
             return []
 
-        # Step 3: generate HyDE subqueries
-        subquery_items = self._generate_subqueries(
-            base_query=base_query,
-            retrieval_intent=retrieval_intent,
-            retrieval_goal=retrieval_goal,
-            background=background,
-            n=n_subqueries,
-        )
+        # Steps 3+4: HyDE subqueries + vector search/RRF, cached per phase.
+        #
+        # This retriever is shared across the three panelists, and the same
+        # (or an overlapping) base_query is frequently re-issued within one
+        # research phase. On a cache hit we skip both the HyDE-generation LLM
+        # call (_generate_subqueries) and the search_runtime vector search
+        # (_rrf_search) entirely -- including the runtime-index build, since
+        # nothing would query it either.
+        cache_key = _normalize_subquery(base_query)
+        with self._cache_lock:
+            cached_entry = self._retrieval_cache.get(cache_key)
+        if cached_entry is not None and cached_entry["top_k"] >= top_k:
+            subquery_items = cached_entry["subquery_items"]
+            ranked = cached_entry["ranked_documents"][:top_k]
+        else:
+            # Step 3: generate HyDE subqueries
+            subquery_items = self._generate_subqueries(
+                base_query=base_query,
+                retrieval_intent=retrieval_intent,
+                retrieval_goal=retrieval_goal,
+                background=background,
+                n=n_subqueries,
+            )
 
-        # Step 4: build index, search, RRF
-        collection_name = self._collection_name(base_query, role)
-        self.store.build_runtime_index(collection_name, documents, rebuild=True)
-        documents_by_id = {doc.doc_id: doc for doc in documents}
+            # Step 4: build index, search, RRF
+            collection_name = self._collection_name(base_query, role)
+            self.store.build_runtime_index(collection_name, documents, rebuild=True)
+            documents_by_id = {doc.doc_id: doc for doc in documents}
 
-        ranked = self._rrf_search(
-            collection_name=collection_name,
-            subquery_items=subquery_items,
-            documents_by_id=documents_by_id,
-            top_k=top_k,
-        )
+            ranked = self._rrf_search(
+                collection_name=collection_name,
+                subquery_items=subquery_items,
+                documents_by_id=documents_by_id,
+                top_k=top_k,
+            )
+            with self._cache_lock:
+                self._retrieval_cache[cache_key] = {
+                    "subquery_items": subquery_items,
+                    "ranked_documents": list(ranked),
+                    "top_k": top_k,
+                }
 
         # Step 5: generate summaries
         summaries = []
@@ -682,6 +736,11 @@ def rrf_fuse(
         for rank, (doc_id, _) in enumerate(_collapse_to_best_rank_per_doc(ranked), start=1):
             scores[doc_id] = scores.get(doc_id, 0.0) + 1.0 / (k + rank)
     return scores
+
+
+def _normalize_subquery(text: str) -> str:
+    """Normalize subquery/base_query text for per-phase cache-key comparison."""
+    return re.sub(r"\s+", " ", str(text or "").strip().lower())
 
 
 def _extract_json(text: str) -> Any:
