@@ -18,15 +18,14 @@ except Exception:
     OpenAI = None  # type: ignore[assignment]
 
 from agents.llm_utils import single_llm_call
-from agents.prompt_loader import load_updated_prompt
 from agents.decision_schema import DecisionValidationError
 from agents.runner import ToolCallingAgentRunner
-
-
-MEDIATOR_SHARED_SYSTEM = load_updated_prompt("mediator_shared_system")
-MEDIATOR_FORMULATION_PROMPT = load_updated_prompt("mediator_formulation")
-MEDIATOR_ADVERSARY_REVISION_PROMPT = load_updated_prompt("mediator_adversary_revision")
-MEDIATOR_POST_ANALYSIS_PROMPT = load_updated_prompt("mediator_post_analysis")
+from prompts.mediator_prompts import (
+    MEDIATOR_SHARED_SYSTEM,
+    MEDIATOR_FORMULATION_PROMPT,
+    MEDIATOR_ADVERSARY_REVISION_PROMPT,
+    MEDIATOR_POST_ANALYSIS_PROMPT,
+)
 
 _FORMULATION_STATUSES = {"needs_panelist_callback", "ready_for_adversary"}
 _POST_ANALYSIS_DECISIONS = {
