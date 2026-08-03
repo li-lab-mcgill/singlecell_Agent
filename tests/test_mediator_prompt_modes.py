@@ -1,5 +1,6 @@
 import unittest
 
+from agents.mediator_agent import _tag_done_handler
 from agents.prompt_loader import load_updated_prompt
 from agents.scientist_panel import _normalize_research_plan_schema
 from prompts.session_router_prompts import SESSION_ROUTER_PROMPT, SESSION_ROUTER_SCHEMA_PROMPT
@@ -70,6 +71,37 @@ class MediatorPromptModeTests(unittest.TestCase):
 
         self.assertTrue(normalized["clarification_needed"])
         self.assertIn("best-effort", normalized["uncertainty_reason"])
+
+
+class TagDoneHandlerAliasTests(unittest.TestCase):
+    """`_tag_done_handler` must accept the same alias tags `_extract_tag_json` tolerates,
+    otherwise the ToolCallingAgentRunner never sees done=True and burns through
+    max_iterations before crashing with RuntimeError."""
+
+    def test_alias_tag_is_recognized_as_done(self):
+        text = '<MEDIATOR>{"formulation_status": "ready_for_adversary"}</MEDIATOR>'
+        result = _tag_done_handler(text, "MEDIATOR_OUTPUT")
+
+        self.assertEqual(result, {"done": True, "result": text})
+
+    def test_post_analysis_alias_tag_is_recognized_as_done(self):
+        text = '<POST_ANALYSIS_DECISION>{"decision": "accept_and_conclude"}</POST_ANALYSIS_DECISION>'
+        result = _tag_done_handler(text, "MEDIATOR_POST_ANALYSIS_OUTPUT")
+
+        self.assertEqual(result, {"done": True, "result": text})
+
+    def test_canonical_tag_is_still_recognized_as_done(self):
+        text = '<MEDIATOR_OUTPUT>{"formulation_status": "ready_for_adversary"}</MEDIATOR_OUTPUT>'
+        result = _tag_done_handler(text, "MEDIATOR_OUTPUT")
+
+        self.assertEqual(result, {"done": True, "result": text})
+
+    def test_response_with_no_recognized_tag_is_not_done(self):
+        text = "I am still thinking about the plan and have not produced a tagged block yet."
+        result = _tag_done_handler(text, "MEDIATOR_OUTPUT")
+
+        self.assertFalse(result["done"])
+        self.assertIn("next_user_input", result)
 
 
 if __name__ == "__main__":

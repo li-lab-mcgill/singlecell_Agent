@@ -238,13 +238,28 @@ class MediatorAgent:
         path.write_text(json.dumps(data, indent=2, ensure_ascii=False, default=str), encoding="utf-8")
 
 
-def _extract_tag_json(text: str, tag: str) -> dict[str, Any]:
-    aliases = {
-        "MEDIATOR_OUTPUT": ["MEDIATOR_OUTPUT", "MEDIATOR"],
-        "MEDIATOR_POST_ANALYSIS_OUTPUT": ["MEDIATOR_POST_ANALYSIS_OUTPUT", "MEDIATOR_POST_ANALYSIS", "POST_ANALYSIS_DECISION"],
-    }
-    candidates = aliases.get(tag, [tag])
+# Single source of truth for which alias spellings a given canonical tag accepts.
+# Both `_extract_tag_json` (parsing) and `_tag_done_handler` (completion gating) must
+# agree on this set — otherwise a model that emits a tolerated alias tag can pass
+# extraction but never satisfy the done-handler, exhausting max_iterations.
+_TAG_ALIASES: dict[str, list[str]] = {
+    "MEDIATOR_OUTPUT": ["MEDIATOR_OUTPUT", "MEDIATOR"],
+    "MEDIATOR_POST_ANALYSIS_OUTPUT": ["MEDIATOR_POST_ANALYSIS_OUTPUT", "MEDIATOR_POST_ANALYSIS", "POST_ANALYSIS_DECISION"],
+}
+
+
+def _tag_candidates(tag: str) -> list[str]:
+    """Return every tag spelling that should be treated as equivalent to `tag`."""
+    candidates = _TAG_ALIASES.get(tag, [tag])
+    ordered: list[str] = []
     for candidate in [*candidates, tag.upper(), tag.lower()]:
+        if candidate not in ordered:
+            ordered.append(candidate)
+    return ordered
+
+
+def _extract_tag_json(text: str, tag: str) -> dict[str, Any]:
+    for candidate in _tag_candidates(tag):
         match = re.search(rf"<{re.escape(candidate)}>(.*?)</{re.escape(candidate)}>", text, re.DOTALL)
         if not match:
             continue
@@ -269,8 +284,10 @@ def _extract_tag_json(text: str, tag: str) -> dict[str, Any]:
 
 
 def _tag_done_handler(text: str, tag: str) -> dict[str, Any]:
-    if f"<{tag}>" in str(text) and f"</{tag}>" in str(text):
-        return {"done": True, "result": text}
+    text_str = str(text)
+    for candidate in _tag_candidates(tag):
+        if f"<{candidate}>" in text_str and f"</{candidate}>" in text_str:
+            return {"done": True, "result": text}
     return {
         "done": False,
         "next_user_input": f"Your response must contain a <{tag}>...</{tag}> JSON block. Please produce it now.",
