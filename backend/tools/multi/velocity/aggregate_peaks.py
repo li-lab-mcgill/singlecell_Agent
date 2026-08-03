@@ -89,14 +89,18 @@ def _run_aggregate_peaks(
     )
     n_atac_peaks_before = adata_atac.n_vars
 
-    # Aggregate peaks → gene-level accessibility
-    mv.aggregate_peaks_10x(
-        adata_atac,
-        peaks_annot_path=str(peaks_annot_path),
-        linkage_path=str(linkage_path),
-        use_gene_id=use_gene_id,
-        verbose=False,
+    # Aggregate peaks → gene-level accessibility.
+    # Per plans/multiVelo_plan.md:347, the two file paths are positional args
+    # (not peaks_annot_path=/linkage_path= keywords) and there is no `verbose`
+    # kwarg; this is unverified against a live MultiVelo install here since
+    # the package isn't importable in this environment. Some MultiVelo
+    # versions mutate adata_atac in place and return None, others return a
+    # new gene-level AnnData — handle both.
+    result = mv.aggregate_peaks_10x(
+        adata_atac, str(peaks_annot_path), str(linkage_path), use_gene_id=use_gene_id
     )
+    if result is not None:
+        adata_atac = result
     logger.info(
         "After aggregation: %d cells × %d genes", adata_atac.n_obs, adata_atac.n_vars
     )
