@@ -569,12 +569,28 @@ def _ensure_str(value: Any) -> str:
     return json.dumps(value, ensure_ascii=False)
 
 
+# Single source of truth for which alias spellings a given canonical tag accepts.
+# Both `_extract_tag_json` (parsing) and `_tag_done_handler` (completion gating) must
+# agree on this set — otherwise a model that emits a tolerated alias tag can pass
+# extraction but never satisfy the done-handler, exhausting max_iterations.
+_TAG_ALIASES: dict[str, list[str]] = {
+    "ANALYZER": ["ANALYZER", "ANALYZER_OUTPUT"],
+}
+
+
+def _tag_candidates(tag: str) -> list[str]:
+    """Return every tag spelling that should be treated as equivalent to `tag`."""
+    candidates = _TAG_ALIASES.get(tag, [tag])
+    ordered: list[str] = []
+    for candidate in [*candidates, tag]:
+        if candidate not in ordered:
+            ordered.append(candidate)
+    return ordered
+
+
 def _extract_tag_json(text: str, tag: str) -> dict[str, Any]:
-    tags = [tag]
-    if tag == "ANALYZER":
-        tags.append("ANALYZER_OUTPUT")
     match = None
-    for candidate in tags:
+    for candidate in _tag_candidates(tag):
         pattern = rf"<{re.escape(candidate)}>(.*?)</{re.escape(candidate)}>"
         match = re.search(pattern, text, re.DOTALL)
         if match:
@@ -597,14 +613,15 @@ def _extract_tag_json(text: str, tag: str) -> dict[str, Any]:
 
 
 def _tag_done_handler(text: str, tag: str) -> dict[str, Any]:
-    open_tag = f"<{tag}>"
-    close_tag = f"</{tag}>"
-    if open_tag in text and close_tag in text:
-        return {"done": True, "result": text}
+    for candidate in _tag_candidates(tag):
+        open_tag = f"<{candidate}>"
+        close_tag = f"</{candidate}>"
+        if open_tag in text and close_tag in text:
+            return {"done": True, "result": text}
     return {
         "done": False,
         "next_user_input": (
-            f"Your response must contain a {open_tag}...{close_tag} block "
+            f"Your response must contain a <{tag}>...</{tag}> block "
             f"with your structured output. Please produce it now."
         ),
     }
