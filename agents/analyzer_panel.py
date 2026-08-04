@@ -361,7 +361,8 @@ def _summarize_dag_result(dag_result: dict[str, Any] | str) -> dict[str, Any]:
             and s["result"].get("status") in ("failed", "error")
         ]
         summary["best_path"] = {
-            "status": bp.get("status"),
+            "metrics": bp.get("metrics", {}),
+            "objective_score": bp.get("objective_score"),
             "stage_results": stage_results,
             "failed_stages": failed_stages or None,
             "artifacts": bp.get("artifacts", {}),

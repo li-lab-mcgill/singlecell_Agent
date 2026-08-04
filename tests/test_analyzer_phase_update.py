@@ -4,7 +4,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from agents.analyzer_panel import _normalize_analyzer_report
+from agents.analyzer_panel import _normalize_analyzer_report, _summarize_dag_result
 from agents.prompt_loader import load_updated_prompt
 from agents.research_loop import ResearchLoop
 from agents.scientist_panel import _normalize_evidence_state, _normalize_post_analysis_decision
@@ -414,6 +414,36 @@ class AnalyzerPhaseUpdateTests(unittest.TestCase):
             tool_consultant.calls[1]["session_state"]["last_post_analysis_decision"]["decision"],
             "self_revise_plan",
         )
+
+
+class SummarizeDagResultEvalMetricsTests(unittest.TestCase):
+    """`DagExecutor._format_result` puts computed eval metrics in
+    best_path["metrics"] and the ranking value in best_path["objective_score"]
+    (agents/dag_executor.py ~lines 279-289). `_summarize_dag_result` must pass
+    those through to the analyzer panelists — that's exactly what they're
+    supposed to interpret — instead of silently dropping them."""
+
+    def test_summary_includes_best_path_metrics_and_objective_score(self):
+        dag_result = {
+            "status": "completed",
+            "best_path": {
+                "path_index": 0,
+                "config": [],
+                "metrics": {"ARI": 0.8},
+                "objective_score": 0.8,
+                "path_dir": "/tmp/path0",
+                "artifacts": {"umap": "/tmp/umap.png"},
+                "stage_results": [],
+                "cache_hits": [],
+                "resolved_outputs": {},
+            },
+        }
+
+        summary = _summarize_dag_result(dag_result)
+
+        self.assertEqual(summary["best_path"]["metrics"], {"ARI": 0.8})
+        self.assertEqual(summary["best_path"]["objective_score"], 0.8)
+        self.assertNotIn("status", summary["best_path"])
 
 
 if __name__ == "__main__":
