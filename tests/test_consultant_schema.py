@@ -15,7 +15,7 @@ if "dotenv" not in sys.modules:
 
 if "pandas" not in sys.modules:
     sys.modules["pandas"] = types.ModuleType("pandas")
-sys.modules["pandas"].DataFrame = type("DataFrame", (), {})
+sys.modules["pandas"].DataFrame = getattr(sys.modules["pandas"], "DataFrame", type("DataFrame", (), {}))
 
 if "numpy" not in sys.modules:
     sys.modules["numpy"] = types.ModuleType("numpy")
