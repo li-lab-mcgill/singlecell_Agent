@@ -87,5 +87,65 @@ def test_paper_prompts_format_contract():
     assert p.PAPER_JUDGE_SYSTEM.strip() and p.PAPER_MD_WRITER_SYSTEM.strip()
 
 
+def test_adversarial_prompts_format_contract():
+    from prompts import adversarial_prompts as adv
+
+    # .format() with the exact kwargs used at each real call site
+    # (agents/adversarial_panelist.py:186 and :163) must not raise — this proves
+    # the placeholder set matches the call site and embedded JSON braces are
+    # still {{ }}-escaped.
+    adv.ADVERSARIAL_CHALLENGE_PROMPT.format(
+        user_question="x",
+        mediator_plan="x",
+        adversary_context="x",
+        debate_history="x",
+    )
+    adv.ADVERSARIAL_ALIGNMENT_PROMPT.format(
+        user_question="x",
+        research_plan="x",
+        tool_plan="x",
+        implementation_plan="x",
+    )
+    # Defense prompts and the re-mediator prompt have no current .format() call
+    # site (the class docstring notes this critic-only class "does not defend,
+    # remediate, or mutate the plan"), but they retain their own placeholder
+    # templates — format with those to prove braces stay escaped.
+    for defense_prompt in (
+        adv.BIOLOGIST_DEFENSE_PROMPT,
+        adv.STATISTICIAN_DEFENSE_PROMPT,
+        adv.BIOINFORMATICIAN_DEFENSE_PROMPT,
+    ):
+        defense_prompt.format(user_question="x", mediator_plan="x", challenge_output="x")
+    adv.ADVERSARIAL_REMEDIATOR_PROMPT.format(
+        user_question="x",
+        mediator_plan="x",
+        challenge_output="x",
+        defense_outputs="x",
+    )
+
+    # Output-tag contract the parser reads (agents/adversarial_panelist.py
+    # _extract_tag_json / _challenge_done_handler).
+    assert "<CHALLENGE>" in adv.ADVERSARIAL_CHALLENGE_PROMPT and "</CHALLENGE>" in adv.ADVERSARIAL_CHALLENGE_PROMPT
+    assert "<ALIGNMENT_REVIEW>" in adv.ADVERSARIAL_ALIGNMENT_PROMPT
+    assert "<DEFENSE>" in adv.BIOLOGIST_DEFENSE_PROMPT
+    assert "<DEFENSE>" in adv.STATISTICIAN_DEFENSE_PROMPT
+    assert "<DEFENSE>" in adv.BIOINFORMATICIAN_DEFENSE_PROMPT
+    assert "<MEDIATOR>" in adv.ADVERSARIAL_REMEDIATOR_PROMPT
+
+    # Verdict vocabulary research_loop.py switches on (_ADVERSARY_VERDICTS in
+    # agents/adversarial_panelist.py: "survives" | "needs_revision" |
+    # "unsalvageable"). "skipped" is a sentinel research_loop.py constructs
+    # itself when the adversary step is bypassed (agents/research_loop.py:588)
+    # — it is never emitted by these prompts, so it is not asserted here.
+    for verdict in ("survives", "needs_revision", "unsalvageable"):
+        assert verdict in adv.ADVERSARIAL_CHALLENGE_PROMPT
+        assert verdict in adv.ADVERSARIAL_ALIGNMENT_PROMPT
+
+    # role="adversary" retrieval instructions must remain intact.
+    assert 'role "adversary"' in adv.ADVERSARIAL_SYSTEM
+    for tool in ("search_paper_wiki", "retrieve_literature", "fetch_paper_wiki", "fetch_paper_content"):
+        assert tool in adv.ADVERSARIAL_SYSTEM
+
+
 if __name__ == "__main__":
     unittest.main()
