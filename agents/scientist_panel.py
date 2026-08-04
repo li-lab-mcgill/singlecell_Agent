@@ -1,6 +1,6 @@
 """Scientist Panel — orchestrates panelist formulation, mediation, and callbacks.
 
-The prompt source of truth is `updated_prompts/`.
+The prompt source of truth is `prompts/panelist_prompts.py` and `prompts/mediator_prompts.py`.
 
 Flow:
   run_initial_panelists() + MediatorAgent.formulate():
