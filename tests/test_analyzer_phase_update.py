@@ -5,12 +5,10 @@ import unittest
 from pathlib import Path
 
 from agents.analyzer_panel import _normalize_analyzer_report, _summarize_dag_result
-from agents.prompt_loader import load_updated_prompt
 from agents.research_loop import ResearchLoop
 from agents.scientist_panel import _normalize_evidence_state, _normalize_post_analysis_decision
-
-ANALYZER_MEDIATOR_PROMPT = load_updated_prompt("analyzer")
-MEDIATOR_POST_ANALYSIS_PROMPT = load_updated_prompt("mediator_post_analysis")
+from prompts.analyzer_prompts import ANALYZER_MEDIATOR_PROMPT
+from prompts.mediator_prompts import MEDIATOR_POST_ANALYSIS_PROMPT
 
 
 class _FakeScientistPanel:

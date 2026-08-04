@@ -43,7 +43,6 @@ except Exception:
 
 from agents.llm_utils import single_llm_call
 from agents.paper_judge import PaperJudge
-from agents.prompt_loader import load_updated_prompt
 from agents.runner import ToolCallingAgentRunner
 from agents.tool_base import AgentToolRegistry
 from agents.analyzer_tools import (
@@ -60,8 +59,6 @@ from prompts.analyzer_prompts import (
     DATABASE_VALIDATOR_PROMPT,
     ANALYZER_MEDIATOR_PROMPT,
 )
-
-ANALYZER_MEDIATOR_PROMPT = load_updated_prompt("analyzer", fallback=ANALYZER_MEDIATOR_PROMPT)
 
 
 class AnalyzerPanel:
