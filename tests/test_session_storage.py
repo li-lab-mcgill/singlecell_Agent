@@ -6,6 +6,7 @@ import unittest
 from pathlib import Path
 
 from agents.research_loop import ResearchLoop
+from agents.short_term_memory import _summarize_dag_result
 
 
 class _FakeScientistPanel:
@@ -180,6 +181,25 @@ class SessionStorageTests(unittest.TestCase):
             session_state_seen = tool_consultant.calls[0]["session_state"]
             self.assertEqual(session_state_seen["state_graph_context"]["active_node"]["node_id"], "plan_001")
             self.assertEqual(mediator.post_contexts[0]["active_plan"]["node_id"], "plan_001")
+
+
+class SummarizeDagResultKeysTests(unittest.TestCase):
+    """`DagExecutor._format_result` produces best_path with keys `path_index`
+    and `stage_results` (agents/dag_executor.py ~lines 279-286), not `path_id`
+    or `stages`. `short_term_memory._summarize_dag_result` must read the keys
+    DagExecutor actually emits, or every persisted phase records
+    best_path_id: null and n_stages: 0."""
+
+    def test_summary_reads_path_index_and_stage_results(self):
+        dag_result = {
+            "status": "completed",
+            "best_path": {"path_index": 2, "stage_results": [{}, {}]},
+        }
+
+        summary = _summarize_dag_result(dag_result)
+
+        self.assertEqual(summary["best_path_id"], 2)
+        self.assertEqual(summary["n_stages"], 2)
 
 
 if __name__ == "__main__":

@@ -332,7 +332,7 @@ def _summarize_dag_result(dag_result: dict[str, Any]) -> dict[str, Any]:
         return {"raw": str(dag_result)[:200]}
     return {
         "status": dag_result.get("status"),
-        "best_path_id": (dag_result.get("best_path") or {}).get("path_id"),
-        "n_stages": len((dag_result.get("best_path") or {}).get("stages", [])),
+        "best_path_id": (dag_result.get("best_path") or {}).get("path_index"),
+        "n_stages": len((dag_result.get("best_path") or {}).get("stage_results", [])),
         "error": dag_result.get("error"),
     }
