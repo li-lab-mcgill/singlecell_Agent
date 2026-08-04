@@ -199,6 +199,23 @@ class PaperJudge:
 # Helpers
 # ---------------------------------------------------------------------------
 
+def _safe_float(value: Any, default: float = 0.0) -> float:
+    """Coerce value to float, tolerating None/non-numeric without raising."""
+    try:
+        return float(value) if value is not None else default
+    except (TypeError, ValueError):
+        return default
+
+
+def _as_bool(value: Any) -> bool:
+    """Coerce value to bool, tolerating stringy booleans like "false"."""
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        return value.strip().lower() in {"true", "yes", "1"}
+    return bool(value)
+
+
 def _parse_verdict(text: str) -> dict[str, Any]:
     """Parse LLM verdict JSON with fallbacks."""
     cleaned = str(text or "").strip()
@@ -211,8 +228,8 @@ def _parse_verdict(text: str) -> dict[str, Any]:
         payload = json.loads(cleaned)
         if isinstance(payload, dict):
             return {
-                "relevant": bool(payload.get("relevant", False)),
-                "confidence": float(payload.get("confidence", 0.0)),
+                "relevant": _as_bool(payload.get("relevant", False)),
+                "confidence": _safe_float(payload.get("confidence"), 0.0),
                 "retrieval_intent_fit": _normalize_intent_fit(payload.get("retrieval_intent_fit") or payload.get("intent_fit")),
                 "usefulness": _normalize_retrieval_goal(payload.get("usefulness")),
                 "return_to_panelist": False,
