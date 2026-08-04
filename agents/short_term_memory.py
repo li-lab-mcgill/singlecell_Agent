@@ -38,6 +38,10 @@ _KNOWN_METRICS = {
     "marker_specificity", "n_clusters", "n_cells", "pct_mito", "doublet_rate",
 }
 
+# Metrics where a smaller value is better (e.g. contamination, artifact rates).
+# All other _KNOWN_METRICS are treated as higher-is-better.
+_LOWER_IS_BETTER = {"pct_mito", "doublet_rate"}
+
 
 class ShortTermMemory:
     """Accumulates phase-level traces within one session.
@@ -299,10 +303,11 @@ def _describe_metric_delta(
         delta = cur - pri
         if abs(delta) < 0.005:
             continue
-        if delta > 0:
-            improved.append(f"{key} +{delta:.3f} ({pri:.3f}→{cur:.3f})")
+        is_improvement = (delta < 0) if key in _LOWER_IS_BETTER else (delta > 0)
+        if is_improvement:
+            improved.append(f"{key} {delta:+.3f} ({pri:.3f}→{cur:.3f})")
         else:
-            remained.append(f"{key} {delta:.3f} ({pri:.3f}→{cur:.3f})")
+            remained.append(f"{key} {delta:+.3f} ({pri:.3f}→{cur:.3f})")
 
     return (
         "; ".join(improved) if improved else "",

@@ -6,7 +6,7 @@ import unittest
 from pathlib import Path
 
 from agents.research_loop import ResearchLoop
-from agents.short_term_memory import _summarize_dag_result
+from agents.short_term_memory import _describe_metric_delta, _summarize_dag_result
 
 
 class _FakeScientistPanel:
@@ -200,6 +200,53 @@ class SummarizeDagResultKeysTests(unittest.TestCase):
 
         self.assertEqual(summary["best_path_id"], 2)
         self.assertEqual(summary["n_stages"], 2)
+
+
+class MetricDeltaDirectionAwareTests(unittest.TestCase):
+    """`_describe_metric_delta` (agents/short_term_memory.py ~lines 290-310) must
+    classify lower-is-better metrics (pct_mito, doublet_rate) by direction, not
+    by raw sign of delta. Lowering pct_mito 0.10->0.05 is an improvement, but
+    the naive `delta > 0` check records it as 'remained problematic'."""
+
+    def test_pct_mito_decrease_is_improvement(self):
+        improved, remained = _describe_metric_delta(
+            prior_metrics={"pct_mito": 0.10},
+            current_metrics={"pct_mito": 0.05},
+        )
+        self.assertIn("pct_mito", improved)
+        self.assertNotIn("pct_mito", remained)
+
+    def test_doublet_rate_increase_is_problematic(self):
+        improved, remained = _describe_metric_delta(
+            prior_metrics={"doublet_rate": 0.02},
+            current_metrics={"doublet_rate": 0.05},
+        )
+        self.assertIn("doublet_rate", remained)
+        self.assertNotIn("doublet_rate", improved)
+
+    def test_ari_increase_is_improvement(self):
+        improved, remained = _describe_metric_delta(
+            prior_metrics={"ARI": 0.5},
+            current_metrics={"ARI": 0.7},
+        )
+        self.assertIn("ARI", improved)
+        self.assertNotIn("ARI", remained)
+
+    def test_ari_decrease_is_problematic(self):
+        improved, remained = _describe_metric_delta(
+            prior_metrics={"ARI": 0.7},
+            current_metrics={"ARI": 0.5},
+        )
+        self.assertIn("ARI", remained)
+        self.assertNotIn("ARI", improved)
+
+    def test_no_label_has_malformed_sign(self):
+        improved, remained = _describe_metric_delta(
+            prior_metrics={"pct_mito": 0.10, "doublet_rate": 0.02, "ARI": 0.5},
+            current_metrics={"pct_mito": 0.05, "doublet_rate": 0.05, "ARI": 0.7},
+        )
+        self.assertNotIn("+-", improved)
+        self.assertNotIn("+-", remained)
 
 
 if __name__ == "__main__":
