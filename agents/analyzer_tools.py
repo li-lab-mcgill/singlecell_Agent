@@ -324,6 +324,7 @@ class OmniPathInteractionsTool(AgentTool):
         params: dict[str, Any] = {
             "datasets": dataset,
             "fields": "sources,references",
+            "genesymbols": "1",
             "format": "json",
         }
         if source_genes:
@@ -347,12 +348,23 @@ class OmniPathInteractionsTool(AgentTool):
 
         interactions = []
         for entry in data[:50]:  # cap at 50
+            # The OmniPath web API has no `n_references` field — derive a
+            # count from the `references` string (e.g.
+            # "SIGNOR:12345678;SIGNOR:23456789"). `source`/`target` are
+            # UniProt accessions; `source_genesymbol`/`target_genesymbol`
+            # (requires `genesymbols=1` in the request) are the gene symbols
+            # callers actually queried with.
+            references = str(entry.get("references") or "")
+            n_references = len([r for r in references.split(";") if r.strip()])
             interactions.append({
                 "source": entry.get("source"),
                 "target": entry.get("target"),
+                "source_genesymbol": entry.get("source_genesymbol"),
+                "target_genesymbol": entry.get("target_genesymbol"),
                 "is_stimulation": entry.get("is_stimulation"),
                 "is_inhibition": entry.get("is_inhibition"),
-                "n_references": entry.get("n_references", 0),
+                "references": references,
+                "n_references": n_references,
                 "sources": entry.get("sources", ""),
             })
 

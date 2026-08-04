@@ -2,10 +2,11 @@ from __future__ import annotations
 
 import base64
 import unittest
+import unittest.mock
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
-from agents.analyzer_tools import InterpretFigureTool
+from agents.analyzer_tools import InterpretFigureTool, OmniPathInteractionsTool
 
 
 class _FakeResponses:
@@ -100,6 +101,76 @@ class InterpretFigureResponsesSchemaTest(unittest.TestCase):
 
         self.assertNotIn("error", result)
         self.assertEqual(result, {"description": "ok"})
+
+
+class _FakeOmniPathResponse:
+    """Stand-in for requests.Response — captures the call and returns fixed JSON."""
+
+    def __init__(self, payload):
+        self._payload = payload
+
+    def raise_for_status(self):
+        pass
+
+    def json(self):
+        return self._payload
+
+
+class OmniPathInteractionsGeneSymbolsTest(unittest.TestCase):
+    """Task 3.3: omnipath_interactions must return gene symbols and a real
+    reference count.
+
+    The OmniPath web API's /interactions endpoint has NO `n_references` field
+    (that field reads as 0 unconditionally) — reference count must be derived
+    by splitting the `references` string (e.g. "SIGNOR:12345678;SIGNOR:23456789").
+    Likewise `source`/`target` are UniProt accessions, not the gene symbols the
+    caller (DatabaseValidator) queried with — the response only carries gene
+    symbols if `genesymbols=1` is requested, in `source_genesymbol`/
+    `target_genesymbol`.
+    """
+
+    def _fake_entry(self):
+        return {
+            "source": "P04637",
+            "target": "Q00987",
+            "source_genesymbol": "TP53",
+            "target_genesymbol": "MDM2",
+            "is_stimulation": False,
+            "is_inhibition": True,
+            "references": "SIGNOR:12345678;SIGNOR:23456789",
+            "sources": "SIGNOR",
+        }
+
+    def test_parses_gene_symbols_and_reference_count(self):
+        captured_params = {}
+
+        def fake_get(url, params=None, timeout=None):
+            captured_params.update(params or {})
+            return _FakeOmniPathResponse([self._fake_entry()])
+
+        tool = OmniPathInteractionsTool()
+        with unittest.mock.patch("agents.analyzer_tools.requests.get", side_effect=fake_get):
+            result = tool.run(
+                interaction_type="tf_target",
+                source_genes=["TP53"],
+                target_genes=["MDM2"],
+            )
+
+        self.assertNotIn("error", result, msg=f"omnipath_interactions returned an error: {result}")
+        self.assertEqual(result["n_interactions_found"], 1)
+        interaction = result["interactions"][0]
+
+        # The caller queried with gene symbols — the parsed interaction must
+        # expose gene symbols so it can be matched back against the query.
+        self.assertEqual(interaction["source_genesymbol"], "TP53")
+        self.assertEqual(interaction["target_genesymbol"], "MDM2")
+
+        # references="SIGNOR:12345678;SIGNOR:23456789" -> 2 references, not the
+        # nonexistent n_references field (which would silently read as 0).
+        self.assertEqual(interaction["n_references"], 2)
+
+        # The request must ask OmniPath to include gene symbols in the response.
+        self.assertEqual(captured_params.get("genesymbols"), "1")
 
 
 if __name__ == "__main__":
