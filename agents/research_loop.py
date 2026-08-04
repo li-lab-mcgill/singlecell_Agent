@@ -208,7 +208,6 @@ class ResearchLoop:
             anchor_papers=anchor_papers or [],
             mode=pipeline_mode,
         )
-        legacy_mediator_flow = bool(formulation_result.get("_legacy_scientist_panel_formulate"))
         self._save("phase0_formulate", formulation_result)
 
         if formulation_result.get("status") == "unanswerable":
@@ -424,52 +423,31 @@ class ResearchLoop:
                 )
 
             # ── Step 4: Mediator post-analysis decision ─────────────────
-            if legacy_mediator_flow:
-                post_decision = self._decide_after_analysis(
-                    user_question=agent_user_question,
+            mediator = self._ensure_mediator_agent()
+            post_decision = mediator.post_analysis(
+                post_analysis_context=research_state.context_for_mediator_post_analysis(
                     phase_number=phase_number,
                     analyzer_report=analyzer_report,
-                    working_model=working_model,
-                    research_context=research_context,
-                    decision=decision,
-                    dag_result=dag_result,
-                )
-                post_decision = self._run_legacy_post_analysis_callback_loop(
-                    user_question=agent_user_question,
-                    phase_number=phase_number,
-                    analyzer_report=analyzer_report,
-                    working_model=working_model,
-                    research_context=research_context,
-                    decision=decision,
-                    dag_result=dag_result,
-                    post_decision=post_decision,
-                )
-            else:
-                mediator = self._ensure_mediator_agent()
-                post_decision = mediator.post_analysis(
-                    post_analysis_context=research_state.context_for_mediator_post_analysis(
-                        phase_number=phase_number,
-                        analyzer_report=analyzer_report,
-                        dag_result_summary=_summarize_execution_for_mediator(dag_result),
-                        tool_decision=decision,
-                        artifact_registry_summary=None,
-                    )
-                )
-                self._record_mediator_output(
-                    research_state,
-                    post_decision,
-                    source="post_analysis",
-                    phase_number=phase_number,
-                    trace_ref=f"phase{phase_number}_post_analysis_decision.json",
-                )
-                post_decision = self._review_post_analysis_candidate_if_needed(
-                    research_state=research_state,
-                    phase_number=phase_number,
-                    post_decision=post_decision,
-                    analyzer_report=analyzer_report,
-                    dag_result=dag_result,
+                    dag_result_summary=_summarize_execution_for_mediator(dag_result),
                     tool_decision=decision,
+                    artifact_registry_summary=None,
                 )
+            )
+            self._record_mediator_output(
+                research_state,
+                post_decision,
+                source="post_analysis",
+                phase_number=phase_number,
+                trace_ref=f"phase{phase_number}_post_analysis_decision.json",
+            )
+            post_decision = self._review_post_analysis_candidate_if_needed(
+                research_state=research_state,
+                phase_number=phase_number,
+                post_decision=post_decision,
+                analyzer_report=analyzer_report,
+                dag_result=dag_result,
+                tool_decision=decision,
+            )
             self._save(f"phase{phase_number}_post_analysis_decision", post_decision)
             if isinstance(post_decision.get("evidence_state"), dict) and post_decision.get("evidence_state"):
                 research_state.update_evidence_state(post_decision["evidence_state"])
@@ -951,47 +929,6 @@ class ResearchLoop:
             }
         )
 
-    def _run_legacy_post_analysis_callback_loop(
-        self,
-        *,
-        user_question: str,
-        phase_number: int,
-        analyzer_report: dict[str, Any],
-        working_model: dict[str, Any] | str,
-        research_context: dict[str, Any],
-        decision: dict[str, Any],
-        dag_result: dict[str, Any],
-        post_decision: dict[str, Any],
-    ) -> dict[str, Any]:
-        if not hasattr(self.scientist_panel, "run_post_analysis_callbacks"):
-            return post_decision
-        max_rounds = max(0, int(getattr(self.scientist_panel, "max_callback_rounds_after_analysis", 2)))
-        current_decision = post_decision
-        current_working_model: dict[str, Any] | str = working_model
-        for _round_number in range(1, max_rounds + 1):
-            if _canonical_post_decision(current_decision) != "call_panelists":
-                break
-            callback_result = self.scientist_panel.run_post_analysis_callbacks(
-                user_question=user_question,
-                data_summary=self.data_summary,
-                phase_number=phase_number,
-                post_analysis_decision=current_decision,
-                working_model=current_working_model,
-                research_context=research_context,
-                analyzer_report=analyzer_report,
-            )
-            current_working_model = callback_result if isinstance(callback_result, dict) else current_working_model
-            current_decision = self._decide_after_analysis(
-                user_question=user_question,
-                phase_number=phase_number,
-                analyzer_report=analyzer_report,
-                working_model=current_working_model,
-                research_context=research_context,
-                decision=decision,
-                dag_result=dag_result,
-            )
-        return current_decision
-
     def _execute(
         self,
         *,
@@ -1099,45 +1036,6 @@ class ResearchLoop:
         if self.context_manager is not None:
             state["scientific_context"] = self.context_manager.to_prompt_str()
         return state
-
-    def _decide_after_analysis(
-        self,
-        *,
-        user_question: str,
-        phase_number: int,
-        analyzer_report: dict[str, Any],
-        working_model: dict[str, Any] | str,
-        research_context: dict[str, Any],
-        decision: dict[str, Any],
-        dag_result: dict[str, Any],
-    ) -> dict[str, Any]:
-        if hasattr(self.scientist_panel, "decide_after_analysis"):
-            graph_context = {}
-            if getattr(self, "state_graph_manager", None) is not None:
-                graph_context = self.state_graph_manager.context_for_mediator()
-            return self.scientist_panel.decide_after_analysis(
-                user_question=user_question,
-                data_summary=self.data_summary,
-                phase_number=phase_number,
-                analyzer_report=analyzer_report,
-                working_model=working_model,
-                research_context=research_context,
-                tool_decision=decision,
-                dag_result=dag_result,
-                state_graph_context=graph_context,
-                artifact_registry_summary=None,
-            )
-        return {
-            "decision": "accept_and_conclude",
-            "decision_type": "accept_and_conclude",
-            "rationale": "ScientistPanel does not expose decide_after_analysis; conservatively concluding with the Analyzer report instead of running an implicit full update.",
-            "evidence_state": {},
-            "updated_selected_research_plan": {},
-            "panelist_callback_requests": [],
-            "callbacks": [],
-            "clarifying_questions": [],
-            "confidence": 0.0,
-        }
 
     def _ensure_session_recorder(self, *, user_question: str) -> SessionRecorder:
         recorder = getattr(self, "session_recorder", None)

@@ -11,59 +11,6 @@ from prompts.analyzer_prompts import ANALYZER_MEDIATOR_PROMPT
 from prompts.mediator_prompts import MEDIATOR_POST_ANALYSIS_PROMPT
 
 
-class _FakeScientistPanel:
-    def __init__(self, post_decisions):
-        self.post_decisions = list(post_decisions)
-        self.formulate_calls = []
-        self.post_calls = []
-        self.update_calls = []
-        self.callback_calls = []
-
-    def formulate(self, *, user_question, data_summary, anchor_papers, mode):
-        self.formulate_calls.append(
-            {
-                "user_question": user_question,
-                "data_summary": data_summary,
-                "anchor_papers": anchor_papers,
-                "mode": mode,
-            }
-        )
-        return {
-            "concrete_analysis_claim": "Test claim.",
-            "selected_research_plan": {
-                "steps": [
-                    {
-                        "step_id": "step_1",
-                        "biological_goal": "Answer the user question.",
-                        "statistical_requirement": "Use valid evidence.",
-                        "computational_approach": "Run a minimal DAG.",
-                    }
-                ],
-                "required_visualizations": [],
-            },
-            "research_plan": {
-                "steps": ["Answer the user question."],
-                "required_visualizations": [],
-            },
-        }
-
-    def decide_after_analysis(self, **kwargs):
-        self.post_calls.append(kwargs)
-        return dict(self.post_decisions.pop(0))
-
-    def run_post_analysis_callbacks(self, **kwargs):
-        self.callback_calls.append(kwargs)
-        return {"selected_research_plan": kwargs["research_context"]["selected_research_plan"], "callbacks": []}
-
-    def update(self, **kwargs):
-        self.update_calls.append(kwargs)
-        return {
-            "next_action": "done",
-            "evidence_state": {"current_belief": "done"},
-            "research_plan": {},
-        }
-
-
 class _FakeToolConsultant:
     def __init__(self):
         self.calls = []
@@ -121,7 +68,7 @@ class _FakeAnalyzerPanel:
         }
 
 
-def _make_loop(tmpdir: str, scientist_panel: _FakeScientistPanel) -> ResearchLoop:
+def _make_loop(tmpdir: str, scientist_panel) -> ResearchLoop:
     loop = ResearchLoop.__new__(ResearchLoop)
     loop.scientist_panel = scientist_panel
     loop.analyzer_panel = _FakeAnalyzerPanel()
@@ -140,14 +87,6 @@ def _make_loop(tmpdir: str, scientist_panel: _FakeScientistPanel) -> ResearchLoo
     loop.max_phases = 2
     loop._prior_phase_metrics = {}
     return loop
-
-
-class _LegacyScientistPanel:
-    def formulate(self, *, user_question, data_summary, anchor_papers, mode):
-        return {
-            "selected_research_plan": {"steps": ["Run one step."], "required_visualizations": []},
-            "research_plan": {"steps": ["Run one step."], "required_visualizations": []},
-        }
 
 
 class _LiveScientistPanel:
@@ -328,22 +267,6 @@ class AnalyzerPhaseUpdateTests(unittest.TestCase):
 
         decision_missing = _normalize_post_analysis_decision({})
         self.assertEqual(decision_missing["decision_type"], "accept_and_conclude")
-
-    def test_missing_post_analysis_method_concludes_without_update(self):
-        with tempfile.TemporaryDirectory() as tmpdir:
-            loop = _make_loop(tmpdir, _FakeScientistPanel([]))
-            loop.scientist_panel = _LegacyScientistPanel()
-            decision = loop._decide_after_analysis(
-                user_question="Answer this.",
-                phase_number=1,
-                analyzer_report={"result_verdict": "supported"},
-                working_model={},
-                research_context={"selected_research_plan": {"steps": ["Run one step."]}},
-                decision={},
-                dag_result={},
-            )
-
-        self.assertEqual(decision["decision_type"], "accept_and_conclude")
 
     def test_blocked_execution_skips_analyzer_and_carries_decision_to_next_phase(self):
         """Live-path regression: execution_status == "blocked" must skip AnalyzerPanel
