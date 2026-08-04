@@ -147,5 +147,43 @@ def test_adversarial_prompts_format_contract():
         assert tool in adv.ADVERSARIAL_SYSTEM
 
 
+def test_critic_prompts_format_contract():
+    from prompts import critic_prompts as c
+
+    # .format() with the exact kwargs used at the real call site
+    # (agents/attributing_critic.py:104-110, AttributingCritic.attribute) must
+    # not raise — this proves the placeholder set matches the call site and
+    # embedded JSON braces are still {{ }}-escaped.
+    c.CRITIC_ATTRIBUTION_PROMPT.format(
+        phase_number=2,
+        research_plan="x",
+        stage_results="x",
+        prior_phase_number=1,
+        prior_phase_metrics="x",
+    )
+    assert c.CRITIC_SYSTEM.strip()
+
+    # Output-contract keys read by downstream parsers must survive refinement:
+    # agents/attributing_critic.py._extract_tag_json reads the <CRITIC> tag;
+    # agents/context_manager.py reads attributions[].step_id/judgment/
+    # contribution_score/reason; agents/short_term_memory.py reads key_lessons.
+    assert "<CRITIC>" in c.CRITIC_ATTRIBUTION_PROMPT and "</CRITIC>" in c.CRITIC_ATTRIBUTION_PROMPT
+    for key in (
+        "attributions",
+        "step_id",
+        "judgment",
+        "contribution_score",
+        "reason",
+        "lesson_candidate",
+        "overall_phase_judgment",
+        "key_lessons",
+    ):
+        assert key in c.CRITIC_ATTRIBUTION_PROMPT
+
+    # judgment vocabulary downstream code switches on (GOOD/BAD/NEEDS_REVISION).
+    for judgment in ("GOOD", "BAD", "NEEDS_REVISION"):
+        assert judgment in c.CRITIC_ATTRIBUTION_PROMPT
+
+
 if __name__ == "__main__":
     unittest.main()
