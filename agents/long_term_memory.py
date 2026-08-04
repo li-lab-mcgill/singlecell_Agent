@@ -182,7 +182,10 @@ class LongTermMemory:
             record = {"session_id": session_id, "question": user_question, "raw": text}
 
         record["session_id"] = session_id
-        record.setdefault("continues_from", continues_from)
+        if continues_from is not None:
+            record["continues_from"] = continues_from
+        else:
+            record.setdefault("continues_from", None)
 
         self._records.append(record)
         self._save_record(session_id, record)

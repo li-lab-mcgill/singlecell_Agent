@@ -4,7 +4,10 @@ import json
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
+from agents import long_term_memory as long_term_memory_module
+from agents.long_term_memory import LongTermMemory
 from agents.research_loop import ResearchLoop
 from agents.short_term_memory import _describe_metric_delta, _summarize_dag_result
 
@@ -247,6 +250,85 @@ class MetricDeltaDirectionAwareTests(unittest.TestCase):
         )
         self.assertNotIn("+-", improved)
         self.assertNotIn("+-", remained)
+
+
+class LongTermMemoryContinuesFromTests(unittest.TestCase):
+    """`compress_and_save` (agents/long_term_memory.py:185) does
+    `record.setdefault("continues_from", continues_from)`. The LTM compression
+    PROMPT template instructs the LLM to always emit `"continues_from": null`
+    (agents/long_term_memory.py:107), so the parsed record already has the key
+    (value None) before `setdefault` runs — meaning `setdefault` never
+    overwrites it, and the caller-supplied `continues_from` is silently
+    discarded. Cross-session lineage (e.g. "S03 continues from S02") is never
+    recorded."""
+
+    def _make_ltm(self, tmpdir: str) -> LongTermMemory:
+        return LongTermMemory(
+            engine_name="test-engine",
+            client=object(),  # unused: single_llm_call is monkeypatched below
+            memory_dir=Path(tmpdir) / "long_term",
+        )
+
+    def test_caller_provided_continues_from_overwrites_null_in_parsed_record(self):
+        fake_llm_record = {
+            "session_id": "S03",
+            "question": "What cell types drive IBD?",
+            "task": "rna_cell_type_annotation",
+            "data_characteristics": {"modality": "RNA"},
+            "best_finding": "finding",
+            "best_method_path": "scVI -> Leiden",
+            "best_metrics": {},
+            "key_decision_points": [],
+            "boundary_conditions": [],
+            "open_questions": [],
+            "lesson_candidates": [],
+            "confidence": 0.8,
+            "continues_from": None,
+            "date": "2026-08-02",
+        }
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            ltm = self._make_ltm(tmpdir)
+            with patch.object(
+                long_term_memory_module,
+                "single_llm_call",
+                return_value=json.dumps(fake_llm_record),
+            ):
+                record = ltm.compress_and_save(
+                    session_id="S03",
+                    user_question="What cell types drive IBD?",
+                    short_term_trace=[],
+                    data_summary={"modality": "RNA"},
+                    continues_from="S02",
+                )
+
+            self.assertEqual(record["continues_from"], "S02")
+
+            saved = json.loads((Path(tmpdir) / "long_term" / "S03.json").read_text())
+            self.assertEqual(saved["continues_from"], "S02")
+
+    def test_continues_from_stays_none_when_caller_omits_it(self):
+        fake_llm_record = {
+            "session_id": "S04",
+            "question": "What is the baseline clustering?",
+            "continues_from": None,
+        }
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            ltm = self._make_ltm(tmpdir)
+            with patch.object(
+                long_term_memory_module,
+                "single_llm_call",
+                return_value=json.dumps(fake_llm_record),
+            ):
+                record = ltm.compress_and_save(
+                    session_id="S04",
+                    user_question="What is the baseline clustering?",
+                    short_term_trace=[],
+                    data_summary={},
+                )
+
+            self.assertIsNone(record["continues_from"])
 
 
 if __name__ == "__main__":
