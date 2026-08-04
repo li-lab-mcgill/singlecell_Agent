@@ -106,31 +106,10 @@ def test_adversarial_prompts_format_contract():
         tool_plan="x",
         implementation_plan="x",
     )
-    # Defense prompts and the re-mediator prompt have no current .format() call
-    # site (the class docstring notes this critic-only class "does not defend,
-    # remediate, or mutate the plan"), but they retain their own placeholder
-    # templates — format with those to prove braces stay escaped.
-    for defense_prompt in (
-        adv.BIOLOGIST_DEFENSE_PROMPT,
-        adv.STATISTICIAN_DEFENSE_PROMPT,
-        adv.BIOINFORMATICIAN_DEFENSE_PROMPT,
-    ):
-        defense_prompt.format(user_question="x", mediator_plan="x", challenge_output="x")
-    adv.ADVERSARIAL_REMEDIATOR_PROMPT.format(
-        user_question="x",
-        mediator_plan="x",
-        challenge_output="x",
-        defense_outputs="x",
-    )
-
     # Output-tag contract the parser reads (agents/adversarial_panelist.py
     # _extract_tag_json / _challenge_done_handler).
     assert "<CHALLENGE>" in adv.ADVERSARIAL_CHALLENGE_PROMPT and "</CHALLENGE>" in adv.ADVERSARIAL_CHALLENGE_PROMPT
     assert "<ALIGNMENT_REVIEW>" in adv.ADVERSARIAL_ALIGNMENT_PROMPT
-    assert "<DEFENSE>" in adv.BIOLOGIST_DEFENSE_PROMPT
-    assert "<DEFENSE>" in adv.STATISTICIAN_DEFENSE_PROMPT
-    assert "<DEFENSE>" in adv.BIOINFORMATICIAN_DEFENSE_PROMPT
-    assert "<MEDIATOR>" in adv.ADVERSARIAL_REMEDIATOR_PROMPT
 
     # Verdict vocabulary research_loop.py switches on (_ADVERSARY_VERDICTS in
     # agents/adversarial_panelist.py: "survives" | "needs_revision" |

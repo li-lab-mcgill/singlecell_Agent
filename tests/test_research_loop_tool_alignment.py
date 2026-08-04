@@ -228,14 +228,6 @@ class ResearchLoopToolAlignmentTests(unittest.TestCase):
         self.assertTrue(revised["execution_blocked"])
         self.assertTrue(revised["alignment_unresolved_after_revision"])
 
-    def test_adversarial_remediator_prompt_uses_phase1_research_plan_schema(self):
-        from prompts.adversarial_prompts import ADVERSARIAL_REMEDIATOR_PROMPT
-
-        self.assertIn("selected_research_plan", ADVERSARIAL_REMEDIATOR_PROMPT)
-        self.assertIn("alternative_research_plans", ADVERSARIAL_REMEDIATOR_PROMPT)
-        self.assertIn("mediator_decision", ADVERSARIAL_REMEDIATOR_PROMPT)
-        self.assertNotIn('"consensus_hypothesis"', ADVERSARIAL_REMEDIATOR_PROMPT)
-
     def test_execute_records_output_retention_policy_in_dag_result(self):
         loop = ResearchLoop.__new__(ResearchLoop)
         loop.dag_executor = _FakeDagExecutor()
