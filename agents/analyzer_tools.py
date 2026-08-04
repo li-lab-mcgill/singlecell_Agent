@@ -118,13 +118,11 @@ class InterpretFigureTool(AgentTool):
                     {
                         "role": "user",
                         "content": [
-                            {"type": "text", "text": prompt},
+                            {"type": "input_text", "text": prompt},
                             {
-                                "type": "image_url",
-                                "image_url": {
-                                    "url": f"data:{mime};base64,{image_data}",
-                                    "detail": "high",
-                                },
+                                "type": "input_image",
+                                "image_url": f"data:{mime};base64,{image_data}",
+                                "detail": "high",
                             },
                         ],
                     }
