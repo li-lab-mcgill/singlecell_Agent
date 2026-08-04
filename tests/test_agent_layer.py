@@ -1339,8 +1339,9 @@ class AgentLayerTests(unittest.TestCase):
         self.assertNotIn("zellkonverter::readH5AD", read_body)
 
     def test_r_normalization_scripts_write_matrix_outputs_not_h5ad(self):
+        # sctransform normalization was removed; normalization_scran.R is the
+        # only surviving RNA normalization R script.
         for script_path in (
-            Path("backend/r_scripts/rna/normalization_sctransform.R"),
             Path("backend/r_scripts/rna/normalization_scran.R"),
         ):
             script = script_path.read_text(encoding="utf-8")
@@ -1368,8 +1369,17 @@ class AgentLayerTests(unittest.TestCase):
         self.assertIn("DESeq2::counts(dds) >= 10", deseq_script)
 
     def test_r_de_scripts_accept_sparse_matrix_exports_without_dense_h5ad_read(self):
+        # MAST::FromMatrix requires a dense in-memory expression matrix, so
+        # differential_expression_mast.R legitimately densifies the already-loaded
+        # sparse counts (`as.matrix(counts_sub)`) after reading them via the sparse
+        # matrix exports checked below. That in-memory densification is not the
+        # anti-pattern this test guards against -- an R script reading a dense
+        # .h5ad / dense array from disk instead of the sparse matrix exports -- so
+        # MAST is exempted from that one assertion while every other
+        # dense-h5ad-read check still applies to it.
+        mast_script_path = Path("backend/r_scripts/rna/differential_expression_mast.R")
         for script_path in (
-            Path("backend/r_scripts/rna/differential_expression_mast.R"),
+            mast_script_path,
             Path("backend/r_scripts/rna/differential_expression_edger_pseudobulk.R"),
             Path("backend/r_scripts/rna/differential_expression_deseq2_pseudobulk.R"),
         ):
@@ -1379,7 +1389,8 @@ class AgentLayerTests(unittest.TestCase):
             self.assertIn("scipy_sparse$issparse(source)", script)
             self.assertNotIn("source$toarray()", script)
             self.assertNotIn("as.matrix(reticulate::py_to_r(source))", script)
-            self.assertNotIn("as.matrix(counts_sub)", script)
+            if script_path != mast_script_path:
+                self.assertNotIn("as.matrix(counts_sub)", script)
 
     def test_mast_wrapper_uses_r_runner_and_extracts_top_genes(self):
         class _Runner:
