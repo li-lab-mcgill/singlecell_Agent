@@ -65,5 +65,27 @@ def test_panelist_prompts_contract():
         assert p2.PANEL_OUTPUT_SCHEMA.strip() in role_prompt
 
 
+def test_paper_prompts_format_contract():
+    from prompts import paper_prompts as p
+    judge_keys = {"role","retrieval_intent","retrieval_goal","base_query","doc_id",
+        "source","title","published","url","full_text_status","objective","background",
+        "analysis","method_and_dataset","main_findings","benchmark_methods","limitations",
+        "figure_captions","abstract"}
+    writer_keys = {"doc_id","source","title","published","doi","url","full_text_status",
+        "objective","background","analysis","method_and_dataset","main_findings",
+        "benchmark_methods","limitations","figure_captions","abstract","retrieval_intent",
+        "retrieval_goal","evidence_contribution","covered_evidence_patterns",
+        "missing_evidence","source_ids","task_ids","existing_papers_summary"}
+    template_keys = {"paper_id","title","doi","url","source_ids_yaml","full_text_status",
+        "tasks_yaml","extends_yaml","retrieval_intents_yaml","retrieval_goals_yaml","session",
+        "added","objective","background","analysis","method_and_dataset","key_findings",
+        "benchmark_methods","limitations","metrics_used","figure_captions","summary"}
+    # .format with every key present must not raise (placeholder set preserved, braces escaped)
+    p.PAPER_JUDGE_PROMPT.format(**{k: "x" for k in judge_keys})
+    p.PAPER_MD_WRITER_PROMPT.format(**{k: "x" for k in writer_keys})
+    p.PAPER_MD_TEMPLATE.format(**{k: "x" for k in template_keys})
+    assert p.PAPER_JUDGE_SYSTEM.strip() and p.PAPER_MD_WRITER_SYSTEM.strip()
+
+
 if __name__ == "__main__":
     unittest.main()
