@@ -27,12 +27,8 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import date
 from typing import Any
 
-from agents.prompt_loader import load_updated_prompt
+from prompts.paper_prompts import PAPER_MD_WRITER_SYSTEM, PAPER_MD_WRITER_PROMPT, PAPER_MD_TEMPLATE
 from wiki.paper_index import get_paper_index
-
-PAPER_MD_WRITER_SYSTEM = load_updated_prompt("paper_md_writer_system")
-PAPER_MD_WRITER_PROMPT = load_updated_prompt("paper_md_writer")
-PAPER_MD_TEMPLATE = load_updated_prompt("paper_md_template")
 
 try:
     from openai import OpenAI

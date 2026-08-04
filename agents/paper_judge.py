@@ -22,16 +22,12 @@ import re
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Any
 
-from agents.prompt_loader import load_updated_prompt
+from prompts.paper_prompts import PAPER_JUDGE_SYSTEM as _JUDGE_SYSTEM_PROMPT, PAPER_JUDGE_PROMPT as _JUDGE_PROMPT
 
 try:
     from openai import OpenAI
 except Exception:
     OpenAI = None  # type: ignore[assignment]
-
-
-_JUDGE_SYSTEM_PROMPT = load_updated_prompt("paper_judge_system")
-_JUDGE_PROMPT = load_updated_prompt("paper_judge")
 
 
 # ---------------------------------------------------------------------------
